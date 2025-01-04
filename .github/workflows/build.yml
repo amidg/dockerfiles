@@ -16,7 +16,13 @@ env:
   REGISTRY_URL: ghcr.io/${{ github.repository_owner }}
   DEFAULT_BRANCH: main
   # generic containers
-  GENERIC_CUPS_SAMSUNG: cups_samsung
+  #GENERIC_CONTAINERS: |
+  #  - name: cups_samsung
+  #    path: ./cups-samsung
+  #    file: Dockerfile
+  #  - name: intel_gpu_tools
+  #    path: ./tools
+  #    file: Dockerfile.intel_gpu_top
   # development containers
 
 # Define the job to build and push the container image
@@ -24,7 +30,16 @@ jobs:
   build_generic_containers:
     # specifies virtual machine platform, not the container image
     runs-on: ubuntu-latest
-    # steps
+    strategy:
+      # Define the containers here with key-value pairs
+      matrix:
+        container:
+          - name: cups_samsung
+            path: ./cups-samsung
+            file: Dockerfile
+          - name: intel_gpu_tools
+            path: ./tools
+            file: Dockerfile.intel_gpu_top
     steps:
       # Setup Podman to use container registry
       - name: Login Podman
@@ -38,17 +53,23 @@ jobs:
       - name: Checkout latest code
         uses: actions/checkout@v3
 
-      # ADD YOUR CONTAINERS HERE #
-      # Samsung Cups container
-      - name: Build Cups Samsung
+      # Build Generic Containers from list
+      - name: Build and push container
         run: |
-          podman build -f ./cups-samsung/Dockerfile -t ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA} .
-          podman push ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA}
+          container_name=$(echo "${{ matrix.container.name }}")
+          container_path=$(echo "${{ matrix.container.path }}")
+          container_file=$(echo "${{ matrix.container.file }}")
+          echo "Building container: $container_name"
+          
+          cd $container_path
+          podman build \
+            -f ${container_file} \
+            -t ${{ env.REGISTRY_URL }}/${container_name}:v${GITHUB_SHA} .
+          podman push ${{ env.REGISTRY_URL }}/${container_name}:v${GITHUB_SHA}
 
-      # Publish Latest stable build
-      - name: Publish latest stable build as latest
-        if: github.ref_name == ${{ env.DEFAULT_BRANCH }}
-        run: |
-          podman tag ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA} ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:latest
-          podman push ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:latest
-
+          # Publish latest stable build as latest tag
+          if [[ "${GITHUB_REF}" == "refs/heads/${{ env.DEFAULT_BRANCH }}" ]]; then
+            podman tag ${{ env.REGISTRY_URL }}/${container_name}:v${GITHUB_SHA} \
+                       ${{ env.REGISTRY_URL }}/${container_name}:latest
+            podman push ${{ env.REGISTRY_URL }}/${container_name}:latest
+          fi
