@@ -1,0 +1,54 @@
+name: Build and Push Container Image with Podman
+
+# Trigger the workflow on push to the main branch or on tags.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'  # Trigger on new version tags like v1.0.0
+
+# variables
+env:
+  # basic info
+  REGISTRY_USER: ${{ github.actor }}
+  REGISTRY_PASSWORD: ${{ github.token }}
+  REGISTRY_URL: ghcr.io/${{ github.repository_owner }}
+  DEFAULT_BRANCH: main
+  # generic containers
+  GENERIC_CUPS_SAMSUNG: cups_samsung
+  # development containers
+
+# Define the job to build and push the container image
+jobs:
+  build_generic_containers:
+    # specifies virtual machine platform, not the container image
+    runs-on: ubuntu-latest
+    # steps
+    steps:
+      # Setup Podman to use container registry
+      - name: Login Podman
+        uses: redhat-actions/podman-login@v1
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.PODMAN_TOKEN }}
+          registry: ${{ env.REGISTRY_URL }}
+
+      # Checkout the repository to get the files
+      - name: Checkout latest code
+        uses: actions/checkout@v3
+
+      # ADD YOUR CONTAINERS HERE #
+      # Samsung Cups container
+      - name: Build Cups Samsung
+        run: |
+          podman build -f ./cups-samsung/Dockerfile -t ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA} .
+          podman push ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA}
+
+      # Publish Latest stable build
+      - name: Publish latest stable build as latest
+        if: github.ref_name == ${{ env.DEFAULT_BRANCH }}
+        run: |
+          podman tag ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:v${GITHUB_SHA} ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:latest
+          podman push ${{ env.REGISTRY_URL }}/${{ env.GENERIC_CUPS_SAMSUNG }}:latest
+

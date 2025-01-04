@@ -1,0 +1,16 @@
+name: cups
+services:
+  cups:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cups-samsung:latest
+    container_name: cups
+    privileged: true
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb # keep this under volumes, not devices
+      - /run/dbus:/run/dbus
+      - ./cupsd.conf:/etc/cups/cupsd.conf
+    ports:
+      - 631:631/tcp
+    restart: always
