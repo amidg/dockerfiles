@@ -1,4 +1,4 @@
-name: Build Strapi blog container
+name: Build dockerfiles
 
 on:
   push:
@@ -25,5 +25,27 @@ jobs:
       container_name: ${{ matrix.container.name }}
       container_path: ${{ matrix.container.path }}
       container_file: ${{ matrix.container.file }}
+    secrets:
+      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
+
+  # Development containers
+  build_development_containers:
+    uses: amidg/workflows/.github/workflows/build_container.yml@main
+    strategy:
+      matrix:
+        container:
+          - name: dev_base
+            path: ./development
+            file: Dockerfile
+            target: base
+          - name: dev_base_gpu
+            path: ./development
+            file: Dockerfile
+            target: gpu_base
+    with:
+      container_name: ${{ matrix.container.name }}
+      container_path: ${{ matrix.container.path }}
+      container_file: ${{ matrix.container.file }}
+      build_target: ${{ matrix.container.target }}
     secrets:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
