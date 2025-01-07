@@ -6,22 +6,16 @@ WORKDIR /app
 COPY scripts/ .
 RUN bash ./setup_ubuntu.sh
 
-# setup C++
-RUN bash ./install_cpp.sh
-
-# setup Python
-RUN bash ./install_py.sh
+# setup programming tools
+RUN bash ./install_cpp_py.sh
 
 
-# Nvidia Image
+# NVDA Image
 FROM nvidia/cuda:12.6.3-devel-ubuntu24.04
 # setup linux system
 WORKDIR /app
 COPY scripts/ .
 RUN bash ./setup_ubuntu.sh
 
-# setup C++
-RUN bash ./install_cpp.sh
-
-# setup Python
-RUN bash ./install_py.sh
+# setup programming tools
+RUN bash ./install_cpp_py.sh
