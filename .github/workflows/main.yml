@@ -1,0 +1,29 @@
+name: Build Strapi blog container
+
+on:
+  push:
+    branches:
+      - main
+      - dev-tools
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  # generic containers for daily use
+  build_generic_containers:
+    uses: amidg/workflows/.github/workflows/build_container.yml@main
+    strategy:
+      matrix:
+        container:
+          - name: cups_samsung
+            path: ./cups-samsung
+            file: Dockerfile
+          - name: intel_gpu_tools
+            path: ./tools
+            file: Dockerfile.intel_gpu_top
+    with:
+      container_name: ${{ matrix.container.name }}
+      container_path: ${{ matrix.container.path }}
+      container_file: ${{ matrix.container.file }}
+    secrets:
+      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
