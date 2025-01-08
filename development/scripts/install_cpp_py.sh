@@ -19,8 +19,12 @@ apt install -qqy \
 echo "Installing Python development tools"
 apt install -qqy \
     python3 \
+    python3-dev \
     python3-pip \
     python3-full \
+    python3-distutils \
+    python3-venv \
+    python3-argcomplete \
     python3-setuptools \
     python3-wheel \
     ninja-build
