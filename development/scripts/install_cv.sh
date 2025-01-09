@@ -36,6 +36,20 @@ apt install -qqy build-essential \
 git clone https://github.com/opencv/opencv.git /tmp/opencv
 cd /tmp/opencv
 git checkout $OPENCV_VERSION
-git clone https://github.com/opencv/opencv_contrib.git
-cd /tmp/opencv/opencv_contrib
-git checkout $OPENCV_VERSION
+git clone --depth=1 --branch $OPENCV_VERSION \
+    https://github.com/opencv/opencv_contrib.git
+mkdir build
+cd build
+cmake -D CMAKE_BUILD_TYPE=RELEASE \
+      -D CMAKE_INSTALL_PREFIX=/usr/local \
+      -D OPENCV_EXTRA_MODULES_PATH=$(pwd)/../opencv_contrib/modules \
+      -D WITH_GSTREAMER=ON ..
+make -j$(nproc)
+make install
+ldconfig
+
+# ##################### #
+# Install OpenCV Python #
+# ##################### #
+# For now OpenCV Python version is fixed
+
