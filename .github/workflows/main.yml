@@ -54,7 +54,8 @@ jobs:
 
   # ROS2 containers
   build_ros_containers:
-    uses: amidg/workflows/.github/workflows/build_container.yml@main
+    uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
+    needs: build_development_containers
     strategy:
       matrix:
         container:
