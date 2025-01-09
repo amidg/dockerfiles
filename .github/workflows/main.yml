@@ -25,6 +25,7 @@ jobs:
       container_name: ${{ matrix.container.name }}
       container_path: ${{ matrix.container.path }}
       container_file: ${{ matrix.container.file }}
+      container_tag: ${{ github.sha }}
     secrets:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
 
@@ -47,5 +48,30 @@ jobs:
       container_path: ${{ matrix.container.path }}
       container_file: ${{ matrix.container.file }}
       build_target: ${{ matrix.container.target }}
+      container_tag: ${{ github.sha }}
+    secrets:
+      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
+
+  # ROS2 containers
+  build_ros_containers:
+    uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
+    needs: build_development_containers
+    strategy:
+      matrix:
+        container:
+          - name: ros2
+            path: ./development
+            file: Dockerfile.ros2
+            target: base
+          - name: ros2_gpu
+            path: ./development
+            file: Dockerfile.ros2
+            target: gpu_base
+    with:
+      container_name: ${{ matrix.container.name }}
+      container_path: ${{ matrix.container.path }}
+      container_file: ${{ matrix.container.file }}
+      build_target: ${{ matrix.container.target }}
+      container_tag: ${{ github.sha }}
     secrets:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
