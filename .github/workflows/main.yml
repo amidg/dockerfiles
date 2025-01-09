@@ -8,9 +8,6 @@ on:
     tags:
       - 'v*.*.*'
 
-env:
-  OPENCV_VERSION: 4.10.0
-
 jobs:
   # generic containers for daily use
   build_generic_containers:
@@ -96,7 +93,7 @@ jobs:
       container_path: ${{ matrix.container.path }}
       container_file: ${{ matrix.container.file }}
       build_target: ${{ matrix.container.target }}
-      container_tag: ${{ env.OPENCV_VERSION }}
+      container_tag: 4.10.0
       commit_sha: ${{ github.sha }}
     secrets:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}

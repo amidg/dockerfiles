@@ -36,3 +36,6 @@ apt install -qqy build-essential \
 git clone https://github.com/opencv/opencv.git /tmp/opencv
 cd /tmp/opencv
 git checkout $OPENCV_VERSION
+git clone https://github.com/opencv/opencv_contrib.git
+cd /tmp/opencv/opencv_contrib
+git checkout $OPENCV_VERSION
