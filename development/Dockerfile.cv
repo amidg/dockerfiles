@@ -1,5 +1,5 @@
 # For now Computer Vision is installed only in non-gpu images
-# Dev + OpenCV + Gstreamer
+# Dev + CV
 ARG DEV_CONTAINER_SHA
 FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS opencv
 ARG OPENCV_VERSION
@@ -8,6 +8,16 @@ ENV OPENCV_VERSION=$OPENCV_VERSION
 WORKDIR /app
 COPY ./scripts/install_cv.sh .
 RUN bash ./install_cv.sh
+
+# GPU Base + CV
+FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS opencv
+ARG OPENCV_VERSION
+ENV OPENCV_VERSION=$OPENCV_VERSION
+
+WORKDIR /app
+COPY ./scripts/install_cv.sh .
+RUN bash ./install_cv.sh
+
 
 # ROS2 + OpenCV + Gstreamer
 FROM ghcr.io/amidg/ros2:$DEV_CONTAINER_SHA AS ros2_opencv

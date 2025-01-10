@@ -52,14 +52,14 @@ apt install -qqy build-essential \
     zlib1g-dev
 
 # Build OpenCV with C++ and Python support
+cd /tmp
 git clone --depth=1 --branch $OPENCV_VERSION \
-    https://github.com/opencv/opencv.git /tmp/opencv
+    https://github.com/opencv/opencv.git
 cd /tmp/opencv
 git clone --depth=1 --branch $OPENCV_VERSION \
     https://github.com/opencv/opencv_contrib.git
 mkdir build
 cd build
-#-D CMAKE_INSTALL_PREFIX=/usr/local \
 cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D CMAKE_INSTALL_PREFIX=$(python3 -c "import sys; print(sys.prefix)") \
       -D OPENCV_EXTRA_MODULES_PATH=$(pwd)/../opencv_contrib/modules \
