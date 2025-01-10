@@ -1,29 +1,64 @@
 # For now Computer Vision is installed only in non-gpu images
-# Dev + CV
+# ######## #
+# Dev + CV #
+# ######## #
 ARG DEV_CONTAINER_SHA
 FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS opencv
-ARG OPENCV_VERSION
-ENV OPENCV_VERSION=$OPENCV_VERSION
+ARG BUILD_CONTAINER
 
-WORKDIR /app
-COPY ./scripts/install_cv.sh .
-RUN bash ./install_cv.sh
+# copy build files
+COPY --from=$BUILD_CONTAINER \
+    /app/*.deb \
+    /app
 
-# GPU Base + CV
-FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS opencv
-ARG OPENCV_VERSION
-ENV OPENCV_VERSION=$OPENCV_VERSION
+# install opencv
+COPY ./scripts/install_deb.sh .
+RUN bash ./install_deb.sh
 
-WORKDIR /app
-COPY ./scripts/install_cv.sh .
-RUN bash ./install_cv.sh
+# ############ #
+# dev gpu + CV #
+# ############ #
+FROM ghcr.io/amidg/dev_base_gpu:$DEV_CONTAINER_SHA AS opencv_gpu
+ARG BUILD_CONTAINER
+
+# copy build files
+COPY --from=$BUILD_CONTAINER \
+    /app/*.deb \
+    /app
+
+# install opencv
+COPY ./scripts/install_deb.sh .
+RUN bash ./install_deb.sh
 
 
-# ROS2 + OpenCV + Gstreamer
-FROM ghcr.io/amidg/ros2:$DEV_CONTAINER_SHA AS ros2_opencv
-ARG OPENCV_VERSION
-ENV OPENCV_VERSION=$OPENCV_VERSION
+# ######### #
+# ROS2 + CV #
+# ######### #
+ARG DEV_CONTAINER_SHA
+FROM ghcr.io/amidg/ros2:$DEV_CONTAINER_SHA AS ros2_cv
+ARG BUILD_CONTAINER
 
-WORKDIR /app
-COPY ./scripts/install_cv.sh .
-RUN bash ./install_cv.sh
+# copy build files
+COPY --from=$BUILD_CONTAINER \
+    /app/*.deb \
+    /app
+
+# install opencv
+COPY ./scripts/install_deb.sh .
+RUN bash ./install_deb.sh
+
+
+# ############### #
+# ROS2 + GPU + CV #
+# ############### #
+FROM ghcr.io/amidg/ros2_gpu:$DEV_CONTAINER_SHA AS ros2_gpu_cv
+ARG BUILD_CONTAINER
+
+# copy build files
+COPY --from=$BUILD_CONTAINER \
+    /app/*.deb \
+    /app
+
+# install opencv
+COPY ./scripts/install_deb.sh .
+RUN bash ./install_deb.sh
