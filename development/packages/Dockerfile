@@ -1,20 +1,22 @@
 # This containerfile allows to build any package in this folder
 ARG DEV_CONTAINER_SHA
 FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS base
-ARG OPENCV_VERSION
-ENV OPENCV_VERSION=$OPENCV_VERSION
+ARG PACKAGE_PATH
+ENV PACKAGE_PATH=$PACKAGE_PATH
 
 # copy files from this repo
 WORKDIR /app
-COPY . .
+RUN rm *
+COPY $PACKAGE_PATH .
 
-# install dependencies
+# install package dependencies
 RUN bash ./1-deps.sh
 
-# build image
-RUN bash ./2-build.sh
+# set environment variables
+RUN echo "source /app/2-env.sh" >> ~/.bashrc
 
-# package using debian
-WORKDIR /opencv
-RUN rm *
-RUN mkdir -p opencv-gusevtech/DEBIAN
+# build source code
+RUN bash ./3-build.sh
+
+# build debian package
+RUN bash ./4-deb.sh

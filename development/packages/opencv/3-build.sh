@@ -1,16 +1,21 @@
 #!/bin/bash
 
+# prepare environment
+# TODO: figure out why dockerfile line 16 is not enough
+source /app/2-env.sh
+mkdir -p $OPENCV_CMAKE_INSTALL_PREFIX
+
 # Build OpenCV with C++ and Python support
 cd /tmp
 git clone --depth=1 --branch $OPENCV_VERSION \
-    https://github.com/opencv/opencv.git
+    https://github.com/opencv/opencv.git /tmp/opencv
 cd /tmp/opencv
 git clone --depth=1 --branch $OPENCV_VERSION \
     https://github.com/opencv/opencv_contrib.git
 mkdir build
 cd build
 cmake -D CMAKE_BUILD_TYPE=RELEASE \
-      -D CMAKE_INSTALL_PREFIX=$(python3 -c "import sys; print(sys.prefix)") \
+      -D CMAKE_INSTALL_PREFIX=$OPENCV_CMAKE_INSTALL_PREFIX \
       -D OPENCV_EXTRA_MODULES_PATH=$(pwd)/../opencv_contrib/modules \
       -D INSTALL_C_EXAMPLES=ON \
       -D INSTALL_PYTHON_EXAMPLES=ON \
@@ -25,7 +30,7 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D ENABLE_FAST_MATH=1 \
       -D OPENCV_GENERATE_PKGCONFIG=ON \
       -D BUILD_opencv_cudacodec=OFF \
-      -D OPENCV_PYTHON3_INSTALL_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))") \
+      -D OPENCV_PYTHON3_INSTALL_PATH=$OPENCV_PYTHON3_INSTALL_PATH \
       -D PYTHON_EXECUTABLE=$(which python3) \
       -D WITH_GSTREAMER=ON ..
 cd /tmp/opencv/build
