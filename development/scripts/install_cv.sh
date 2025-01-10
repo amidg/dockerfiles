@@ -52,9 +52,9 @@ apt install -qqy build-essential \
     zlib1g-dev
 
 # Build OpenCV with C++ and Python support
-git clone https://github.com/opencv/opencv.git /tmp/opencv
+git clone --depth=1 --branch $OPENCV_VERSION \
+    https://github.com/opencv/opencv.git /tmp/opencv
 cd /tmp/opencv
-git checkout $OPENCV_VERSION
 git clone --depth=1 --branch $OPENCV_VERSION \
     https://github.com/opencv/opencv_contrib.git
 mkdir build
