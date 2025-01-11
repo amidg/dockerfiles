@@ -4,29 +4,16 @@
 # ######## #
 ARG DEV_CONTAINER_SHA
 FROM ghcr.io/amidg/dev_base:$DEV_CONTAINER_SHA AS opencv
-ARG BUILD_CONTAINER
-
-# copy build files
-COPY --from=$BUILD_CONTAINER \
-    /app/*.deb \
-    /app
-
-# install opencv
+COPY *opencv*.deb .
 COPY ./scripts/install_deb.sh .
 RUN bash ./install_deb.sh
+
 
 # ############ #
 # dev gpu + CV #
 # ############ #
 FROM ghcr.io/amidg/dev_base_gpu:$DEV_CONTAINER_SHA AS opencv_gpu
-ARG BUILD_CONTAINER
-
-# copy build files
-COPY --from=$BUILD_CONTAINER \
-    /app/*.deb \
-    /app
-
-# install opencv
+COPY *opencv*.deb .
 COPY ./scripts/install_deb.sh .
 RUN bash ./install_deb.sh
 
@@ -34,16 +21,8 @@ RUN bash ./install_deb.sh
 # ######### #
 # ROS2 + CV #
 # ######### #
-ARG DEV_CONTAINER_SHA
 FROM ghcr.io/amidg/ros2:$DEV_CONTAINER_SHA AS ros2_cv
-ARG BUILD_CONTAINER
-
-# copy build files
-COPY --from=$BUILD_CONTAINER \
-    /app/*.deb \
-    /app
-
-# install opencv
+COPY *opencv*.deb .
 COPY ./scripts/install_deb.sh .
 RUN bash ./install_deb.sh
 
@@ -52,13 +31,7 @@ RUN bash ./install_deb.sh
 # ROS2 + GPU + CV #
 # ############### #
 FROM ghcr.io/amidg/ros2_gpu:$DEV_CONTAINER_SHA AS ros2_gpu_cv
-ARG BUILD_CONTAINER
-
-# copy build files
-COPY --from=$BUILD_CONTAINER \
-    /app/*.deb \
-    /app
-
-# install opencv
+COPY *opencv*.deb .
 COPY ./scripts/install_deb.sh .
 RUN bash ./install_deb.sh
+
