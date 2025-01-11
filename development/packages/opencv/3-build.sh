@@ -2,7 +2,7 @@
 
 # prepare environment
 # TODO: figure out why dockerfile line 16 is not enough
-source /app/2-env.sh
+source $(pwd)/2-env.sh
 mkdir -p $OPENCV_CMAKE_INSTALL_PREFIX
 
 # Build OpenCV with C++ and Python support

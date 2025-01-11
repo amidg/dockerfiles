@@ -12,9 +12,6 @@ COPY $PACKAGE_PATH .
 # install package dependencies
 RUN bash ./1-deps.sh
 
-# set environment variables
-RUN echo "source /app/2-env.sh" >> ~/.bashrc
-
 # build source code
 RUN bash ./3-build.sh
 
