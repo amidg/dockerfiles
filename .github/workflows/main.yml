@@ -99,6 +99,18 @@ jobs:
             path: ./development
             file: Dockerfile.cv
             target: opencv
+          - name: opencv_gpu
+            path: ./development
+            file: Dockerfile.cv
+            target: opencv_gpu
+          - name: ros2_cv
+            path: ./development
+            file: Dockerfile.cv
+            target: ros2_cv
+          - name: ros2_gpu_cv
+            path: ./development
+            file: Dockerfile.cv
+            target: ros2_gpu_cv
     with:
       container_name: ${{ matrix.container.name }}
       container_path: ${{ matrix.container.path }}
