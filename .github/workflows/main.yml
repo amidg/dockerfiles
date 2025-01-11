@@ -90,22 +90,22 @@ jobs:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
 
   # OpenCV Containers
-  #build_opencv_containers:
-  #  uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
-  #  needs: [build_development_containers, build_ros_containers]
-  #  strategy:
-  #    matrix:
-  #      container:
-  #        - name: opencv
-  #          path: ./development
-  #          file: Dockerfile.cv
-  #          target: opencv
-  #  with:
-  #    container_name: ${{ matrix.container.name }}
-  #    container_path: ${{ matrix.container.path }}
-  #    container_file: ${{ matrix.container.file }}
-  #    build_target: ${{ matrix.container.target }}
-  #    container_tag: 4.10.0
-  #    commit_sha: ${{ github.sha }}
-  #  secrets:
-  #    PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
+  build_opencv_containers:
+    uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
+    needs: [build_development_containers, build_debian_packages, build_ros_containers]
+    strategy:
+      matrix:
+        container:
+          - name: opencv
+            path: ./development
+            file: Dockerfile.cv
+            target: opencv
+    with:
+      container_name: ${{ matrix.container.name }}
+      container_path: ${{ matrix.container.path }}
+      container_file: ${{ matrix.container.file }}
+      build_target: ${{ matrix.container.target }}
+      container_tag: 4.10.0
+      commit_sha: ${{ github.sha }}
+    secrets:
+      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
