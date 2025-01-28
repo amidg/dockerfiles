@@ -12,14 +12,19 @@ services:
     image: ghcr.io/amidg/intel_gpu_tools:latest
 
   # intel igpu deepseek
-  intel_gpu_deepseek:
+  igpu_ollama:
     extends:
       file: base.yml
       service: base_igpu
     profiles:
-      - igpu_deepseek
+      - igpu_ollama
+    container_name: igpu_ollama
     build:
       context: ./ai
-      dockerfile: Dockerfile.intel_gpu.deepseek
+      dockerfile: Dockerfile.intel_ollama
       target: base
-    container_name: igpu_deepseek
+    network_mode: host
+    #command: bash
+    #tty: true
+    volumes:
+      - ./llm:/llm/models:z
