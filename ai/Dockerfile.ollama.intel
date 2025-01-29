@@ -1,0 +1,8 @@
+FROM intelanalytics/ipex-llm-xpu:latest AS base
+
+# initialize ollama
+RUN pip install --pre --upgrade ipex-llm[cpp] && \
+    init-ollama
+
+# copy startup script
+COPY ./start_ollama.sh .
