@@ -6,3 +6,12 @@ RUN pip install --pre --upgrade ipex-llm[cpp] && \
 
 # copy startup script
 COPY ./start_ollama.sh .
+
+
+# use ollam webui
+FROM base AS webui
+
+# install webui
+RUN pip install -U open-webui
+
+CMD ["open-webui serve"]

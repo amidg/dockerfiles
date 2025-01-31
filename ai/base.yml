@@ -1,8 +1,7 @@
 # TODO:
 # - Introduce .env file for configurations
 services:
-  # intel igpu ollama
-  igpu_ollama:
+  igpu_base: &igpu_base
     extends:
       file: ../base.yml
       service: base_igpu
@@ -21,5 +20,9 @@ services:
       - ZES_ENABLE_SYSMAN=1
       - ONEAPI_DEVICE_SELECTOR=level_zero:0
     tty: true
+
+  # intel igpu ollama
+  igpu_ollama:
+    <<: *igpu_base
     entrypoint: >
       bash -c "/llm/ollama serve > /dev/null 2>&1"

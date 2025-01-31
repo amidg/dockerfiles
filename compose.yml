@@ -41,3 +41,14 @@ services:
       # large model that runs very slow on intel iGPU
       #- LLM_MODEL=hf.co/TheBloke/deepseek-coder-33B-instruct-GGUF
       #- LLM_QUANT=Q5_K_M
+
+  # intel igpu deepseek coder
+  igpu_webui:
+    extends:
+      file: ./ai/base.yml
+      service: igpu_base
+    profiles:
+      - igpu_webui
+    container_name: igpu_webui
+    ports:
+      - 3333:8080

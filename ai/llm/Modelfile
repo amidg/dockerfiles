@@ -1,3 +1,0 @@
-FROM hf.co/mradermacher/DeepSeek-R1-Distill-Qwen-1.5B-uncensored-GGUF:Q8_0
-TEMPLATE [INST] {{ .Prompt }} [/INST]
-PARAMETER num_predict 64
