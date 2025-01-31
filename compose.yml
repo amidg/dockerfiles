@@ -46,7 +46,7 @@ services:
   igpu_webui:
     extends:
       file: ./ai/base.yml
-      service: igpu_base
+      service: igpu_webui
     profiles:
       - igpu_webui
     container_name: igpu_webui

@@ -26,3 +26,11 @@ services:
     <<: *igpu_base
     entrypoint: >
       bash -c "/llm/ollama serve > /dev/null 2>&1"
+
+  # intel igpu ollama with webui
+  igpu_webui:
+    <<: *igpu_base
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama.intel
+      target: webui
