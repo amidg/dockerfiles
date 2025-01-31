@@ -12,6 +12,5 @@ COPY ./start_ollama.sh .
 FROM base AS webui
 
 # install webui
-RUN pip install -U open-webui
+RUN pip install --ignore-installed open-webui
 
-CMD ["open-webui serve"]

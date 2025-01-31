@@ -34,3 +34,5 @@ services:
       context: .
       dockerfile: Dockerfile.ollama.intel
       target: webui
+    entrypoint: >
+      bash -c "/usr/local/bin/open-webui serve"
