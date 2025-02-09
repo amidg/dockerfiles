@@ -1,16 +1,12 @@
 FROM intelanalytics/ipex-llm-xpu:latest AS base
+ARG LLM_MODEL
+ARG LLM_QUANT
+ENV LLM_MODEL=$LLM_MODEL
+ENV LLM_QUANT=$LLM_QUANT
 
 # initialize ollama
-RUN pip install --pre --upgrade ipex-llm[cpp] && \
+WORKDIR /llm
+RUN pip install --pre --upgrade \
+    ipex-llm[cpp]==2.2.0b20250204 && \
     init-ollama
-
-# copy startup script
-COPY ./start_ollama.sh .
-
-
-# use ollam webui
-FROM base AS webui
-
-# install webui
-RUN pip install --ignore-installed open-webui
-
+CMD ["bash", "-c", "/llm/ollama serve"]

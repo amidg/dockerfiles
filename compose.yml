@@ -12,43 +12,43 @@ services:
     image: ghcr.io/amidg/intel_gpu_tools:latest
     restart: always
 
-  # intel igpu deepseek coder
-  igpu_coder:
+  # intel igpu ollama server
+  igpu_ollama:
     extends:
       file: ./ai/base.yml
       service: igpu_ollama
     profiles:
-      - igpu_coder
-    container_name: igpu_coder
-    environment:
-      - LLM_MODEL=hf.co/tensorblock/deepseek-coder-7b-instruct-v1.5-GGUF
-      - LLM_QUANT=Q4_K_M
-      # large model that runs very slow on intel iGPU
-      #- LLM_MODEL=hf.co/TheBloke/deepseek-coder-33B-instruct-GGUF
-      #- LLM_QUANT=Q5_K_M
-
-  # intel igpu deepseek coder
-  igpu_chat:
-    extends:
-      file: ./ai/base.yml
-      service: igpu_ollama
-    profiles:
-      - igpu_chat
+      - ai_webui
+      - ai_chat
     container_name: igpu_chat
+    networks:
+      - ollama
+    ports:
+      - 11435:11434
+    hostname: ollama
     environment:
-      - LLM_MODEL=hf.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF
-      - LLM_QUANT=Q5_K_M
-      # large model that runs very slow on intel iGPU
-      #- LLM_MODEL=hf.co/TheBloke/deepseek-coder-33B-instruct-GGUF
-      #- LLM_QUANT=Q5_K_M
-
-  # intel igpu deepseek coder
-  igpu_webui:
-    extends:
-      file: ./ai/base.yml
-      service: igpu_webui
+      - LLM_MODEL
+      - LLM_QUANT
+      
+  # ollama webui to be used alongside local LLM
+  ollama_webui:
+    image: ghcr.io/open-webui/open-webui:main
     profiles:
-      - igpu_webui
-    container_name: igpu_webui
+      - ai_webui
+    container_name: ollama_webui
+    networks:
+      - ollama
     ports:
       - 3333:8080
+    volumes:
+      - ollama-webui:/app/backend/data
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11435
+
+volumes:
+  ollama-webui:
+
+networks:
+  ollama:
+    name: ollama
+    driver: bridge

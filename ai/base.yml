@@ -1,7 +1,7 @@
 # TODO:
 # - Introduce .env file for configurations
 services:
-  igpu_base: &igpu_base
+  igpu_ollama:
     extends:
       file: ../base.yml
       service: base_igpu
@@ -9,7 +9,7 @@ services:
       context: .
       dockerfile: Dockerfile.ollama.intel
       target: base
-    network_mode: host
+    #network_mode: host
     environment:
       - USE_XETLA=OFF
       - SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=0
@@ -20,19 +20,3 @@ services:
       - ZES_ENABLE_SYSMAN=1
       - ONEAPI_DEVICE_SELECTOR=level_zero:0
     tty: true
-
-  # intel igpu ollama
-  igpu_ollama:
-    <<: *igpu_base
-    entrypoint: >
-      bash -c "/llm/ollama serve > /dev/null 2>&1"
-
-  # intel igpu ollama with webui
-  igpu_webui:
-    <<: *igpu_base
-    build:
-      context: .
-      dockerfile: Dockerfile.ollama.intel
-      target: webui
-    entrypoint: >
-      bash -c "/usr/local/bin/open-webui serve"
