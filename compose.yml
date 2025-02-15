@@ -1,0 +1,54 @@
+# TODO:
+# - Introduce .env file for configurations
+services:
+  # intel gpu top
+  intel_gpu_top:
+    extends:
+      file: base.yml
+      service: base_igpu
+    container_name: intel_gpu_top
+    profiles:
+      - igpu_top
+    image: ghcr.io/amidg/intel_gpu_tools:latest
+    restart: always
+
+  # intel igpu ollama server
+  igpu_ollama:
+    extends:
+      file: ./ai/base.yml
+      service: igpu_ollama
+    profiles:
+      - ai_webui
+      - ai_chat
+    container_name: igpu_chat
+    networks:
+      - ollama
+    ports:
+      - 11435:11434
+    hostname: ollama
+    environment:
+      - LLM_MODEL
+      - LLM_QUANT
+      
+  # ollama webui to be used alongside local LLM
+  ollama_webui:
+    image: ghcr.io/open-webui/open-webui:main
+    profiles:
+      - ai_webui
+    container_name: ollama_webui
+    networks:
+      - ollama
+    ports:
+      - 3333:8080
+    volumes:
+      - ollama-webui:/app/backend/data
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11435
+
+volumes:
+  ollama-webui:
+
+networks:
+  ollama:
+    name: ollama
+    driver: bridge

@@ -1,0 +1,13 @@
+services:
+  # base intel igpu node
+  base_igpu: &base_igpu
+    privileged: true
+    security_opt: # disable SELinux for this particular container
+      - label=disable
+    group_add:
+      - "105" # render group
+      - "39" # video group
+    devices:
+      - /dev/dri:/dev/dri
+    restart: always
+    stop_grace_period: 5s
