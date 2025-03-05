@@ -1,21 +1,25 @@
-# default Ubuntu image
+###############
+# Base Images #
+###############
+# Ubuntu 24.04 image
 FROM ubuntu:24.04 AS base
-
-# setup linux system
 WORKDIR /app
 COPY scripts/ .
 RUN bash ./setup_ubuntu.sh
-
-# setup programming tools
 RUN bash ./install_cpp_py.sh
 
 
-# NVDA Image
-FROM nvidia/cuda:12.6.3-devel-ubuntu24.04 AS gpu_base
-# setup linux system
+###############
+# ROS2 Images #
+###############
+FROM osrf/ros:jazzy-desktop-full AS ros_base
 WORKDIR /app
 COPY scripts/ .
 RUN bash ./setup_ubuntu.sh
-
-# setup programming tools
 RUN bash ./install_cpp_py.sh
+
+
+##########################
+# Computer Vision Images #
+##########################
+
