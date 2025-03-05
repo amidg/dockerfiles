@@ -25,6 +25,7 @@ services:
     networks:
       - open-webui-network
 
+  # open web-ui is the same for all GPUs
   open-webui:
     profiles:
       - nvidia_ollama
