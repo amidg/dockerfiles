@@ -12,24 +12,35 @@ services:
     image: ghcr.io/amidg/intel_gpu_tools:latest
     restart: always
 
-  # intel igpu ollama server
-  igpu_ollama:
+  # amd ollama server
+  amd_ollama:
+    profiles:
+      - amd_ollama
     extends:
       file: ./ai/base.yml
-      service: igpu_ollama
-    profiles:
-      - ai_webui
-      - ai_chat
-    container_name: igpu_chat
+      service: amd_ollama
+    container_name: ollama
+    volumes:
+      - ollama:/root/.ollama
     networks:
-      - ollama
-    ports:
-      - 11435:11434
-    hostname: ollama
+      - open-webui-network
+
+  open-webui:
+    profiles:
+      - nvidia_ollama
+      - amd_ollama
+      - intel_ollama
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
     environment:
-      - LLM_MODEL
-      - LLM_QUANT
-      
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - open-webui:/app/backend/data
+    networks:
+      - open-webui-network
+    ports:
+      - "3001:8080"
+
   # ollama webui to be used alongside local LLM
   ollama_webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -46,9 +57,10 @@ services:
       OLLAMA_BASE_URL: http://ollama:11435
 
 volumes:
-  ollama-webui:
-
-networks:
   ollama:
     name: ollama
-    driver: bridge
+  open-webui:
+    name: open-webui
+
+networks:
+  open-webui-network:
