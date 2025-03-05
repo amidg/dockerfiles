@@ -1,12 +1,14 @@
 #!/bin/bash
 
 # Install C++ stuff
-apt update -qqy
-echo "Installing C/C++ development tools"
-apt install -qqy \
-    clang \
+echo "Installing GNU C/C++ development tools"
+apt update -qqy && \
+apt install -qqy --no-install-recommends \
+    software-properties-common \
+    build-essential \
     gcc \
     g++ \
+    gdb \
     cmake \
     ninja-build \
     build-essential \
@@ -15,29 +17,40 @@ apt install -qqy \
     ccache \
     gcovr
 
+# Install Clang
+echo "Installing LLVM"
+apt install -qqy --no-install-recommends \
+    clang-format \
+    clang-tidy \
+    clang-tools \
+    clang \
+    clangd \
+    libc++-dev \
+    libc++1 \
+    libc++abi-dev \
+    libc++abi1 \
+    libclang-dev \
+    libclang1 \
+    liblldb-dev \
+    libllvm-ocaml-dev \
+    libomp-dev \
+    libomp5 \
+    lld \
+    lldb \
+    llvm-dev \
+    llvm-runtime \
+    llvm \
+    python3-clang 
+
 # Install Python dev stuff
 echo "Installing Python development tools"
-apt install -qqy \
+apt install -qqy --no-install-recommends \
     python3 \
     python3-dev \
     python3-pip \
     python3-full \
-    python3-distutils \
     python3-venv \
     python3-argcomplete \
     python3-setuptools \
     python3-wheel \
     ninja-build
-
-# Install Meson
-echo "Installing Meson Build System and packaing tools"
-pip3 install meson
-apt install -qqy \
-    dh-make \
-    file \
-    gdb \
-    ruby \
-    jq
-
-# cannot install anything after this, only for cleaning
-#sudo rm -rf /var/lib/apt/lists/*

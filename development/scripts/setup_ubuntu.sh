@@ -2,7 +2,7 @@
 
 # Set environment variable
 export DEBIAN_FRONTEND=noninteractive
-export TZ="Canada/Pacific"
+export TZ="Etc/UTC"
 export LANG="en_US.UTF-8"
 
 # Update package lists quietly and install necessary updates

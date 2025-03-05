@@ -30,16 +30,16 @@ jobs:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
 
   # Build Development Artifacts
-  build_debian_packages:
-    uses: amidg/workflows/.github/workflows/deb_package.yml@main
-    strategy:
-      matrix:
-        package:
-          - name: opencv
-            path: ./development/packages/opencv
-    with:
-      name: ${{ matrix.package.name }}
-      scripts_path: ${{ matrix.package.path }}
+  #build_debian_packages:
+  #  uses: amidg/workflows/.github/workflows/deb_package.yml@main
+  #  strategy:
+  #    matrix:
+  #      package:
+  #        - name: opencv
+  #          path: ./development/packages/opencv
+  #  with:
+  #    name: ${{ matrix.package.name }}
+  #    scripts_path: ${{ matrix.package.path }}
 
   # Development containers
   build_development_containers:
@@ -51,10 +51,6 @@ jobs:
             path: ./development
             file: Dockerfile
             target: base
-          - name: dev_base_gpu
-            path: ./development
-            file: Dockerfile
-            target: gpu_base
     with:
       container_name: ${{ matrix.container.name }}
       container_path: ${{ matrix.container.path }}
@@ -73,12 +69,8 @@ jobs:
         container:
           - name: ros2
             path: ./development
-            file: Dockerfile.ros2
-            target: base
-          - name: ros2_gpu
-            path: ./development
-            file: Dockerfile.ros2
-            target: gpu_base
+            file: Dockerfile
+            target: ros_base
     with:
       container_name: ${{ matrix.container.name }}
       container_path: ${{ matrix.container.path }}
@@ -89,35 +81,35 @@ jobs:
       PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
 
   # OpenCV Containers
-  build_opencv_containers:
-    uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
-    needs: [build_development_containers, build_debian_packages, build_ros_containers]
-    strategy:
-      matrix:
-        container:
-          - name: opencv
-            path: ./development
-            file: Dockerfile.cv
-            target: opencv
-          - name: opencv_gpu
-            path: ./development
-            file: Dockerfile.cv
-            target: opencv_gpu
-          - name: ros2_cv
-            path: ./development
-            file: Dockerfile.cv
-            target: ros2_cv
-          - name: ros2_gpu_cv
-            path: ./development
-            file: Dockerfile.cv
-            target: ros2_gpu_cv
-    with:
-      container_name: ${{ matrix.container.name }}
-      container_path: ${{ matrix.container.path }}
-      container_file: ${{ matrix.container.file }}
-      build_target: ${{ matrix.container.target }}
-      commit_sha: ${{ github.sha }}
-      download_artifact: true
-      artifact_name: opencv
-    secrets:
-      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
+  #build_opencv_containers:
+  #  uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
+  #  needs: [build_development_containers, build_debian_packages, build_ros_containers]
+  #  strategy:
+  #    matrix:
+  #      container:
+  #        - name: opencv
+  #          path: ./development
+  #          file: Dockerfile.cv
+  #          target: opencv
+  #        - name: opencv_gpu
+  #          path: ./development
+  #          file: Dockerfile.cv
+  #          target: opencv_gpu
+  #        - name: ros2_cv
+  #          path: ./development
+  #          file: Dockerfile.cv
+  #          target: ros2_cv
+  #        - name: ros2_gpu_cv
+  #          path: ./development
+  #          file: Dockerfile.cv
+  #          target: ros2_gpu_cv
+  #  with:
+  #    container_name: ${{ matrix.container.name }}
+  #    container_path: ${{ matrix.container.path }}
+  #    container_file: ${{ matrix.container.file }}
+  #    build_target: ${{ matrix.container.target }}
+  #    commit_sha: ${{ github.sha }}
+  #    download_artifact: true
+  #    artifact_name: opencv
+  #  secrets:
+  #    PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
