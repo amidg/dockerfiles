@@ -17,6 +17,8 @@ WORKDIR /app
 COPY scripts/ .
 RUN bash ./setup_ubuntu.sh
 RUN bash ./install_cpp_py.sh
+RUN bash ./ros2_control.sh
+ENTRYPOINT ["source /opt/ros/$ROS_DISTRO/setup.bash"]
 
 
 ##########################
