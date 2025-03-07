@@ -6,10 +6,10 @@ services:
     extends:
       file: base.yml
       service: base_igpu
+    image: ghcr.io/amidg/intel_gpu_tools:latest
     container_name: intel_gpu_top
     profiles:
       - igpu_top
-    image: ghcr.io/amidg/intel_gpu_tools:latest
     restart: always
 
   # amd ollama server
@@ -17,13 +17,36 @@ services:
     profiles:
       - amd_ollama
     extends:
-      file: ./ai/base.yml
-      service: amd_ollama
+      file: base.yml
+      service: base_gpu
+    image: docker.io/ollama/ollama:rocm
     container_name: ollama
     volumes:
       - ollama:/root/.ollama
     networks:
       - open-webui-network
+
+  # intel ollama server
+  # Mostly used by the neurowolf project
+  igpu_ollama:
+    profiles:
+      - intel_ollama
+    extends:
+      file: base.yml
+      service: base_igpu
+    build:
+      context: ./ai
+      dockerfile: Dockerfile.ollama.intel
+      target: base
+    environment:
+      - USE_XETLA=OFF
+      - SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=0
+      - SYCL_CACHE_PERSISTENT=1
+      - ENABLE_SDP_FUSION=0
+      - OLLAMA_NUM_GPU=999
+      - no_proxy=localhost,127.0.0.1
+      - ZES_ENABLE_SYSMAN=1
+      - ONEAPI_DEVICE_SELECTOR=level_zero:0
 
   # open web-ui is the same for all GPUs
   open-webui:
@@ -41,21 +64,6 @@ services:
       - open-webui-network
     ports:
       - "3001:8080"
-
-  # ollama webui to be used alongside local LLM
-  ollama_webui:
-    image: ghcr.io/open-webui/open-webui:main
-    profiles:
-      - ai_webui
-    container_name: ollama_webui
-    networks:
-      - ollama
-    ports:
-      - 3333:8080
-    volumes:
-      - ollama-webui:/app/backend/data
-    environment:
-      OLLAMA_BASE_URL: http://ollama:11435
 
 volumes:
   ollama:
