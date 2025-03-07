@@ -1,7 +1,6 @@
 services:
   # base profile
   base: &base
-    command: bash
     tty: true
     stdin_open: true
     stop_grace_period: 5s # before SIGKILL
@@ -19,12 +18,14 @@ services:
   # docker nodes are mostly for jetson support
   base_docker: &base_docker
     <<: *base
+    command: bash
     network_mode: host
 
   # base podman
   # this is used on my Fedora desktop
   base_podman: &base_podman
     <<: *base_security
+    command: bash
     network_mode: pasta
 
   # base Mesa GPU
