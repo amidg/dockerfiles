@@ -1,13 +1,67 @@
 services:
-  # base intel igpu node
-  base_igpu: &base_igpu
+  # base profile
+  base: &base
+    command: bash
+    tty: true
+    stdin_open: true
+    stop_grace_period: 5s # before SIGKILL
+
+  # base podman security
+  base_security: &base_security
+    <<: *base
+    security_opt:
+      - label=type:container_runtime_t
+      - seccomp:unconfined
+      # TODO: test the one below
+      #- label=disable
+
+  # base docker
+  # docker nodes are mostly for jetson support
+  base_docker: &base_docker
+    <<: *base
+    network_mode: host
+
+  # base podman
+  # this is used on my Fedora desktop
+  base_podman: &base_podman
+    <<: *base_security
+    network_mode: pasta
+
+  # base Mesa GPU
+  # does not inherit base_podman due to network_mode conflict
+  base_gpu: &base_gpu
+    <<: *base_security
     privileged: true
-    security_opt: # disable SELinux for this particular container
+    cap_add:
+      - SYS_PTRACE
+    devices:
+      - /dev/kfd
+      - /dev/dri
+
+  # base intel gpu
+  base_igpu:
+    <<: *base_gpu
+    security_opt:
       - label=disable
     group_add:
       - "105" # render group
       - "39" # video group
-    devices:
-      - /dev/dri:/dev/dri
-    restart: always
-    stop_grace_period: 5s
+
+  # base nvidia
+  # TODO: rework this after Podman 5.4.0
+  # Introduce separate profiles:
+  # - Jetson
+  # - Podman
+  base_nvidia: &base_nvidia
+    <<: *base_docker
+    runtime: nvidia
+
+  # base gui dev
+  # this is used on the desktop for gui applications
+  # allows to pass AMD/Intel GPU device
+  base_gui: &base_gui
+    <<: *base_gpu
+    environment:
+      - DISPLAY
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
