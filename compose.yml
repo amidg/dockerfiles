@@ -64,6 +64,7 @@ services:
       - open-webui-network
     ports:
       - "3001:8080"
+      - "11434:11434"
 
 volumes:
   ollama:
@@ -73,3 +74,4 @@ volumes:
 
 networks:
   open-webui-network:
+    driver: bridge
