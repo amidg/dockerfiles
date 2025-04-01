@@ -16,6 +16,7 @@ services:
   amd_ollama:
     profiles:
       - amd_ollama
+      - ollama
     extends:
       file: base.yml
       service: base_gpu
@@ -25,6 +26,8 @@ services:
       - ollama:/root/.ollama
     networks:
       - open-webui-network
+    ports:
+      - "11434:11434"
 
   # intel ollama server
   # Mostly used by the neurowolf project
@@ -51,20 +54,17 @@ services:
   # open web-ui is the same for all GPUs
   open-webui:
     profiles:
-      - nvidia_ollama
-      - amd_ollama
-      - intel_ollama
+      - ollama
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://192.168.0.199:11434
     volumes:
       - open-webui:/app/backend/data
     networks:
       - open-webui-network
     ports:
       - "3001:8080"
-      - "11434:11434"
 
 volumes:
   ollama:
