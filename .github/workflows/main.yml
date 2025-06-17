@@ -1,115 +1,46 @@
 name: Build dockerfiles
 
+# Trigger this workflow on pushes to any branch and tags matching v*.*.*
 on:
   push:
-    branches:
-      - main
-      - dev-tools
-      - dev
-    tags:
-      - 'v*.*.*'
+    branches: [ '*' ]
+    tags: [ 'v*.*.*' ]
 
 jobs:
   # generic containers for daily use
-  build_generic_containers:
-    uses: amidg/workflows/.github/workflows/build_container.yml@main
-    strategy:
-      matrix:
-        container:
-          - name: cups_samsung
-            path: ./cups-samsung
-            file: Dockerfile
-          - name: intel_gpu_tools
-            path: ./tools
-            file: Dockerfile.intel_gpu_top
-    with:
-      container_name: ${{ matrix.container.name }}
-      container_path: ${{ matrix.container.path }}
-      container_file: ${{ matrix.container.file }}
-      container_tag: ${{ github.sha }}
-    secrets:
-      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
-
-  # Build Development Artifacts
-  #build_debian_packages:
-  #  uses: amidg/workflows/.github/workflows/deb_package.yml@main
-  #  strategy:
-  #    matrix:
-  #      package:
-  #        - name: opencv
-  #          path: ./development/packages/opencv
-  #  with:
-  #    name: ${{ matrix.package.name }}
-  #    scripts_path: ${{ matrix.package.path }}
-
-  # Development containers
-  build_development_containers:
-    uses: amidg/workflows/.github/workflows/build_container.yml@main
-    strategy:
-      matrix:
-        container:
-          - name: dev_base
-            path: ./development
-            file: Dockerfile
-            target: base
-    with:
-      container_name: ${{ matrix.container.name }}
-      container_path: ${{ matrix.container.path }}
-      container_file: ${{ matrix.container.file }}
-      build_target: ${{ matrix.container.target }}
-      container_tag: ${{ github.sha }}
-    secrets:
-      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
-
-  # ROS2 containers
-  build_ros_containers:
-    uses: amidg/workflows/.github/workflows/build_container.yml@main
-    strategy:
-      matrix:
-        container:
-          - name: ros2
-            path: ./development
-            file: Dockerfile
-            target: ros_base
-    with:
-      container_name: ${{ matrix.container.name }}
-      container_path: ${{ matrix.container.path }}
-      container_file: ${{ matrix.container.file }}
-      build_target: ${{ matrix.container.target }}
-      container_tag: ${{ github.sha }}
-    secrets:
-      PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
-
-  # OpenCV Containers
-  #build_opencv_containers:
-  #  uses: amidg/workflows/.github/workflows/build_dependable_container.yml@main
-  #  needs: [build_development_containers, build_debian_packages, build_ros_containers]
+  #build_generic_containers:
+  #  uses: amidg/workflows/.github/workflows/build_container.yml@main
   #  strategy:
   #    matrix:
   #      container:
-  #        - name: opencv
-  #          path: ./development
-  #          file: Dockerfile.cv
-  #          target: opencv
-  #        - name: opencv_gpu
-  #          path: ./development
-  #          file: Dockerfile.cv
-  #          target: opencv_gpu
-  #        - name: ros2_cv
-  #          path: ./development
-  #          file: Dockerfile.cv
-  #          target: ros2_cv
-  #        - name: ros2_gpu_cv
-  #          path: ./development
-  #          file: Dockerfile.cv
-  #          target: ros2_gpu_cv
+  #        - name: cups_samsung
+  #          path: ./cups-samsung
+  #          file: Dockerfile
+  #        - name: intel_gpu_tools
+  #          path: ./tools
+  #          file: Dockerfile.intel_gpu_top
   #  with:
   #    container_name: ${{ matrix.container.name }}
   #    container_path: ${{ matrix.container.path }}
   #    container_file: ${{ matrix.container.file }}
-  #    build_target: ${{ matrix.container.target }}
-  #    commit_sha: ${{ github.sha }}
-  #    download_artifact: true
-  #    artifact_name: opencv
+  #    container_tag: ${{ github.sha }}
   #  secrets:
-  #    PODMAN_TOKEN: ${{ secrets.PODMAN_TOKEN }}
+  #    CONTAINER_TOKEN: ${{ secrets.CONTAINER_TOKEN }}
+
+  # Build Development Container
+  # This container provides my custom setup for C++ and Python development
+  build_development:
+    uses: amidg/workflows/.github/workflows/build_docker_multiarch.yml@main
+    strategy:
+      matrix:
+        include:
+          - container_name: developer
+            build_target: base
+    with:
+      container_name: ${{ matrix.container_name }}
+      container_file: development/Containerfile
+      container_tag: ${{ github.ref == 'refs/heads/main' && 'latest' || github.sha }}
+      build_target: ${{ matrix.build_target }}
+    secrets:
+      CONTAINER_TOKEN: ${{ secrets.CONTAINER_TOKEN }}
+
