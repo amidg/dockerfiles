@@ -1,0 +1,88 @@
+# Development container
+FROM ubuntu:latest AS base
+SHELL ["/bin/bash", "-c"]
+
+# set main env variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ="Etc/UTC"
+ENV LANG="en_US.UTF-8"
+
+# setup core ubuntu packages
+RUN apt update -qqy && \
+    apt upgrade -qqy && \
+    apt install -qqy \
+        locales \
+        wget \
+        curl \
+        git \
+        apt-utils \
+        iputils-ping \
+        gnupg \
+        apt-transport-https \
+        ca-certificates \
+        nodejs \
+        npm \
+        vim \
+        neovim
+
+# Setup Locales
+RUN ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime && \
+    echo "$TZ" >/etc/timezone && \
+    echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=${LANG} LC_ALL=${LANG} LANGUAGE=
+
+# Install core developer tools
+RUN echo "Installing GNU C/C++ development tools" && \
+    apt update -qqy && \
+    apt install -qqy --no-install-recommends \
+        software-properties-common \
+        build-essential \
+        gcc \
+        g++ \
+        gdb \
+        cmake \
+        ninja-build \
+        build-essential \
+        cppcheck \
+        doxygen \
+        ccache \
+        gcovr
+
+# Install Clang
+RUN echo "Installing LLVM" && \
+    apt install -qqy --no-install-recommends \
+        clang-format \
+        clang-tidy \
+        clang-tools \
+        clang \
+        clangd \
+        libc++-dev \
+        libc++1 \
+        libc++abi-dev \
+        libc++abi1 \
+        libclang-dev \
+        libclang1 \
+        liblldb-dev \
+        libllvm-ocaml-dev \
+        libomp-dev \
+        libomp5 \
+        lld \
+        lldb \
+        llvm-dev \
+        llvm-runtime \
+        llvm \
+        python3-clang 
+
+# Install Python dev stuff
+RUN echo "Installing Python development tools" && \
+    apt install -qqy --no-install-recommends \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-full \
+        python3-venv \
+        python3-argcomplete \
+        python3-setuptools \
+        python3-wheel \
+        ninja-build
