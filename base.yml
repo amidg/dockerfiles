@@ -11,8 +11,6 @@ services:
     security_opt:
       - label=type:container_runtime_t
       - seccomp:unconfined
-      # TODO: test the one below
-      #- label=disable
 
   # base docker
   # docker nodes are mostly for jetson support
@@ -31,31 +29,27 @@ services:
   # base Mesa GPU
   # does not inherit base_podman due to network_mode conflict
   base_gpu: &base_gpu
-    <<: *base_security
     privileged: true
     cap_add:
       - SYS_PTRACE
     devices:
-      - /dev/kfd
       - /dev/dri
 
-  # base intel gpu
-  base_igpu:
+  # amdgpu
+  base_amdgpu:
     <<: *base_gpu
-    security_opt:
-      - label=disable
-    group_add:
-      - "105" # render group
-      - "39" # video group
+    devices:
+      - /dev/kfd
+      - /dev/dri
 
   # base nvidia
   # TODO: rework this after Podman 5.4.0
   # Introduce separate profiles:
   # - Jetson
   # - Podman
-  base_nvidia: &base_nvidia
-    <<: *base_docker
-    runtime: nvidia
+  #base_nvidia: &base_nvidia
+  #  <<: *base_docker
+  #  runtime: nvidia
 
   # base gui dev
   # this is used on the desktop for gui applications
