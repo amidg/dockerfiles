@@ -3,13 +3,13 @@
 services:
   # intel gpu top
   intel_gpu_top:
-    extends:
-      file: base.yml
-      service: base_igpu
-    image: ghcr.io/amidg/intel_gpu_tools:latest
-    container_name: intel_gpu_top
     profiles:
       - igpu_top
+    extends:
+      file: base.yml
+      service: base_gpu
+    image: ghcr.io/amidg/intel_gpu_tools:latest
+    container_name: intel_gpu_top
     restart: always
 
   # amd ollama server
@@ -19,7 +19,7 @@ services:
       - ollama
     extends:
       file: base.yml
-      service: base_gpu
+      service: base_amdgpu
     image: docker.io/ollama/ollama:rocm
     container_name: ollama
     volumes:
@@ -36,7 +36,7 @@ services:
       - intel_ollama
     extends:
       file: base.yml
-      service: base_igpu
+      service: base_gpu
     build:
       context: ./ai
       dockerfile: Dockerfile.ollama.intel
