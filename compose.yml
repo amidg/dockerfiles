@@ -1,6 +1,28 @@
 # TODO:
 # - Introduce .env file for configurations
 services:
+  # nvidia ollama - docker only for now
+  ollama:
+    profiles:
+      - nvda_ollama
+    image: ollama/ollama
+    container_name: ollama
+    #ports:
+    #  - "11434:11434"
+    network_mode: host
+    #networks:
+    #  - open-webui-network
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: always
+
   # intel gpu top
   intel_gpu_top:
     extends:
@@ -55,16 +77,18 @@ services:
   open-webui:
     profiles:
       - ollama
+      - nvda_ollama
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:
-      - OLLAMA_BASE_URL=http://192.168.0.199:11434
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434
     volumes:
       - open-webui:/app/backend/data
-    networks:
-      - open-webui-network
-    ports:
-      - "3001:8080"
+    network_mode: host
+    #networks:
+    #  - open-webui-network
+    #ports:
+    #  - "3001:8080"
 
 volumes:
   ollama:
