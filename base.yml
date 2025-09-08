@@ -11,11 +11,12 @@ services:
     security_opt:
       - label=type:container_runtime_t
       - seccomp:unconfined
-      # TODO: test the one below
+      # NOTE: one below always works
+      # but it is very unsecure
       #- label=disable
 
   # base docker
-  # docker nodes are mostly for jetson support
+  # docker nodes are mostly for old jetson platform support
   base_docker: &base_docker
     <<: *base
     command: bash
@@ -30,18 +31,23 @@ services:
 
   # base Mesa GPU
   # does not inherit base_podman due to network_mode conflict
-  base_gpu: &base_gpu
+  base_mesa_gpu: &base_mesa_gpu
     <<: *base_security
     privileged: true
     cap_add:
       - SYS_PTRACE
     devices:
-      - /dev/kfd
+      - /dev/dri
+
+  base_amdgpu: &base_amdgpu
+    <<: *base_mesa_gpu
+    devices:
+      - /dev/kfd # seems to be needed only for ROCm
       - /dev/dri
 
   # base intel gpu
   base_igpu:
-    <<: *base_gpu
+    <<: *base_mesa_gpu
     security_opt:
       - label=disable
     group_add:
@@ -53,15 +59,15 @@ services:
   # Introduce separate profiles:
   # - Jetson
   # - Podman
-  base_nvidia: &base_nvidia
-    <<: *base_docker
-    runtime: nvidia
+  #base_nvidia: &base_nvidia
+  #  <<: *base_docker
+  #  runtime: nvidia
 
   # base gui dev
   # this is used on the desktop for gui applications
   # allows to pass AMD/Intel GPU device
   base_gui: &base_gui
-    <<: *base_gpu
+    <<: *base_mesa_gpu
     environment:
       - DISPLAY
     volumes:

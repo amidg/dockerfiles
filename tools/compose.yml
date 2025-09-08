@@ -1,0 +1,13 @@
+# TODO:
+# - Introduce .env file for configurations
+services:
+  intel_gpu_top:
+    extends:
+      file: ../base.yml
+      service: base_igpu
+    image: ghcr.io/amidg/intel_gpu_tools:latest
+    container_name: intel_gpu_top
+    profiles:
+      - intel_gpu_top
+    restart: always
+
