@@ -51,6 +51,7 @@ services:
     <<: [*base_ollama, *base_intel_ollama]
     profiles:
       - intel_ollama
+      - intel_ollama_server
     container_name: intel_ollama_server
 
   # open web-ui is the same for all GPUs
