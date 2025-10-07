@@ -1,9 +1,0 @@
-# TODO:
-# - Introduce .env file for configurations
-services:
-  # intel gpu top
-  intel_gpu_top:
-    extends:
-      file: tools/compose.yml
-      service: intel_gpu_top
-
