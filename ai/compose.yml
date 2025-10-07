@@ -15,14 +15,32 @@ services:
     ports:
       - 11434:11434
 
-  # base intel ollama server
-  base_intel_ollama: &base_intel_ollama
+  #########################
+  # OLLAMA SERVICES
+  #########################
+  # amd ollama server
+  amd_ollama:
+    <<: [*base_ollama]
     profiles:
-      - null_profile
+      - amd_ollama
+      - amd_ollama_server
+    extends:
+      file: ../base.yml
+      service: base_amdgpu
+    image: docker.io/ollama/ollama:rocm
+    container_name: amd_ollama_server
+
+  # intel ollama server
+  intel_ollama:
+    <<: [*base_ollama]
+    profiles:
+      - intel_ollama
+      - intel_ollama_server
     extends:
       file: ../base.yml
       service: base_mesa_gpu
     image: intelanalytics/ipex-llm-inference-cpp-xpu:latest
+    container_name: intel_ollama_server
     environment:
       - no_proxy=localhost,127.0.0.1
       - OLLAMA_HOST=0.0.0.0
@@ -31,28 +49,6 @@ services:
       - OLLAMA_NUM_GPU=999
       - ZES_ENABLE_SYSMAN=1
     command: sh -c 'mkdir -p /llm/ollama && cd /llm/ollama && init-ollama && exec ./ollama serve'
-
-  #########################
-  # OLLAMA SERVICES
-  #########################
-  # amd ollama server
-  #amd_ollama:
-  #  <<: *base_ollama
-  #  profiles:
-  #    - amd_ollama
-  #  extends:
-  #    file: ../base.yml
-  #    service: base_gpu
-  #  image: docker.io/ollama/ollama:rocm
-  #  container_name: ollama
-
-  # intel ollama server
-  intel_ollama:
-    <<: [*base_ollama, *base_intel_ollama]
-    profiles:
-      - intel_ollama
-      - intel_ollama_server
-    container_name: intel_ollama_server
 
   # open web-ui is the same for all GPUs
   open-webui:
