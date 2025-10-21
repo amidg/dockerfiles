@@ -28,7 +28,10 @@ services:
       file: ../base.yml
       service: base_amdgpu
     image: docker.io/ollama/ollama:rocm
-    container_name: amd_ollama_server
+    container_name: ollama_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - OLLAMA_HOST=0.0.0.0
 
   # intel ollama server
   intel_ollama:
@@ -40,7 +43,7 @@ services:
       file: ../base.yml
       service: base_mesa_gpu
     image: intelanalytics/ipex-llm-inference-cpp-xpu:latest
-    container_name: intel_ollama_server
+    container_name: ollama_server
     environment:
       - no_proxy=localhost,127.0.0.1
       - OLLAMA_HOST=0.0.0.0
@@ -60,13 +63,13 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:
-      - OLLAMA_BASE_URL=http://0.0.0.0:11434
+      - OLLAMA_BASE_URL=http://ollama_server:11434
     volumes:
       - open-webui:/app/backend/data
     networks:
       - open-webui-network
     ports:
-      - 3001:8000
+      - 8080:8080
 
 volumes:
   ollama:
