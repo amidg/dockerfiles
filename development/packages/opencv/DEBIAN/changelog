@@ -1,5 +1,0 @@
-libopencv-dev (4.10.0-gusevtech) unstable; urgency=low
-
-  * feat: OpenCV with additional build flags
-
- -- Dmitrii Gusev <amidg4x4dima@gmail.com>  Fri, 10 Jan 2025 12:00:00 +0000
