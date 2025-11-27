@@ -1,0 +1,13 @@
+# Containerfile for iperf3
+FROM fedora:latest
+
+# Install iperf3
+RUN dnf install -y iperf3
+
+# Expose default iperf3 ports
+EXPOSE 5201/tcp
+EXPOSE 5201/udp
+
+# Set the entrypoint to iperf3
+ENTRYPOINT ["/usr/bin/iperf3"]
+CMD ["--help"]
