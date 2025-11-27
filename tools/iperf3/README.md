@@ -11,7 +11,7 @@ sudo podman run -it --rm \
   --name iperf3-server \
   --network host \
   --privileged \
-  fedora-iperf3:latest \
+  iperf3:latest \
   -s
 ```
 
@@ -30,7 +30,7 @@ sudo podman run --rm \
   --network host \
   --privileged \
   iperf3:latest \
-  -c <SERVER_IP_ADDRESS> \
+  -c <SERVER_IP_ADDRESS>
 ```
 
 ### Simple UDP Test
