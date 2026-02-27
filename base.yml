@@ -55,13 +55,25 @@ services:
       - "39" # video group
 
   # base nvidia
-  # TODO: rework this after Podman 5.4.0
-  # Introduce separate profiles:
-  # - Jetson
-  # - Podman
-  #base_nvidia: &base_nvidia
-  #  <<: *base_docker
-  #  runtime: nvidia
+  # NOTE (Dmitrii): support is limited
+  # - only x86 systems (do not use this for jetson)
+  # - only docker (podman support to be added later)
+  # If you want to add this to your modular compose create a dummy service extended from here
+  # example_nvidia_service: &example_nvidia_service
+  #   extends:
+  #     file: /path/to/base.yml
+  #     service: base_nvidia
+  # Then add it to your desired service, e.g. based on base_gui below
+  # extended_service:
+  # <<: *example_nvidia_service
+  base_nvidia:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # base gui dev
   # this is used on the desktop for gui applications
