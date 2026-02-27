@@ -8,9 +8,9 @@ services:
     container_name: cups
     privileged: true
     volumes:
-      - /dev/bus/usb:/dev/bus/usb # keep this under volumes, not devices
-      - /run/dbus:/run/dbus
-      - ./cupsd.conf:/etc/cups/cupsd.conf
+      - /dev:/dev:z
+      - /run/dbus:/run/dbus:z
+      - ./cupsd.conf:/etc/cups/cupsd.conf:Z
     ports:
       - 631:631/tcp
     restart: always
