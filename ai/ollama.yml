@@ -53,13 +53,28 @@ services:
       - ZES_ENABLE_SYSMAN=1
     command: sh -c 'mkdir -p /llm/ollama && cd /llm/ollama && init-ollama && exec ./ollama serve'
 
+  # intel ollama server
+  nvidia_ollama:
+    <<: [*base_ollama]
+    profiles:
+      - nvidia_ollama
+      - nvidia_ollama_server
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    image: ollama/ollama:latest
+    container_name: ollama_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - OLLAMA_HOST=0.0.0.0
+
   # open web-ui is the same for all GPUs
   open-webui:
     profiles:
       - webui
       - intel_ollama
       - amd_ollama
-      - nvda_ollama
+      - nvidia_ollama
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:

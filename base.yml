@@ -75,6 +75,10 @@ services:
               count: all
               capabilities: [gpu]
 
+  #base_nvidia_podman:
+  #  devices:
+  #   - nvidia.com/gpu=all
+
   # base gui dev
   # this is used on the desktop for gui applications
   # allows to pass AMD/Intel GPU device
