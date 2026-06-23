@@ -1,0 +1,101 @@
+# llama.cpp + llama-swap inference stack
+# Usage: podman-compose -f ai/llama-cpp.yml --profile <gpu>_llama_cpp up -d
+# where <gpu> is: amd, intel, or nvidia
+#
+# TODO:
+# - Add .env file for model paths and config overrides
+# - Add health checks for all services
+
+services:
+  #########################
+  # BASE SERVICES
+  #########################
+  # base llama-swap service
+  base_llama_swap: &base_llama_swap
+    profiles:
+      - null_profile
+    volumes:
+      - ${HOME}/.llama/models:/models:z
+      - ./llama-swap-config.yaml:/app/config.yaml:ro
+    networks:
+      - llama-swap-network
+    ports:
+      - 8081:8080
+    environment:
+      - no_proxy=localhost,127.0.0.1
+    command: /app/llama-swap -config /app/config.yaml -listen 0.0.0.0:8080
+
+  #########################
+  # LLAMA-SWAP SERVICES
+  #########################
+  # amd llama-swap server
+  amd_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - amd_llama_cpp
+      - amd_llama_cpp_server
+    extends:
+      file: ../base.yml
+      service: base_amdgpu
+    image: ghcr.io/mostlygeek/llama-swap:rocm
+    container_name: llama_swap_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      # - HSA_OVERRIDE_GFX_VERSION=11.0.0  # uncomment for specific AMD GPU
+
+  # intel llama-swap server (Vulkan backend)
+  intel_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - intel_llama_cpp
+      - intel_llama_cpp_server
+    extends:
+      file: ../base.yml
+      service: base_mesa_gpu
+    image: ghcr.io/mostlygeek/llama-swap:vulkan
+    container_name: llama_swap_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      # - GGML_VULKAN_DEVICE=0  # uncomment to select specific GPU device
+
+  # nvidia llama-swap server
+  nvidia_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - nvidia_llama_cpp
+      - nvidia_llama_cpp_server
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    image: ghcr.io/mostlygeek/llama-swap:cuda
+    container_name: llama_swap_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+
+  # open web-ui frontend (OpenAI-compatible API mode)
+  open-webui:
+    profiles:
+      - webui
+      - intel_llama_cpp
+      - amd_llama_cpp
+      - nvidia_llama_cpp
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    environment:
+      - OPENAI_API_BASE_URL=http://llama_swap_server:8080/v1
+      - OPENAI_API_KEY=sk-no-key-required
+      - ENABLE_OLLAMA_API=false
+    volumes:
+      - open-webui:/app/backend/data
+    networks:
+      - llama-swap-network
+    ports:
+      - 8080:8080
+
+volumes:
+  open-webui:
+    name: open-webui
+
+networks:
+  llama-swap-network:
+    driver: bridge
