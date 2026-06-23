@@ -1,9 +1,12 @@
-# llama.cpp + llama-swap inference stack
+# llama.cpp + llama-swap inference stack with LiteLLM gateway
 # Usage: podman-compose -f ai/llama-cpp.yml --profile <gpu>_llama_cpp up -d
 # where <gpu> is: amd, intel, or nvidia
 #
+# LiteLLM routes to local models (via llama-swap) and cloud providers (Anthropic, Gemini).
+# Agents point to http://litellm:4000/v1 with LITELLM_MASTER_KEY and pick a model_name.
+# Config: ai/litellm-config.yaml | Secrets: ai/litellm.env
+#
 # TODO:
-# - Add .env file for model paths and config overrides
 # - Add health checks for all services
 
 services:
@@ -72,7 +75,29 @@ services:
     environment:
       - no_proxy=localhost,127.0.0.1
 
-  # open web-ui frontend (OpenAI-compatible API mode)
+  # LiteLLM gateway: one OpenAI-compatible endpoint -> local + cloud models
+  litellm:
+    profiles:
+      - litellm
+      - intel_llama_cpp
+      - amd_llama_cpp
+      - nvidia_llama_cpp
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    env_file:
+      - path: litellm.env
+        required: true
+    environment:
+      - no_proxy=localhost,127.0.0.1
+    networks:
+      - llama-swap-network
+    ports:
+      - 4000:4000
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+
+  # open web-ui frontend (routes through LiteLLM)
   open-webui:
     profiles:
       - webui
@@ -81,9 +106,12 @@ services:
       - nvidia_llama_cpp
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
+    env_file:
+      - path: litellm.env
+        required: true
     environment:
-      - OPENAI_API_BASE_URL=http://llama_swap_server:8080/v1
-      - OPENAI_API_KEY=sk-no-key-required
+      - OPENAI_API_BASE_URL=http://litellm:4000/v1
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
       - ENABLE_OLLAMA_API=false
     volumes:
       - open-webui:/app/backend/data
