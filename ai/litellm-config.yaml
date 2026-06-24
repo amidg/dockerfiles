@@ -1,9 +1,40 @@
 model_list:
   # ---- Local (llama-swap / llama.cpp) ----
   # model_name must match a key in llama-swap-config.yaml
-  - model_name: llama-3.1-8b
+  # llama-swap handles all inference params; only routing info needed here
+  - model_name: gemma-4-12b
     litellm_params:
-      model: openai/llama-3.1-8b
+      model: openai/gemma-4-12b        # dense 12B, 64K ctx, Q4 KV cache (6.7GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-26b
+    litellm_params:
+      model: openai/gemma-4-26b        # MoE 26B/A4B, 64K ctx (16GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: qwen3.5-9b
+    litellm_params:
+      model: openai/qwen3.5-9b         # Qwen3.5 9B, 64K ctx, 8GB VRAM (5.6GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: qwen3-coder-30b
+    litellm_params:
+      model: openai/qwen3-coder-30b    # MoE coder 30B/A3B, 64K ctx (17GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-e2b
+    litellm_params:
+      model: openai/gemma-4-e2b        # MoE expert 2B active, 64K ctx (3.0GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-e4b
+    litellm_params:
+      model: openai/gemma-4-e4b        # MoE expert 4B active, 64K ctx (~5GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
@@ -12,19 +43,37 @@ model_list:
     litellm_params:
       model: anthropic/claude-opus-4-8
       api_key: os.environ/ANTHROPIC_API_KEY
+
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ---- Gemini ----
-  - model_name: gemini-2.5-pro
+  - model_name: claude-haiku-4-5
     litellm_params:
-      model: gemini/gemini-2.5-pro
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---- Google Gemini ----
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: gemini/gemini-3.1-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini/gemini-3.5-flash
       api_key: os.environ/GEMINI_API_KEY
 
 litellm_settings:
   drop_params: true
+  num_retries: 3                     # workaround: prevents NoneType > int crash in router
+  log_model_api_calls: true          # log all API calls
+  log_model_api_calls_to_db: true    # log to DB for spend tracking
+  ui_access_controls:
+    admin_only: true                 # /ui only accessible to admin
+  database_type: postgres            # explicit DB type
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

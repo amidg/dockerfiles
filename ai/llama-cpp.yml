@@ -2,14 +2,43 @@
 # Usage: podman-compose -f ai/llama-cpp.yml --profile <gpu>_llama_cpp up -d
 # where <gpu> is: amd, intel, or nvidia
 #
-# LiteLLM routes to local models (via llama-swap) and cloud providers (Anthropic, Gemini).
+# Services:
+#  - llama-swap: local GGUF models via hot-swapping
+#  - litellm: OpenAI-compatible gateway (routes to local + cloud providers)
+#  - open-webui: web UI (points to LiteLLM)
+#  - postgres: tracks LiteLLM spending and virtual key management
+#
 # Agents point to http://litellm:4000/v1 with LITELLM_MASTER_KEY and pick a model_name.
-# Config: ai/litellm-config.yaml | Secrets: ai/litellm.env
+# Admin UI: http://localhost:4000/ui (login with master key)
+# Config: ai/litellm-config.yaml | Secrets: ai/litellm.env | DB: postgres://litellm:5432/litellm
 #
 # TODO:
 # - Add health checks for all services
 
 services:
+  #########################
+  # DATABASE
+  #########################
+  # Postgres for LiteLLM spend tracking and virtual keys
+  postgres:
+    image: postgres:16-alpine
+    hostname: postgres
+    container_name: litellm_postgres
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-litellm}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-litellm}
+      - POSTGRES_DB=${POSTGRES_DB:-litellm}
+    volumes:
+      - litellm_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER:-litellm} -d ${POSTGRES_DB:-litellm}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   #########################
   # BASE SERVICES
   #########################
@@ -19,7 +48,7 @@ services:
       - null_profile
     volumes:
       - ${HOME}/.llama/models:/models:z
-      - ./llama-swap-config.yaml:/app/config.yaml:ro
+      - ./llama-swap-config.yaml:/app/config.yaml:z,ro
     networks:
       - llama-swap-network
     ports:
@@ -85,16 +114,20 @@ services:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: litellm
     volumes:
-      - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./litellm-config.yaml:/app/config.yaml:z,ro
     env_file:
-      - path: litellm.env
+      - path: ./litellm.env
         required: true
     environment:
       - no_proxy=localhost,127.0.0.1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-litellm}:${POSTGRES_PASSWORD:-litellm}@postgres:5432/${POSTGRES_DB:-litellm}
     networks:
       - llama-swap-network
     ports:
       - 4000:4000
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
 
   # open web-ui frontend (routes through LiteLLM)
@@ -107,12 +140,12 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     env_file:
-      - path: litellm.env
+      - path: ./litellm.env
         required: true
     environment:
       - OPENAI_API_BASE_URL=http://litellm:4000/v1
-      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
       - ENABLE_OLLAMA_API=false
+      # OPENAI_API_KEY is loaded from litellm.env (must equal LITELLM_MASTER_KEY)
     volumes:
       - open-webui:/app/backend/data
     networks:
@@ -123,6 +156,8 @@ services:
 volumes:
   open-webui:
     name: open-webui
+  litellm_postgres:
+    name: litellm_postgres
 
 networks:
   llama-swap-network:

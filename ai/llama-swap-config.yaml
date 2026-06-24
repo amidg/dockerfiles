@@ -8,31 +8,97 @@
 healthCheckTimeout: 60
 
 models:
+  #############################################################################
+  # BIG MODELS — 24GB VRAM, 64K context
+  #############################################################################
+
   # Gemma 4 12B - instruction tuned, Q4_K_M (6.7GB)
-  # Fast model, good for quick responses and testing
+  # 17GB headroom → parallel 3, q8_0 KV cache
   "gemma-4-12b":
-    cmd: >
-      /app/llama-server
-      --model /models/gemma-4-12b-it-Q4_K_M.gguf
-      --host 127.0.0.1 --port ${PORT}
-      -ngl 99 --ctx-size 8192 --parallel 2
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-12b-it-Q4_K_M.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 3 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
     proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600        # unload after 10 min idle
+    ttl: 600
 
-  # Gemma 4 26B - instruction tuned, Q4_K_M (16GB)
-  # Larger model, better quality but slower and uses more VRAM
+  # Gemma 4 26B - instruction tuned, MoE (A4B), Q4_K_M (16GB)
+  # 8GB headroom for KV cache at 64K → parallel 1, q8_0 KV cache
   "gemma-4-26b":
-    cmd: >
-      /app/llama-server
-      --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
-      --host 127.0.0.1 --port ${PORT}
-      -ngl 99 --ctx-size 4096 --parallel 1
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
     proxy: "http://127.0.0.1:${PORT}"
-    ttl: 300        # shorter idle timeout to free VRAM
+    ttl: 300
 
-# Key points:
-# - ${PORT} is auto-substituted by llama-swap for each model's subprocess
-# - -ngl 99 offloads all layers to GPU (change to 30-40 if VRAM is tight)
-# - --ctx-size controls max context length (higher = more VRAM)
-# - --parallel controls concurrent requests (1 = sequential, 2+ = parallel)
-# - ttl: 0 keeps model loaded; ttl: N unloads after N seconds idle
+  # Qwen 3 Coder 30B - MoE (A3B), instruction tuned, Q4_K_XL (17GB)
+  # 7GB headroom for KV cache at 64K → parallel 1, q8_0 KV cache
+  "qwen3-coder-30b":
+    cmd: |
+      /app/llama-server \
+        --model /models/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 300
+
+  #############################################################################
+  # SMALL MODELS — 8GB VRAM, 64K context
+  #############################################################################
+
+  # Qwen 3.5 9B - instruction tuned, Q4_K_XL (5.6GB)
+  # 2.4GB headroom on 8GB → parallel 1, q4_0 KV cache, reduced batch sizes
+  "qwen3.5-9b":
+    cmd: |
+      /app/llama-server \
+        --model /models/Qwen3.5-9B-UD-Q4_K_XL.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 384 --ubatch-size 192
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+
+  # Gemma 4 E4B - Expert MoE (4B active), instruction tuned, Q4_K_XL (~5GB)
+  # 3GB headroom on 8GB → parallel 1, q4_0 KV cache, reduced batch sizes
+  "gemma-4-e4b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 256 --ubatch-size 128
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+
+  # Gemma 4 E2B - Expert MoE (2B active), instruction tuned, Q4_K_XL (3.0GB)
+  # 5GB headroom on 8GB → parallel 1, q4_0 KV cache, moderate batch sizes
+  "gemma-4-e2b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 512 --ubatch-size 256
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+
+# Flag notes:
+# - --flash-attn on: explicit value required by this llama-server build
+# - --cache-type-k/v q8_0: higher quality KV cache for 24GB models
+# - --cache-type-k/v q4_0: VRAM-saving KV cache for 8GB models
+# - --n-gpu-layers 99: offload all layers to GPU
+# - ${PORT}: auto-substituted by llama-swap per model subprocess
+# - ttl: seconds idle before unloading (0 = never unload)
+#
+# VRAM budget (weights + KV cache @ 64K):
+#   24GB: gemma-4-12b 6.7GB→par3 | gemma-4-26b 16GB→par1 | qwen3-coder-30b 17GB→par1
+#   8GB:  qwen3.5-9b 5.6GB | gemma-4-e4b ~5GB | gemma-4-e2b 3GB
