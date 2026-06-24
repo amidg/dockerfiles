@@ -13,13 +13,12 @@ models:
   #############################################################################
 
   # Gemma 4 12B - instruction tuned, Q4_K_M (6.7GB)
-  # 17GB headroom → parallel 3, q8_0 KV cache
   "gemma-4-12b":
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-12b-it-Q4_K_M.gguf \
         --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 3 \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
@@ -99,6 +98,7 @@ models:
 # - ${PORT}: auto-substituted by llama-swap per model subprocess
 # - ttl: seconds idle before unloading (0 = never unload)
 #
-# VRAM budget (weights + KV cache @ 64K):
-#   24GB: gemma-4-12b 6.7GB→par3 | gemma-4-26b 16GB→par1 | qwen3-coder-30b 17GB→par1
+# All models use parallel=1 so --ctx-size is the full per-request context window.
+# VRAM (weights + q8_0/q4_0 KV @ 64K):
+#   24GB: gemma-4-12b 6.7GB | gemma-4-26b 16GB | qwen3-coder-30b 17GB
 #   8GB:  qwen3.5-9b 5.6GB | gemma-4-e4b ~5GB | gemma-4-e2b 3GB
