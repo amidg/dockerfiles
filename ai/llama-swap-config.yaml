@@ -5,6 +5,13 @@
 # Place GGUF model files in ~/.llama/models (created automatically on first run)
 # Example: mkdir -p ~/.llama/models && cp your-model.gguf ~/.llama/models/
 #
+# VISION / mmproj: each model needs the projector built for ITS OWN embedding dim.
+# Projectors are NOT interchangeable across model sizes — a mismatch makes llama-server
+# abort on load with "mismatch between text model (n_embd=X) and mmproj (n_embd=Y)".
+# Gemma 4 embedding dims (all distinct, hence per-model projectors):
+#   gemma-4-12b 3840 | gemma-4-26b 2816 | gemma-4-e4b 2560 | gemma-4-e2b 1536
+# Qwen 3.6 27b and 35b also use their own per-model projectors.
+#
 healthCheckTimeout: 60
 #
 models:
@@ -20,7 +27,7 @@ models:
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-12b-it-Q4_K_M.gguf \
-        --mmproj /models/gemma-4-mmproj-F16.gguf \
+        --mmproj /models/gemma-4-12b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
@@ -37,7 +44,7 @@ models:
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
-        --mmproj /models/gemma-4-mmproj-F16.gguf \
+        --mmproj /models/gemma-4-26b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
@@ -125,7 +132,7 @@ models:
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-mmproj-F16.gguf \
+        --mmproj /models/gemma-4-e4b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
@@ -142,7 +149,7 @@ models:
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-mmproj-F16.gguf \
+        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
