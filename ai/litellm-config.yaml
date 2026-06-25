@@ -20,6 +20,18 @@ model_list:
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
+  - model_name: qwen3.6-27b
+    litellm_params:
+      model: openai/qwen3.6-27b        # dense 27B, vision, 64K ctx, q8_0 KV (17GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: qwen3.6-35b
+    litellm_params:
+      model: openai/qwen3.6-35b        # MoE 35B/A3B, vision, 64K ctx, q8_0 KV (17GB)
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
   - model_name: qwen3-coder-30b
     litellm_params:
       model: openai/qwen3-coder-30b    # MoE coder 30B/A3B, 64K ctx (17GB)
