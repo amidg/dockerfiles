@@ -4,49 +4,49 @@ model_list:
   # llama-swap handles all inference params; only routing info needed here
   - model_name: gemma-4-12b
     litellm_params:
-      model: llamacpp/gemma-4-12b        # dense 12B, 64K ctx, Q4 KV cache (6.7GB)
+      model: openai/gemma-4-12b        # dense 12B, 64K ctx, Q4 KV cache (6.7GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: gemma-4-26b
     litellm_params:
-      model: llamacpp/gemma-4-26b        # MoE 26B/A4B, 64K ctx (16GB)
+      model: openai/gemma-4-26b        # MoE 26B/A4B, 64K ctx (16GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3.5-9b
     litellm_params:
-      model: llamacpp/qwen3.5-9b         # Qwen3.5 9B, 64K ctx, 8GB VRAM (5.6GB)
+      model: openai/qwen3.5-9b         # Qwen3.5 9B, 64K ctx, 8GB VRAM (5.6GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3.6-27b
     litellm_params:
-      model: llamacpp/qwen3.6-27b        # dense 27B, vision, 64K ctx, q8_0 KV (17GB)
+      model: openai/qwen3.6-27b        # dense 27B, vision, 64K ctx, q8_0 KV (17GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3.6-35b
     litellm_params:
-      model: llamacpp/qwen3.6-35b        # MoE 35B/A3B, vision, 64K ctx, q8_0 KV (17GB)
+      model: openai/qwen3.6-35b        # MoE 35B/A3B, vision, 64K ctx, q8_0 KV (17GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3-coder-30b
     litellm_params:
-      model: llamacpp/qwen3-coder-30b    # MoE coder 30B/A3B, 64K ctx (17GB)
+      model: openai/qwen3-coder-30b    # MoE coder 30B/A3B, 64K ctx (17GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: gemma-4-e2b
     litellm_params:
-      model: llamacpp/gemma-4-e2b        # MoE expert 2B active, 64K ctx (3.0GB)
+      model: openai/gemma-4-e2b        # MoE expert 2B active, 64K ctx (3.0GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: gemma-4-e4b
     litellm_params:
-      model: llamacpp/gemma-4-e4b        # MoE expert 4B active, 64K ctx (~5GB)
+      model: openai/gemma-4-e4b        # MoE expert 4B active, 64K ctx (~5GB)
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
