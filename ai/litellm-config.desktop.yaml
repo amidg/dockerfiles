@@ -1,38 +1,35 @@
 # LiteLLM gateway config — DESKTOP (Radeon 7900 XTX 24GB, ROCm).
-# The laptop uses ai/litellm-config.laptop.yaml. Both define the SAME four aliases,
+# The laptop uses ai/litellm-config.laptop.yaml. Both define the SAME alias names,
 # which is what lets one shared ~/.hermes/config.yaml drive either machine.
 #
 # THE ALIAS CONTRACT (identical names on every machine, different models behind them):
 #   local-main     primary GPU    main agent, coding, big prompts
-#   local-support  secondary GPU  delegation subagents, compression, web extract
 #   local-vision   whichever tier has a vision model
-#   local-tiny     cheapest tier  titles, classification, query rewriting
+#   local-tiny     cheapest tier  short background/fire-and-forget side tasks
 #
 # On THIS machine they resolve to:
 #   local-main     qwen3.6-27b   7900 XTX  :8081  dense 27B, vision, 64K
-#   local-support  gemma-4-26b   7900 XTX  :8081  MoE 26B/A4B, vision, 64K
 #   local-vision   qwen3.6-27b   7900 XTX  :8081
 #   local-tiny     gemma-4-12b   7900 XTX  :8081  dense 12B, vision, 256K
 #
-# SINGLE-GPU CAVEAT — READ THIS BEFORE TRUSTING local-support HERE.
-# The laptop gets real concurrency because local-main and local-support live on
-# physically different devices. This machine has one GPU, so all four aliases are
-# served by ONE llama-swap instance that holds ONE model at a time. Alternating
-# local-main and local-support therefore EVICTS AND RELOADS a ~17GB model on every
-# switch — far worse than just using local-main for everything.
+# SINGLE-GPU CAVEAT — this machine has ONE GPU, so all three aliases are served by
+# ONE llama-swap instance holding ONE model at a time. Alternating local-main and
+# local-tiny therefore EVICTS AND RELOADS a large model on every switch. On the
+# laptop that cost is avoided because local-tiny lives on a physically separate iGPU;
+# here there is nowhere else to put it.
 #
-# Until a second GPU is installed, the honest options are:
-#   (a) point local-support at the SAME model as local-main (no swap, no second lane), or
-#   (b) accept the swap cost because you value the smaller model's speed.
-# This file ships (a)'s inverse — distinct models — ONLY because gemma-4-26b and
-# qwen3.6-27b are both ~17-20GB and cannot co-reside anyway. If delegation-heavy
-# work feels slow here, set every alias below to qwen3.6-27b; that is the correct
-# single-GPU configuration.
+# If background chatter (titles, monitors) makes this machine feel slow, point
+# local-tiny at qwen3.6-27b as well. One resident model and no swapping beats a
+# smaller model you have to keep reloading — 12b is only "cheaper" when it is free
+# to keep loaded, which it is not here.
+#
+# local-embed is NOT defined on this machine (no embedding GGUF present). Anything
+# routed to it will fail here. See the note in litellm-config.laptop.yaml.
 #
 # WHEN THE SECOND GPU ARRIVES: add a second llama-swap service on port 8082 (mirroring
 # the laptop's intel/nvidia split in ai/llama-cpp.yml — distinct container_name, distinct
-# port, its own llama-swap config), then repoint local-support / local-tiny at it. No
-# Hermes config change is needed; that is the point of the alias layer.
+# port, its own llama-swap config), then repoint local-tiny at it. No Hermes config
+# change is needed; that is the point of the alias layer.
 #
 # Never put a raw model name in a Hermes config — it will break on the other machine.
 #
@@ -102,7 +99,6 @@ router_settings:
   # Only the right-hand side differs per machine.
   model_group_alias:
     local-main: qwen3.6-27b       # PRIMARY GPU — main agent, coding, large prompts
-    local-support: gemma-4-26b    # PRIMARY GPU (no 2nd GPU yet — see caveat above)
     local-vision: qwen3.6-27b     # PRIMARY GPU — vision
     local-tiny: gemma-4-12b       # PRIMARY GPU — titles, classification, query rewrite
 
@@ -127,7 +123,6 @@ litellm_settings:
     - qwen3.6-27b: ["gemma-4-26b"]
     - gemma-4-26b: ["gemma-4-12b"]
     - local-main: ["gemma-4-26b"]
-    - local-support: ["gemma-4-12b"]
     - local-vision: ["gemma-4-26b"]
     - local-tiny: ["gemma-4-26b"]
 

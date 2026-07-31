@@ -5,22 +5,18 @@
 # see ai/llama-swap-nvidia.yaml for the RTX 5070 tier and ai/llama-swap-config.yaml
 # for the 24GB AMD desktop.
 #
-# TWO MODELS, both resident at once: gemma-4-e2b (chat, backs local-support and
-# local-tiny) and Qwen3-Embedding-0.6B (backs local-embed). gemma-4-e4b was removed
-# because it is simply slower for no benefit this tier can exploit — measured on the
-# same 6524-token prompt:
+# TWO llama-server processes, both resident at once:
+#   gemma-4-e2b   backs `local-tiny`  — no vision, no reasoning (see below)
+#   embed         backs `local-embed` — Qwen3-Embedding 0.6B
 #
-#   model         prefill              decode
-#   gemma-4-e4b   145.9 tok/s (44.7s)  10.1 tok/s
-#   gemma-4-e2b   194.1 tok/s (33.6s)  16.1 tok/s   <- 33% / 60% faster
+# `local-tiny` is the ONLY chat alias on this tier. It absorbed the former
+# `local-support` alias, which had no consumers and pointed at this same model —
+# two names for one thing was just a way to drift out of sync.
 #
-# Both are vision-capable MoE Gemma 4 models, so e2b loses nothing structural.
-# The iGPU is memory-bandwidth-bound, so the smaller active-parameter count wins
-# directly. (e4b's block is still in git history if you want it back.)
-#
-# ROLE: RAG embeddings, plus background and fire-and-forget side tasks. NOT the tier
-# for work the user waits on, and no longer the vision tier — vision moved to
-# gemma-4-26b on the dGPU once that model gained its projector:
+# ROLE: RAG embeddings plus short, background, fire-and-forget side tasks
+# (titles, audio tags, monitor checks, profile/curator writes). Nothing on this tier
+# is on the critical path of a user turn, and nothing here needs to see an image or
+# think out loud.
 #
 #   Arc iGPU  gemma-4-e2b    194 tok/s prefill  |  16 tok/s decode
 #   RTX 5070  gemma-4-26b    641 tok/s prefill  |  23 tok/s decode  (default)
@@ -31,36 +27,61 @@
 # and cheap background work WITHOUT evicting gemma-4-26b from the 8GB card (which
 # holds exactly one model), and it runs concurrently with it.
 #
-# UBATCH TUNING (measured on gemma-4-e4b, 6524-token prefill — the shape of the
-# curve is a property of the iGPU, not the model):
+# NO VISION HERE — the --mmproj was deliberately removed. `local-vision` resolves to
+# gemma-4-26b on the dGPU, which has its own projector and is a far better vision
+# model. Keeping a projector loaded here cost ~1GB to serve nothing. Consequence:
+# there is NO vision fallback on this laptop, and litellm-config.laptop.yaml
+# deliberately declares no fallback for `local-vision` — a blind model confidently
+# describing an image it cannot see is worse than a clean error. gemma-4-e2b IS
+# vision-capable if you re-add --mmproj /models/gemma-4-e2b-mmproj-F16.gguf (n_embd
+# 1536 — that exact projector, never another size's).
+#
+# NO REASONING HERE — every model in this stack is a thinking model, which is pure
+# waste for this tier's workload. Measured on a realistic title-generation prompt
+# (identical three-word answer in every case):
+#
+#   configuration          completion tokens   reasoning leaked into content?
+#   default (thinking on)  302  (~40s)         no, but ~290 tokens wasted
+#   --reasoning-budget 0   358                 YES — see trap below
+#   --reasoning off        101-111 (~17s)      no
+#
+# USE --reasoning off, NOT --reasoning-budget 0. The budget flag only suppresses
+# thought-tag PARSING: the model still reasons and the trace lands in `content`, so
+# titles come back reading "Thinking Process:\n\n1. **Analyze the conversation**".
+# That measured WORSE than leaving thinking on. This is a real trap.
+#
+# Nor can this be done per-request: `reasoning_effort: none` works when sent straight
+# to llama-server (108 tokens, zero reasoning) but is SILENTLY DROPPED by LiteLLM's
+# `drop_params: true` for openai/-prefixed custom endpoints (310 tokens, full
+# reasoning, no warning). It has to be a server flag.
+#
+# Caveat: --reasoning off removes the reasoning waste, not e2b's chattiness. Given a
+# vague prompt it still rambles to the max_tokens cap; given a well-specified one it
+# answers in ~101 tokens. Constrain the prompt, not just the flag.
+#
+# UBATCH TUNING (measured on a 6524-token prefill — the shape of the curve is a
+# property of the iGPU, not the model):
 #   ubatch  128 (old 8GB-tier value)  104.3 tok/s
 #   ubatch  512                       125.6 tok/s
 #   ubatch 1024  <- current           145.9 tok/s
 #   ubatch 2048                       135.8 tok/s   (overshoots; regresses)
-# 1024 is the sweet spot. The old value of 128 was an 8GB CUDA-tier concession
-# that bought nothing here, since the Arc iGPU has no dedicated VRAM and allocates
-# from 62GB of system RAM. Same reasoning for q8_0 KV instead of q4_0. The ceiling
-# is memory bandwidth, not batch size — an 8x ubatch increase bought only ~40%, so
-# do not expect more from further tuning.
+# 1024 is the sweet spot. The old value of 128 was an 8GB CUDA-tier concession that
+# bought nothing here, since the Arc iGPU has no dedicated VRAM and allocates from
+# 62GB of system RAM. Same reasoning for q8_0 KV instead of q4_0. The ceiling is
+# memory bandwidth, not batch size — an 8x ubatch increase bought only ~40%, so do
+# not expect more from further tuning.
 #
 # MEMORY CAVEAT: the Arc iGPU reports free memory tracking host MemFree, NOT
-# MemAvailable (see ai/LLAMA-CPP.md). If the model fails to allocate, check
-# `free -h` first — dropping caches or closing apps may be the fix rather than
-# lowering ubatch. Fallback ladder if allocation genuinely fails:
-# ubatch 1024 -> 512 -> 256, then --ctx-size 65536 -> 32768.
-#
-# VISION / mmproj: the projector must match the model's OWN embedding dim.
-# Projectors are NOT interchangeable across model sizes — a mismatch makes
-# llama-server abort with "mismatch between text model (n_embd=X) and mmproj
-# (n_embd=Y)", and it surfaces only on the FIRST REQUEST, not at container start.
-# Gemma 4 embedding dims: 12b 3840 | 26b 2816 | e4b 2560 | e2b 1536.
-# So gemma-4-e2b REQUIRES gemma-4-e2b-mmproj-F16.gguf specifically.
+# MemAvailable (see ai/LLAMA-CPP.md). If a model fails to allocate, check `free -h`
+# first — dropping caches or closing apps may be the fix rather than lowering ubatch.
+# Fallback ladder if allocation genuinely fails: ubatch 1024 -> 512 -> 256, then
+# --ctx-size 65536 -> 32768.
 #
 healthCheckTimeout: 60
 #
-# Keep BOTH iGPU models resident. The embedding model is tiny (0.6B) and RAG calls
-# interleave with chat calls constantly, so letting them evict each other would add
-# a reload to every switch. Combined they are ~3.7GB against 62GB of system RAM.
+# Keep both processes resident. The embedding model is tiny and RAG calls interleave
+# with title/background calls constantly, so letting them evict each other would add
+# a reload to every switch. Combined they are ~2.5GB against 62GB of system RAM.
 #   swap: false      -> members stay loaded instead of evicting each other
 #   exclusive: false -> loading these does not unload anything else
 groups:
@@ -72,24 +93,25 @@ groups:
       - embed
 #
 models:
-  # Gemma 4 E2B - MoE (2B active), instruction tuned, vision, Q4_K_XL (3.0GB weights)
-  # Backs local-support and local-tiny. The mmproj is kept even though local-vision
-  # now points at gemma-4-26b: it is the fallback target for local-vision, and a
-  # blind fallback would answer questions about images it cannot see.
+  # Gemma 4 E2B - MoE (2B active), instruction tuned, Q4_K_XL (3.0GB weights).
+  # Backs `local-tiny`, the only chat alias on this tier.
   #
-  # 64K context (not 32K) because local-support is declared at 65536 in
-  # ~/.hermes/config.yaml — the runtime window must cover the largest alias pointed
-  # at this model, or long sessions truncate mid-flight.
+  # TEXT-ONLY BY CHOICE (no --mmproj) and NON-THINKING BY CHOICE (--reasoning off).
+  # Both are deliberate; see the header before "restoring" either.
+  #
+  # 64K context because local-tiny is declared at 65536 in ~/.hermes/config.yaml —
+  # the runtime window must cover the largest alias pointed at this model, or long
+  # sessions truncate mid-flight.
   "gemma-4-e2b":
     cmd: |
       /app/llama-server \
         --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
         --batch-size 2048 --ubatch-size 1024 \
         --cache-reuse 256 \
+        --reasoning off \
         --temp 1.0 --top-k 64 --top-p 0.95
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
@@ -104,7 +126,8 @@ models:
   # averaging. Passing `mean` here would silently produce degraded embeddings that
   # still look plausible — no error, just worse retrieval. llama.cpp would use the
   # model default if --pooling were omitted; it is stated explicitly so nobody
-  # "fixes" it to mean later.
+  # "fixes" it to mean later. Sanity check after any change: related pairs must
+  # separate from unrelated ones (cat~kitten 0.673, db~sql 0.809, cat~db 0.308).
   #
   # --ubatch-size must be >= the longest input: with pooling enabled the whole
   # sequence has to fit in a single ubatch, so ubatch is pinned to ctx. 8192 covers
@@ -126,8 +149,9 @@ models:
 # Flag notes (see ai/llama-swap-config.yaml for the full rationale):
 # - --flash-attn on: explicit value required by this llama-server build
 # - --cache-type-k/v q8_0: iGPU draws from 62GB system RAM, so no need for the q4_0 hit
-# - --batch-size / --ubatch-size: the prefill throughput lever; the whole point of this file
+# - --batch-size / --ubatch-size: the prefill throughput lever
 # - --cache-reuse 256: KV-shift prefix reuse for multi-turn / agentic loops
+# - --reasoning off: server-level; cannot be done per-request through LiteLLM
 # - --jinja: already ENABLED BY DEFAULT in this build — needed for tool calling, don't add
 # - ttl: seconds idle before unloading
 #

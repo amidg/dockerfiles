@@ -3,16 +3,15 @@
 # which is what lets one shared ~/.hermes/config.yaml drive either machine.
 #
 # THE ALIAS CONTRACT (identical names on every machine, different models behind them):
-#   local-main     primary GPU    main agent, coding, big prompts
-#   local-support  secondary GPU  delegation subagents, compression, web extract
+#   local-main     primary GPU    main agent, delegation, anything user-facing
 #   local-vision   whichever tier has a vision model
-#   local-tiny     cheapest tier  titles, classification, query rewriting
+#   local-tiny     cheapest tier  short background/fire-and-forget side tasks
+#   local-embed    RAG embeddings (laptop only — see note below)
 #
 # On THIS machine they resolve to:
 #   local-main     gemma-4-26b  RTX 5070 8GB   :8081   MoE 26B/A4B via --n-cpu-moe
 #   local-vision   gemma-4-26b  RTX 5070 8GB   :8081   same model — no swap for vision
-#   local-support  gemma-4-e2b  Arc iGPU       :8082
-#   local-tiny     gemma-4-e2b  Arc iGPU       :8082
+#   local-tiny     gemma-4-e2b  Arc iGPU       :8082   no vision, no reasoning
 #   local-embed    embed        Arc iGPU       :8082   Qwen3-Embedding 0.6B, 1024-dim
 #
 # The three iGPU aliases all resolve to the SAME model. gemma-4-e4b was dropped:
@@ -23,17 +22,17 @@
 #
 # Never put a raw model name in a Hermes config — it will break on the other machine.
 #
-# MEASURED throughput (6524-token prompt) — the dGPU wins on raw speed, so
-# `local-support` is NOT "the fastest model", it is "the lane that does not contend
-# with the main agent":
+# MEASURED throughput (6524-token prompt):
 #   RTX 5070  gemma-4-26b    641 tok/s prefill  23 tok/s decode  (26B MoE, vision)
 #   RTX 5070  qwen3.5-9b    1932 tok/s prefill  48 tok/s decode  (9B dense, no alias)
-#   Arc iGPU  gemma-4-e2b    194 tok/s prefill  16 tok/s decode
-# Each llama-swap instance is --parallel 1 and holds ONE model, so concurrent
-# delegation agents on local-main serialize behind each other. Routing them to
-# local-support gives Hermes a genuine second lane instead of a queue, and keeps the
-# dGPU free for the main agent. Prefer local-main for any single prompt that is
-# large or hard; prefer local-support for breadth.
+#   Arc iGPU  gemma-4-e2b    194 tok/s prefill  16 tok/s decode  (text-only, no thinking)
+#
+# The dGPU wins on prefill by 3-10x, so everything the user waits on goes to
+# local-main — including delegation, which measured 33.6s there versus 2m05.8s on the
+# iGPU. The iGPU is NOT a useful second lane: each llama-swap instance is --parallel 1,
+# so concurrent work serializes there just as it would on the dGPU, and subagent cost
+# is prefill-dominated where the iGPU is weakest. What the iGPU actually buys is that
+# background chatter never evicts gemma-4-26b from the 8GB card.
 #
 # api_base tells you which physical tier serves a model:
 #   llama_swap_intel   Arc iGPU, laptop      (ai/llama-swap-intel.yaml)
@@ -45,13 +44,14 @@
 #
 model_list:
   # ---- Local: laptop SECONDARY GPU, Arc iGPU (llama_swap_intel, host :8082) ----
+  # Text-only and non-thinking by design (--mmproj removed, --reasoning off).
   # Vision + small/fast + the second parallel lane. No dedicated VRAM — allocates from
   # 62GB system RAM, so these run bigger batches and q8_0 KV than the 8GB tier below.
   # Single model on this tier, so nothing ever evicts it.
   - model_name: gemma-4-e2b
     litellm_params:
-      model: openai/gemma-4-e2b        # MoE 2B active, vision, 64K ctx (3.0GB)
-                                       # backs local-support + local-tiny
+      model: openai/gemma-4-e2b        # MoE 2B active, TEXT-ONLY, 64K ctx (3.0GB)
+                                       # backs local-tiny; no vision, no reasoning
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
@@ -129,8 +129,7 @@ router_settings:
     local-main: gemma-4-26b     # PRIMARY GPU (RTX 5070)  — main agent, coding, large prompts
     local-vision: gemma-4-26b   # PRIMARY GPU (RTX 5070)  — SAME model as local-main, so
                                 #   vision costs no model swap and gets a 26B-class model
-    local-support: gemma-4-e2b  # SECONDARY GPU (Arc iGPU) — background work
-    local-tiny: gemma-4-e2b     # SECONDARY GPU (Arc iGPU) — titles, classification, query rewrite
+    local-tiny: gemma-4-e2b     # SECONDARY GPU (Arc iGPU) — titles/tags; no vision, no reasoning
     local-embed: embed          # SECONDARY GPU (Arc iGPU) — RAG embeddings, 1024-dim
     # local-embed: embed        # SECONDARY GPU (Arc iGPU) — enable with the embed model above
 
@@ -161,14 +160,13 @@ litellm_settings:
   # local-vision has NO fallback on purpose: qwen3.5-9b has no projector, so
   # falling back would answer questions about images without being able to see
   # them — a confidently wrong answer is worse than an error.
-  # local-vision falls back to gemma-4-e2b, the only OTHER vision model here. It never
-  # falls back to qwen3.5-9b, which has no projector — a blind model confidently
-  # describing an image it cannot see is worse than an error.
+  # local-vision has NO fallback ON PURPOSE. gemma-4-26b is the only model on this
+  # laptop with a projector — gemma-4-e2b's was removed and qwen3.5-9b never had one.
+  # Falling back to either would mean a blind model confidently describing an image it
+  # cannot see, which is worse than a clean error. If the dGPU is down, vision fails.
   fallbacks:
     - gemma-4-26b: ["qwen3.5-9b"]
     - local-main: ["qwen3.5-9b"]
-    - local-vision: ["gemma-4-e2b"]
-    - local-support: ["gemma-4-26b"]
     - local-tiny: ["gemma-4-26b"]
 
 general_settings:

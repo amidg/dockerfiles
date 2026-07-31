@@ -13,7 +13,7 @@ models its device can actually run:
 |---|---|---|---|---|
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8081 | `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-27b`, `qwen3.6-35b`, `qwen3-coder-30b` (+ an unused 8GB-tier section kept so the file works standalone) |
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b` (default), `qwen3.5-9b` |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b`, `embed` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (text-only, non-thinking), `embed` |
 
 LiteLLM is likewise per-machine — `litellm-config.laptop.yaml` and `litellm-config.desktop.yaml`,
 selected by the compose profile (`laptop` vs `amd_llama_cpp`), so there is no env var to forget.
@@ -37,8 +37,8 @@ anchor.
 |---|---|---|---|---|
 | RTX 5070 | `gemma-4-26b` (default) | 641 tok/s | 23 tok/s | 6883 MiB VRAM |
 | RTX 5070 | `qwen3.5-9b` | **1932 tok/s** (3.4s) | **48 tok/s** | 6303 MiB VRAM |
-| Arc iGPU | `gemma-4-e2b` | 194 tok/s (33.6s) | 16 tok/s | system RAM |
-| Arc iGPU | `embed` (Qwen3-Embedding-0.6B) | — | — | ~640MB, system RAM |
+| Arc iGPU | `gemma-4-e2b` (text-only, `--reasoning off`) | 194 tok/s (33.6s) | 16 tok/s | 2.62 GB RAM |
+| Arc iGPU | `embed` (Qwen3-Embedding-0.6B) | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 tok/s | **0.61 tok/s** | system RAM |
 
 **A 26B model runs on the 8GB card via `--n-cpu-moe`.** `gemma-4-26b-A4B` is MoE — 128 experts,
@@ -71,9 +71,13 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 |---|---|---|---|
 | `local-main` | `gemma-4-26b` (RTX 5070) | `qwen3.6-27b` (7900 XTX) | main agent, delegation, anything user-facing |
 | `local-vision` | `gemma-4-26b` (RTX 5070) | `qwen3.6-27b` | images/PDFs — same model as `local-main`, so no swap |
-| `local-support` | `gemma-4-e2b` (Arc iGPU) | `gemma-4-26b` | reserved for `background=true` work; nothing routes here today |
-| `local-tiny` | `gemma-4-e2b` (Arc iGPU) | `gemma-4-12b` | background/fire-and-forget side tasks |
+| `local-tiny` | `gemma-4-e2b` (Arc iGPU) | `gemma-4-12b` | background/fire-and-forget side tasks; **no vision, no reasoning** |
 | `local-embed` | `embed` (Arc iGPU) | **MISSING** | RAG embeddings, 1024-dim |
+
+There is deliberately **no `local-support`**. It existed briefly, resolved to the same iGPU model
+as `local-tiny`, and never had a consumer — two names for one thing is just a way to drift out of
+sync. If background delegation ever needs its own tier, add the alias back to both litellm configs;
+nothing in Hermes has to change.
 
 > **Known asymmetry:** `local-embed` exists only on the laptop — the desktop has no embedding
 > GGUF, so the alias is absent from `litellm-config.desktop.yaml`. Anything routed to
@@ -86,7 +90,7 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 | delegate_task, identical prompt | wall time |
 |---|---|
 | `local-main` (RTX 5070, `gemma-4-26b`) | **33.6s** |
-| `local-support` (Arc iGPU, `gemma-4-e2b`) | 2m05.8s |
+| the Arc iGPU (`gemma-4-e2b`) | 2m05.8s |
 
 This was re-measured after `local-main` became `gemma-4-26b` (~2x slower than the `qwen3.5-9b`
 originally tested) and the conclusion survived. Three reasons the "parallel lane" does not pay off:
@@ -135,10 +139,11 @@ is for the qdrant/n8n stack (`ai/n8n.yml`), `ai/research.yml`, or direct API use
 ## Per-device notes
 
 - **Intel iGPU (Arc)** — SYCL, via upstream-tracking `llama-swap:intel` image (`intel_llama_swap`
-  profile). Runs `gemma-4-e2b` (chat) and `embed` (embeddings), **both resident simultaneously**
-  via a `groups:` block with `swap: false` — RAG and chat calls interleave constantly, so letting
-  them evict each other would add a reload to every switch. Combined they are ~3.7GB against 62GB
-  of system RAM. `gemma-4-e4b` was dropped: on this bandwidth-bound iGPU, e2b is faster at
+  profile). Runs two `llama-server` processes, **both resident simultaneously** via a `groups:`
+  block with `swap: false`: `gemma-4-e2b` (`local-tiny` — text-only, `--reasoning off`) and
+  `embed` (`local-embed`). RAG and background calls interleave constantly, so letting them evict
+  each other would add a reload to every switch. Measured resident total **3.41 GB**
+  (2.62 + 0.80) against 62GB of system RAM. `gemma-4-e4b` was dropped: on this bandwidth-bound iGPU, e2b is faster at
   everything (194 vs 146 tok/s prefill, 16 vs 10 tok/s decode) and equally vision-capable, so e4b
   cost latency for nothing.
   **Cold-start gotcha:** the `intel_sycl_cache` named volume (mounted at `/root/.cache`) persists
@@ -185,7 +190,7 @@ Gemma 4 embedding dims are all distinct → one projector per model, no sharing:
 | gemma-4-12b | 3840 | 256K | `gemma-4-12b-mmproj-F16.gguf` | desktop |
 | gemma-4-26b | 2816 | 256K | `gemma-4-26b-mmproj-F16.gguf` | **laptop `local-vision`** + desktop |
 | gemma-4-e4b | 2560 | 128K | `gemma-4-e4b-mmproj-F16.gguf` | no longer used |
-| gemma-4-e2b | 1536 | 128K | `gemma-4-e2b-mmproj-F16.gguf` | laptop, as `local-vision`'s fallback |
+| gemma-4-e2b | 1536 | 128K | `gemma-4-e2b-mmproj-F16.gguf` | **not loaded** — removed from the tiny tier |
 
 Qwen 3.6 27b and 35b likewise use their own per-model projectors.
 
@@ -193,9 +198,47 @@ Qwen 3.6 27b and 35b likewise use their own per-model projectors.
 from *that exact model's* Unsloth `*-GGUF` repo (file is `mmproj-F16.gguf`), saved as
 `<model>-mmproj-F16.gguf`. Never reuse another size's projector.
 
-**`local-vision` deliberately falls back to `gemma-4-e2b`, never to `qwen3.5-9b`** — the latter has
-no projector, and a blind model confidently describing an image it cannot see is worse than an
-error.
+**`local-vision` has NO fallback on the laptop, deliberately.** `gemma-4-26b` is the only model
+there with a projector — `gemma-4-e2b`'s was removed and `qwen3.5-9b` never had one. Falling back
+to either would mean a blind model confidently describing an image it cannot see, which is worse
+than a clean error. If the dGPU is down, vision fails loudly. That is the intended behaviour.
+
+## The tiny tier: no vision, no reasoning
+
+Every model here is a thinking model, which is actively harmful for `local-tiny` work. Measured on
+a realistic title-generation prompt (the answer was the same three-word title in every case):
+
+| configuration | completion tokens | reasoning leaked into `content`? |
+|---|---|---|
+| default (thinking on) | 302 (~40s) | no — but ~290 tokens wasted |
+| `--reasoning-budget 0` | 358 | **YES** |
+| `--reasoning off` | **107–111 (~17s)** | no |
+
+Three traps, all of which fail silently rather than erroring:
+
+1. **`--reasoning-budget 0` is not an off switch.** It suppresses thought-tag *parsing* only — the
+   model still reasons, and the trace lands in `message.content`. Session titles come back reading
+   `"Thinking Process:\n\n1. **Analyze the conversation**..."`. It measured *worse* than leaving
+   thinking on. Use `--reasoning off`.
+2. **Per-request `reasoning_effort` does not work through LiteLLM.** Sent straight to llama-server
+   it works perfectly (108 tokens, zero reasoning). Sent through the gateway with the identical
+   body it is **silently dropped** — 310 tokens with full reasoning, indistinguishable from not
+   sending it, and no warning anywhere. `drop_params: true` strips it for `openai/`-prefixed custom
+   endpoints. This is why thinking has to be turned off at the *server*, not per call.
+3. Reasoning is a **server-level** flag, so it has to be set on the process, not the request.
+   There was briefly a second `llama-server` over the same GGUF (`gemma-4-e2b-fast`) so that
+   `local-support` could keep thinking while `local-tiny` did not; that is gone now that
+   `local-support` is gone. One process, `--reasoning off`.
+
+**Vision is also removed from this tier.** The `--mmproj` was dropped: `local-vision` resolves to
+`gemma-4-26b` on the dGPU, which has its own projector and is a far better vision model, so the
+~1GB projector here served nothing. `gemma-4-e2b` now correctly rejects images with
+`image input is not supported - hint: if this is unexpected, you may need to provide the mmproj`.
+It remains vision-*capable* — re-add `--mmproj /models/gemma-4-e2b-mmproj-F16.gguf` (n_embd 1536,
+that exact file) to restore it.
+
+Dropping the second process and the projector took the iGPU tier from **6.06 GB to 3.41 GB**
+resident.
 
 ## Embeddings
 
@@ -254,7 +297,10 @@ the **largest** alias pointing at that model.
   The ceiling is memory bandwidth, not batch size: an 8x ubatch increase bought only ~40%.
   Do not expect more from further tuning here.
   **Memory caveat:** the Arc iGPU reports free memory tracking host `MemFree`, not reclaimable
-  `MemAvailable`. If a model fails to allocate, check `free -h` before lowering ubatch.
+  `MemAvailable`. If a model fails to allocate, check `free -h` before lowering ubatch. With all
+  three iGPU processes resident, `MemFree` sits around 1.5-2 GiB while `MemAvailable` is ~27 GiB —
+  the low number is page cache, not exhaustion, but it is close enough to the documented failure
+  mode to be worth watching if you add a fourth model here.
 - Per-model sampling baked in as defaults (Qwen: temp 0.7/top-k 20/top-p 0.95/min-p 0;
   Gemma: temp 1.0/top-k 64/top-p 0.95). Clients can override per request.
 - `--n-cpu-moe` IS used, on `gemma-4-26b` only — it is what makes a 26B model fit 8GB (see above).
@@ -275,6 +321,19 @@ curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"gemma-4-e2b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'   # iGPU
 curl -s localhost:8082/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model":"embed","input":"test"}'                                                       # iGPU
+
+# confirm thinking is really off on the tiny tier — `reasoning` must be 0.
+# Use a WELL-SPECIFIED prompt: given a vague one e2b rambles to the max_tokens cap
+# either way and the contrast disappears. Expect ~101 tokens, reasoning 0.
+P='Generate a short title (max 6 words) for this conversation:\nUser: my postgres container keeps OOMing after about an hour\nAssistant: Lets check shared_buffers and work_mem first.'
+curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg p "$P" '{model:"gemma-4-e2b",messages:[{role:"user",content:$p}],max_tokens:400}')" \
+  | jq '{tokens:.usage.completion_tokens, reasoning:(.choices[0].message.reasoning_content // "" | length)}'
+
+# confirm vision is really gone from the tiny tier — must error, not answer
+curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"gemma-4-e2b","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":50}' \
+  | jq -r '.error.message // "UNEXPECTED: answered instead of erroring"' 
 
 # aliases through the gateway (what agents actually use)
 curl -s localhost:4000/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
