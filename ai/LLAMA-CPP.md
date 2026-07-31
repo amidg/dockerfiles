@@ -81,6 +81,109 @@ Enable in CMake:
 - **`GGML_FMA`** / **`GGML_F16C`** — modern CPU optimizations (auto-enabled if not cross-compiling).
 - **`GGML_AMX_TILE`** / **`GGML_INT8`** / **`GGML_BF16`** — Intel Xeon with Advanced Matrix Extensions.
 
+## Intel iGPU / NPU on this laptop
+
+Researched mid-2026 for the Core Ultra 9 285H (Arrow Lake-H, Arc Pro 130T/140T iGPU + NPU).
+
+### iGPU: SYCL over Vulkan
+
+Vulkan is the safe, portable default, but with a current oneAPI runtime + Intel driver, **SYCL
+now edges out Vulkan** on Arc iGPUs (community benchmarks show SYCL winning single-stream decode;
+Vulkan can still win at high parallel-slot counts). More importantly for this stack: IPEX-LLM's
+own docker image (`intelanalytics/ipex-llm-inference-cpp-xpu`, already used for the Ollama stack
+in `ai/ollama.yml`) is a vendored llama.cpp fork that lags upstream for brand-new model
+architectures. `ghcr.io/mostlygeek/llama-swap:intel` is instead built directly on top of
+`ghcr.io/ggml-org/llama.cpp:server-intel-<latest>` — the **official upstream SYCL build** — the
+same way `:cuda`/`:rocm`/`:vulkan` already track upstream for the other tiers. That's why
+`intel_llama_swap` in `ai/llama-cpp.yml` uses `:intel`, not IPEX-LLM: it gets both the newest
+model support and the SYCL performance edge (backend is entirely determined by the image, not by
+model `cmd:` flags — so switching backends needs no `cmd:` change at all).
+
+**Measured throughput (2026-07-30, gemma-4-e4b, 6524-token prompt).** The iGPU is bandwidth-bound,
+not batch-bound — an 8x `--ubatch-size` increase bought only ~40%, and 2048 actually regresses:
+
+| `--ubatch-size` | prefill | time |
+|---|---|---|
+| 128 (old 8GB-tier value) | 104 tok/s | 62.5s |
+| 512 | 126 tok/s | 51.9s |
+| **1024 (current)** | **146 tok/s** | **44.7s** |
+| 2048 | 136 tok/s | 48.0s |
+
+Decode sits at ~10 tok/s. Set batches from the *system RAM* budget, not the dGPU's 8GB — the Arc
+iGPU has no dedicated VRAM. See `ai/llama-swap-intel.yaml`.
+
+**Debugged gotcha (2026-07-31): looks broken, isn't.** The Intel compute-runtime JIT-compiles
+every SYCL kernel variant (attention shapes, flash-attn, KV-cache quant, vision-projector kernels)
+on first use, and caches them at `/root/.cache/neo_compiler_cache`. That directory wasn't
+persisted, so every container recreate paid the full compile cost again — measured **4m32s** for
+the first request after a fresh cache vs. **18s** once warm (SYCL itself was working correctly the
+whole time: `llama-server --list-devices` always showed `SYCL0: Intel(R) Arc(TM) Graphics`
+detected, and the warm request generated real, correct tokens at ~22 tok/s prompt processing).
+Client-side timeouts (LiteLLM, OpenAI SDKs) are commonly shorter than that cold-compile window, so
+the first real request after `up` can come back as an empty/failed response even though nothing
+is actually misconfigured. Fixed by adding a persistent `intel_sycl_cache` volume at
+`/root/.cache` in `ai/llama-cpp.yml`'s `intel_llama_swap` service — kernels now compile once, ever,
+per unique shape. If it still looks stuck after that fix, it's real host memory pressure: the Arc
+iGPU has no dedicated VRAM, so `llama-server --list-devices`'s reported free memory tracks literal
+host `MemFree` (not reclaimable `MemAvailable`) — check `free -h` before assuming a bug.
+
+### NPU: OpenVINO backend (experimental, early-stage)
+
+llama.cpp added an OpenVINO backend in 2026 (`GGML_OPENVINO=ON`) that runs GGUF models on
+Intel CPU/GPU/**NPU** through one code path — see
+[`docs/backend/OPENVINO.md`](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/OPENVINO.md).
+For the NPU specifically, as of this research:
+
+- **No prebuilt Docker image** — `ghcr.io/ggml-org/llama.cpp` has no `openvino`/`server-openvino`
+  tag yet. `.devops/openvino.Dockerfile` also isn't a standalone Dockerfile (it `COPY . .`s the
+  whole llama.cpp source tree), so it must be built with the llama.cpp repo itself as build
+  context — `intel_npu_llama_server` in `ai/llama-cpp.yml` does this via a git build context
+  pinned to a specific commit for reproducibility.
+- **No llama-swap integration** — the OpenVINO backend isn't in llama-swap's build matrix, so the
+  NPU service runs a single fixed `llama-server` process (no hot-swap, no `llama-swap-config.yaml`
+  entry).
+- **Stateless only** on NPU (`GGML_OPENVINO_STATEFUL_EXECUTION` is GPU-only), no `--parallel > 1`,
+  quantization is Q4_0-oriented (Q4_K/Q5_K/Q6_K get requantized to Q4_0/Q4_0_128 at runtime), and
+  small `-c`/context is recommended to avoid OOM (upstream's own example uses `-c 1024`).
+- Model: [`bartowski/Qwen_Qwen3-1.7B-GGUF`](https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF)'s
+  plain `Q4_0` quant — Qwen3 is one of the
+  [validated model families](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/OPENVINO.md#validated-models)
+  for this backend, and 1.7B dense is small enough to comfortably fit the NPU's tight memory/context
+  budget. Q4_0 (not a `_K_`/`_XL` dynamic quant) is what the backend's NPU path expects natively.
+  Text-only (no `--mmproj`; OpenVINO backend multimodal support is still in progress).
+
+**Measured 2026-07-30 — it runs, and it is far too slow to use.** Benchmarked against the live
+container (`Qwen3-1.7B-Q4_0`, `-c 1024`, NPU):
+
+| metric | NPU (Qwen3-1.7B) | Arc iGPU (gemma-4-e4b) | RTX 5070 (qwen3.5-9b) |
+|---|---|---|---|
+| decode | **0.61 tok/s** | 10 tok/s | 48 tok/s |
+| prefill | 33 tok/s | 146 tok/s | 1932 tok/s |
+| 24-token tool call | **39 s** | ~7 s warm | ~2 s |
+
+That is ~21x slower at decode than the iGPU *on a model 2.4x smaller* — roughly 50x slower per
+parameter. A generated chat title (~20 tokens) costs ~33s. For reference, this same 1.7B model
+would run at 20-40 tok/s on the CPU alone.
+
+Three further findings from that session:
+
+- **Tool calling works.** A `get_weather` probe returned `finish_reason: tool_calls` with correct
+  arguments (`{"city": "Berlin"}`). The limitation is throughput, not capability — so "put tool
+  calls on the NPU because they're small" fails on latency, not on function. (Separately: tool
+  calling is not actually a small-model task. Small models hallucinate arguments and loop, and MCP
+  tool schemas alone routinely exceed this backend's 1024-token context.)
+- **`-c 1024` is a hard constraint**, and the stateless-only NPU path means no KV reuse across
+  turns — every request reprocesses the whole prompt.
+- **Thinking models waste the budget.** Qwen3 emits reasoning first; a `max_tokens: 32` request
+  spent all 32 tokens in `reasoning_content` and returned empty `content`.
+
+**Verdict: not in the serving path.** The container and the `intel_npu_llama_cpp` profile stay for
+experimentation, but `ai/litellm-config.yaml` routes nothing to it and no alias resolves to it. The
+small/fast workload it was intended for (titles, classification, routing) runs on `gemma-4-e2b` on
+the iGPU instead. Note also that the iGPU and NPU share the same LPDDR5x bus as the CPU, so running
+both concurrently slows both — they are not independent throughput adders. Revisit once the backend
+matures (stateful execution on NPU, parallel requests, broader quant support, a published image).
+
 ## Benchmarking
 
 **llama-bench** — measure prompt processing & text generation performance:

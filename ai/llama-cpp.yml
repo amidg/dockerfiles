@@ -1,6 +1,26 @@
 # llama.cpp + llama-swap inference stack with LiteLLM gateway
-# Usage: podman-compose -f ai/llama-cpp.yml --profile <gpu>_llama_cpp up -d
+#
+# LAPTOP (ThinkPad T1g Gen 8 — RTX 5070 8GB + Arc Pro iGPU + NPU), both GPU tiers at once:
+#   podman-compose -f ai/llama-cpp.yml --profile laptop up -d
+#
+# Single-backend (e.g. the 24GB AMD desktop):
+#   podman-compose -f ai/llama-cpp.yml --profile <gpu>_llama_cpp up -d
 # where <gpu> is: amd, intel, or nvidia
+#
+# EXPERIMENTAL: Intel NPU via llama.cpp's OpenVINO backend, standalone (not llama-swap):
+#   podman-compose -f ai/llama-cpp.yml --profile intel_npu_llama_cpp up -d
+# NOT in the serving path — measured at 0.61 tok/s decode. See ai/LLAMA-CPP.md.
+#
+# Models directory defaults to ~/.llama/models; override per-machine with LLAMA_MODELS_DIR.
+#
+# Ports follow device rank, so 8081 is always "the primary GPU of this machine":
+#   8081  PRIMARY GPU    llama_swap_nvidia  RTX 5070   laptop   ai/llama-swap-nvidia.yaml
+#         (same port)    llama_swap_server  7900 XTX   desktop  ai/llama-swap-config.yaml
+#   8082  SECONDARY GPU  llama_swap_intel   Arc iGPU   laptop   ai/llama-swap-intel.yaml
+#   8083  NPU            llama_npu_server   Intel NPU  laptop   (fixed model, no config)
+#
+# The laptop runs 8081 and 8082 CONCURRENTLY. The desktop only ever has 8081.
+# 8081 is never contended in practice because the two machines are separate hosts.
 #
 # Services:
 #  - llama-swap: local GGUF models via hot-swapping
@@ -8,7 +28,9 @@
 #  - open-webui: web UI (points to LiteLLM)
 #  - postgres: tracks LiteLLM spending and virtual key management
 #
-# Agents point to http://litellm:4000/v1 with LITELLM_MASTER_KEY and pick a model_name.
+# Agents point to http://litellm:4000/v1 with LITELLM_MASTER_KEY. Prefer the semantic
+# aliases (local-reasoning / local-fast / local-vision / local-tiny) over raw model
+# names so routing can change without touching the agent config.
 # Admin UI: http://localhost:4000/ui (login with master key)
 # Config: ai/litellm-config.yaml | Secrets: ai/litellm.env | DB: postgres://litellm:5432/litellm
 #
@@ -43,16 +65,21 @@ services:
   # BASE SERVICES
   #########################
   # base llama-swap service
+  #
+  # NOTE: container_name, ports and the config-file mount are deliberately NOT set here.
+  # The laptop runs the intel and nvidia backends CONCURRENTLY, so each must claim its
+  # own container name, host port and model set. Previously both inherited
+  # `container_name: llama_swap_server` and `8081:8080` from this anchor, which made them
+  # mutually exclusive — only one could ever be up. Port assignment now follows device
+  # rank (8081 primary GPU / 8082 secondary GPU / 8083 NPU), so do not reintroduce a
+  # port here.
   base_llama_swap: &base_llama_swap
     profiles:
       - null_profile
     volumes:
-      - ${HOME}/.llama/models:/models:z
-      - ./llama-swap-config.yaml:/app/config.yaml:z,ro
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
     networks:
       - llama-swap-network
-    ports:
-      - 8081:8080
     environment:
       - no_proxy=localhost,127.0.0.1
     command: /app/llama-swap -config /app/config.yaml -listen 0.0.0.0:8080
@@ -61,6 +88,8 @@ services:
   # LLAMA-SWAP SERVICES
   #########################
   # amd llama-swap server
+  # amd llama-swap server (24GB 7900 XTX desktop — separate machine, so no port conflict
+  # with the laptop tiers below)
   amd_llama_swap:
     <<: [*base_llama_swap]
     profiles:
@@ -71,38 +100,112 @@ services:
       service: base_amdgpu
     image: ghcr.io/mostlygeek/llama-swap:rocm
     container_name: llama_swap_server
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-config.yaml:/app/config.yaml:z,ro
+    ports:
+      - 8081:8080
     environment:
       - no_proxy=localhost,127.0.0.1
       # - HSA_OVERRIDE_GFX_VERSION=11.0.0  # uncomment for specific AMD GPU
 
-  # intel llama-swap server (Vulkan backend)
+  # intel llama-swap server (SYCL backend, built on upstream ghcr.io/ggml-org/llama.cpp:server-intel
+  # so it tracks the latest llama.cpp model support the same way :cuda/:rocm/:vulkan do; SYCL now
+  # edges out Vulkan on Arc iGPUs with current oneAPI + drivers)
+  # LAPTOP SECONDARY GPU (port 8082): Arc iGPU — vision, small/fast, second parallel lane.
+  # Runs concurrently with nvidia_llama_swap below (the primary GPU on 8081).
   intel_llama_swap:
     <<: [*base_llama_swap]
     profiles:
       - intel_llama_cpp
       - intel_llama_cpp_server
+      - laptop
     extends:
       file: ../base.yml
-      service: base_mesa_gpu
-    image: ghcr.io/mostlygeek/llama-swap:vulkan
-    container_name: llama_swap_server
+      service: base_igpu
+    image: ghcr.io/mostlygeek/llama-swap:intel
+    container_name: llama_swap_intel
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-intel.yaml:/app/config.yaml:z,ro
+      # persists the SYCL/Level-Zero JIT kernel cache across container restarts —
+      # without this, every restart recompiles all GPU kernels from scratch
+      # (minutes, not seconds) before the first request of each model can return
+      - intel_sycl_cache:/root/.cache
+    ports:
+      - 8082:8080
     environment:
       - no_proxy=localhost,127.0.0.1
-      # - GGML_VULKAN_DEVICE=0  # uncomment to select specific GPU device
+      - ZES_ENABLE_SYSMAN=1
+      # - ONEAPI_DEVICE_SELECTOR=level_zero:0  # uncomment to pin a specific Level-Zero device
 
-  # nvidia llama-swap server
+  # LAPTOP PRIMARY GPU (port 8081): RTX 5070 8GB — main agent, reasoning, coding.
+  # Shares port 8081 with amd_llama_swap by design: both are "the primary GPU of this
+  # machine", and they never run on the same host.
   nvidia_llama_swap:
     <<: [*base_llama_swap]
     profiles:
       - nvidia_llama_cpp
       - nvidia_llama_cpp_server
+      - laptop
     extends:
       file: ../base.yml
       service: base_nvidia
     image: ghcr.io/mostlygeek/llama-swap:cuda
-    container_name: llama_swap_server
+    container_name: llama_swap_nvidia
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-nvidia.yaml:/app/config.yaml:z,ro
+    ports:
+      - 8081:8080
     environment:
       - no_proxy=localhost,127.0.0.1
+
+  #########################
+  # EXPERIMENTAL: INTEL NPU
+  #########################
+  # Standalone llama-server (NOT llama-swap — no OpenVINO-backend integration exists yet),
+  # runs a single fixed model on the Core Ultra NPU via llama.cpp's OpenVINO backend.
+  # No prebuilt image exists upstream, so this needs a local build from ggml-org/llama.cpp's
+  # .devops/openvino.Dockerfile, pinned to a commit for reproducibility (that Dockerfile
+  # COPYs the whole llama.cpp source tree, so it can't be vendored standalone — it must be
+  # built with the llama.cpp repo itself as build context). podman-compose (1.6.0) can't
+  # resolve a git `build.context` combined with a non-default `build.dockerfile` path
+  # (fails with "no Containerfile or Dockerfile ... found"), even though plain `podman
+  # build` handles the exact same context/dockerfile fine — so build it once manually:
+  #   podman build -t localhost/llama-cpp-openvino:server-5d8ccdf \
+  #     -f .devops/openvino.Dockerfile --target server \
+  #     "https://github.com/ggml-org/llama.cpp.git#5d8ccdf9d1273bfd83ad8f72565885acc450997e"
+  # then `up` (no --build; this service has no `build:` key) picks up the tag below.
+  # Early-stage backend: stateless only, no --parallel > 1, Q4_0-oriented quant, small context.
+  #
+  # NOT IN THE SERVING PATH. Measured on this laptop (Qwen3-1.7B Q4_0):
+  #   decode 0.61 tok/s | prefill 33 tok/s | a 24-token tool call took 39 seconds
+  # The Arc iGPU serves the same class of work ~21x faster on a LARGER model, so the
+  # small/fast tier lives there (gemma-4-e2b) instead. Tool calling does function here
+  # (verified: correct arguments, finish_reason=tool_calls) — the limit is throughput,
+  # not capability. Kept for experimentation; litellm-config.yaml routes nothing to it.
+  # See ai/LLAMA-CPP.md for details/limitations.
+  intel_npu_llama_server:
+    profiles:
+      - intel_npu_llama_cpp
+    extends:
+      file: ../base.yml
+      service: base_npu
+    image: localhost/llama-cpp-openvino:server-5d8ccdf
+    container_name: llama_npu_server
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+    networks:
+      - llama-swap-network
+    ports:
+      - 8083:8080
+    environment:
+      - GGML_OPENVINO_DEVICE=NPU
+    command: >
+      --no-warmup -c 1024 --parallel 1
+      -m /models/Qwen3-1.7B-Q4_0.gguf
+      --host 0.0.0.0
 
   # LiteLLM gateway: one OpenAI-compatible endpoint -> local + cloud models
   litellm:
@@ -111,6 +214,8 @@ services:
       - intel_llama_cpp
       - amd_llama_cpp
       - nvidia_llama_cpp
+      - intel_npu_llama_cpp
+      - laptop
     image: ghcr.io/berriai/litellm:main-latest
     container_name: litellm
     volumes:
@@ -125,7 +230,6 @@ services:
       - llama-swap-network
     ports:
       - 127.0.0.1:4000:4000
-      - 192.168.122.1:4000:4000  # libvirt NAT
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,6 +242,7 @@ services:
       - intel_llama_cpp
       - amd_llama_cpp
       - nvidia_llama_cpp
+      - laptop
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     env_file:
@@ -159,6 +264,8 @@ volumes:
     name: open-webui
   litellm_postgres:
     name: litellm_postgres
+  intel_sycl_cache:
+    name: intel_sycl_cache
 
 networks:
   llama-swap-network:

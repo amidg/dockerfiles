@@ -1,0 +1,75 @@
+# llama-swap configuration — RTX 5070 8GB TIER (laptop: ThinkPad T1g Gen 8)
+#
+# Runs alongside llama-swap-intel.yaml on the SAME machine (different container,
+# different host port). This instance advertises only models that fit in 8GB;
+# see ai/llama-swap-intel.yaml for the Arc iGPU tier.
+#
+# ROLE: primary agent tier. Complex reasoning, coding, and any prompt large enough
+# that prefill dominates — which is most agent traffic.
+#
+# MEASURED on this laptop (6524-token prompt, --ubatch-size 512):
+#   prefill 1932 tok/s (3.4s)  |  decode 48-54 tok/s  |  6303 MiB of 8151 MiB @ 64K ctx
+# For comparison the Arc iGPU serves gemma-4-e4b at 146 tok/s prefill / 10 tok/s decode.
+# This tier is ~13x faster at prefill and ~5x faster at decode. Route agent work HERE
+# by default and use the iGPU for vision, small/fast tasks, and as the fallback when
+# this tier is asleep or you are on battery (a sustained load here pins 40-60W; ttl
+# unloads it after 10 min idle).
+#
+# BUDGET: the RTX 5070 Laptop reports 8151 MiB and does NOT drive the display
+# (the Arc iGPU does), so effectively all of it is available.
+#   qwen3.5-9b   5.6GB weights + ~1.5GB q4_0 KV @ 64K = 6303 MiB used, ~1.8GB headroom
+#
+# 64K context is kept because prefill is fast enough to actually use it (a full 64K
+# prompt costs ~34s, not the ~10min the iGPU would need). If it OOMs under heavier
+# desktop load, step down in this order: ubatch 512 -> 384 -> 256, then ctx 64K -> 32K.
+#
+# THINKING-MODEL GOTCHA: Qwen3.5 emits reasoning into `reasoning_content` first. A
+# request with max_tokens=16 returned EMPTY `content` (all budget spent reasoning);
+# the same prompt with max_tokens=600 used 176 tokens and returned "OK". Give this
+# model generous max_tokens or agents will see blank replies.
+#
+healthCheckTimeout: 60
+#
+models:
+  # Qwen 3.5 9B - dense, instruction tuned, Q4_K_XL (5.6GB weights)
+  # `local-reasoning` resolves here.
+  "qwen3.5-9b":
+    cmd: |
+      /app/llama-server \
+        --model /models/Qwen3.5-9B-UD-Q4_K_XL.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 1024 --ubatch-size 512 \
+        --cache-reuse 256 \
+        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+#
+  # Ornith 1.0 9B - Q4_K_M (5.9GB weights), already present on disk.
+  # A/B candidate against qwen3.5-9b for reasoning quality at the same size class,
+  # with no new download required. Disabled by default so only one model claims
+  # this tier's identity; uncomment to compare, then keep the winner.
+  #
+  # "ornith-9b":
+  #   cmd: |
+  #     /app/llama-server \
+  #       --model /models/deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf \
+  #       --host 127.0.0.1 --port ${PORT} \
+  #       --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+  #       --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+  #       --batch-size 1024 --ubatch-size 512 \
+  #       --cache-reuse 256 \
+  #       --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
+  #   proxy: "http://127.0.0.1:${PORT}"
+  #   ttl: 600
+#
+# Flag notes:
+# - --cache-type-k/v q4_0: still needed here — unlike the iGPU, 8GB is a hard wall
+# - --n-gpu-layers 99: offload everything; a dense 9B has no expert-offload escape hatch
+# - --jinja: already ENABLED BY DEFAULT in this build — needed for tool calling, don't add
+# - ttl 600: unload after 10 min idle, which is also the battery/thermal story
+#
+# NOTE: gemma-4-e4b and gemma-4-e2b deliberately do NOT live here anymore. They moved
+# to the iGPU tier so that escalating from the daily driver to the reasoning model no
+# longer forces a llama-swap model swap on a single 8GB device.
