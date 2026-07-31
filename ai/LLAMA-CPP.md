@@ -155,10 +155,10 @@ For the NPU specifically, as of this research:
 **Measured 2026-07-30 — it runs, and it is far too slow to use.** Benchmarked against the live
 container (`Qwen3-1.7B-Q4_0`, `-c 1024`, NPU):
 
-| metric | NPU (Qwen3-1.7B) | Arc iGPU (gemma-4-e4b) | RTX 5070 (qwen3.5-9b) |
+| metric | NPU (Qwen3-1.7B) | Arc iGPU (gemma-4-e2b) | RTX 5070 (qwen3.5-9b) |
 |---|---|---|---|
-| decode | **0.61 tok/s** | 10 tok/s | 48 tok/s |
-| prefill | 33 tok/s | 146 tok/s | 1932 tok/s |
+| decode | **0.61 tok/s** | 16 tok/s | 48 tok/s |
+| prefill | 33 tok/s | 194 tok/s | 1932 tok/s |
 | 24-token tool call | **39 s** | ~7 s warm | ~2 s |
 
 That is ~21x slower at decode than the iGPU *on a model 2.4x smaller* — roughly 50x slower per
@@ -178,7 +178,7 @@ Three further findings from that session:
   spent all 32 tokens in `reasoning_content` and returned empty `content`.
 
 **Verdict: not in the serving path.** The container and the `intel_npu_llama_cpp` profile stay for
-experimentation, but `ai/litellm-config.yaml` routes nothing to it and no alias resolves to it. The
+experimentation, but no litellm config routes anything to it and no alias resolves to it. The
 small/fast workload it was intended for (titles, classification, routing) runs on `gemma-4-e2b` on
 the iGPU instead. Note also that the iGPU and NPU share the same LPDDR5x bus as the CPU, so running
 both concurrently slows both — they are not independent throughput adders. Revisit once the backend

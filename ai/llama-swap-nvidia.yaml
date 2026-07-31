@@ -4,35 +4,83 @@
 # different host port). This instance advertises only models that fit in 8GB;
 # see ai/llama-swap-intel.yaml for the Arc iGPU tier.
 #
-# ROLE: primary agent tier. Complex reasoning, coding, and any prompt large enough
-# that prefill dominates — which is most agent traffic.
+# ROLE: primary agent tier. Complex reasoning, coding, vision, and any prompt large
+# enough that prefill dominates — which is most agent traffic.
 #
-# MEASURED on this laptop (6524-token prompt, --ubatch-size 512):
-#   prefill 1932 tok/s (3.4s)  |  decode 48-54 tok/s  |  6303 MiB of 8151 MiB @ 64K ctx
-# For comparison the Arc iGPU serves gemma-4-e4b at 146 tok/s prefill / 10 tok/s decode.
-# This tier is ~13x faster at prefill and ~5x faster at decode. Route agent work HERE
-# by default and use the iGPU for vision, small/fast tasks, and as the fallback when
-# this tier is asleep or you are on battery (a sustained load here pins 40-60W; ttl
-# unloads it after 10 min idle).
+# TWO MODELS, one loaded at a time (they cannot co-reside in 8GB, so requesting the
+# other costs a ~15s swap — that is fine, only gemma-4-26b has aliases pointed at it):
+#   gemma-4-26b  DEFAULT. `local-main` and `local-vision` both resolve here.
+#   qwen3.5-9b   kept available: ~2.5x faster, dense, no vision. Request by name.
+#
+# RUNNING A 26B MODEL ON AN 8GB CARD — how this works.
+# gemma-4-26b-A4B is a Mixture-of-Experts model: 128 experts, 8 active per token
+# (~4B active of 26B total). 30 layers. Critically, ~88% of its parameters are expert
+# tensors that are mostly IDLE on any given token. `--n-cpu-moe N` keeps the expert
+# weights of the first N layers in system RAM (62GB here) while attention, embeddings,
+# norms and the KV cache stay on the GPU. Only the 8 selected experts per layer are
+# read from RAM per token, so the PCIe/DRAM traffic is a fraction of the 15.8GB weights.
+# This is the whole trick: the dense parts that every token touches live on the GPU,
+# the sparse parts that most tokens skip live in RAM.
+#
+# MEASURED SWEEP (6524-token prompt, 64K ctx, --ubatch-size 512). N is how many of the
+# 30 layers keep experts on CPU, so LOWER N = more on GPU = faster but more VRAM:
+#   N=30 (all on CPU)   ~21.8 tok/s decode   3621 MiB
+#   N=26  <- current     640.8 tok/s prefill / 23.4 decode   6883 MiB (with mmproj)
+#   N=24                 681.0 tok/s prefill / 24.4 decode   6529 MiB (no mmproj)
+#   N=22                 729.7 tok/s prefill / 25.9 decode   7435 MiB (no mmproj) — too tight
+#   N=18 and below       OOM, fails to load
+# N=26 is chosen because it leaves room for the vision projector AND ~1.2GB headroom.
+# Going to N=22 buys only ~10% for 2.5GB more VRAM and risks OOM on long prompts.
+#
+# COST VS qwen3.5-9b — this is a deliberate quality-for-speed trade:
+#   qwen3.5-9b    1932 tok/s prefill  |  48 tok/s decode  |  dense 9B, no vision
+#   gemma-4-26b    641 tok/s prefill  |  23 tok/s decode  |  26B/A4B MoE, vision
+# ~3x slower prefill and ~2x slower decode, in exchange for a much larger model and
+# native vision. 23 tok/s still comfortably outruns reading speed. If a workload needs
+# raw throughput more than capability, request qwen3.5-9b by name.
 #
 # BUDGET: the RTX 5070 Laptop reports 8151 MiB and does NOT drive the display
 # (the Arc iGPU does), so effectively all of it is available.
-#   qwen3.5-9b   5.6GB weights + ~1.5GB q4_0 KV @ 64K = 6303 MiB used, ~1.8GB headroom
+#   gemma-4-26b  ~2GB non-expert weights + 1.2GB mmproj + KV @ 64K = 6883 MiB
+#   qwen3.5-9b   5.6GB weights + ~1.5GB q4_0 KV @ 64K = 6303 MiB
+# If either OOMs under heavier desktop load: for gemma raise --n-cpu-moe (26 -> 28 -> 30),
+# for qwen step ubatch 512 -> 384 -> 256, then ctx 64K -> 32K.
 #
-# 64K context is kept because prefill is fast enough to actually use it (a full 64K
-# prompt costs ~34s, not the ~10min the iGPU would need). If it OOMs under heavier
-# desktop load, step down in this order: ubatch 512 -> 384 -> 256, then ctx 64K -> 32K.
+# THINKING-MODEL GOTCHA: these models emit reasoning into `reasoning_content` first. A
+# qwen3.5-9b request with max_tokens=16 returned EMPTY `content` (all budget spent
+# reasoning); the same prompt with max_tokens=600 used 176 tokens and returned "OK".
+# Give local models generous max_tokens or agents will see blank replies.
 #
-# THINKING-MODEL GOTCHA: Qwen3.5 emits reasoning into `reasoning_content` first. A
-# request with max_tokens=16 returned EMPTY `content` (all budget spent reasoning);
-# the same prompt with max_tokens=600 used 176 tokens and returned "OK". Give this
-# model generous max_tokens or agents will see blank replies.
+# VISION / mmproj: the projector must match the model's OWN embedding dim —
+# gemma-4-26b is n_embd 2816, so it REQUIRES gemma-4-26b-mmproj-F16.gguf. A mismatch
+# aborts with "mismatch between text model (n_embd=X) and mmproj (n_embd=Y)", and only
+# on the FIRST REQUEST, not at load.
 #
 healthCheckTimeout: 60
 #
 models:
-  # Qwen 3.5 9B - dense, instruction tuned, Q4_K_XL (5.6GB weights)
-  # `local-reasoning` resolves here.
+  # Gemma 4 26B A4B - MoE (128 experts / 8 active ≈ 4B active of 26B), vision,
+  # Q4_K_XL (15.8GB weights, ~14GB of which sits in system RAM via --n-cpu-moe).
+  # `local-main` AND `local-vision` both resolve here — same model, so vision costs
+  # no eviction. See the header for the --n-cpu-moe sweep behind N=26.
+  "gemma-4-26b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
+        --mmproj /models/gemma-4-26b-mmproj-F16.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --n-cpu-moe 26 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 1024 --ubatch-size 512 \
+        --cache-reuse 256 \
+        --temp 1.0 --top-k 64 --top-p 0.95
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+#
+  # Qwen 3.5 9B - dense, instruction tuned, Q4_K_XL (5.6GB weights), text-only.
+  # Kept as the speed option: ~3x the prefill and ~2x the decode of gemma-4-26b.
+  # No alias points here — request "qwen3.5-9b" by name. Doing so evicts gemma-4-26b
+  # (~15s swap), and the next local-main request swaps it back.
   "qwen3.5-9b":
     cmd: |
       /app/llama-server \
@@ -66,10 +114,14 @@ models:
 #
 # Flag notes:
 # - --cache-type-k/v q4_0: still needed here — unlike the iGPU, 8GB is a hard wall
-# - --n-gpu-layers 99: offload everything; a dense 9B has no expert-offload escape hatch
+# - --n-gpu-layers 99: offload every layer; for gemma-4-26b --n-cpu-moe then pulls the
+#   EXPERT tensors of the first 26 layers back to system RAM. The two flags compose:
+#   ngl decides layer placement, n-cpu-moe overrides it for expert tensors only.
+# - --n-cpu-moe: the lever that makes a 26B model fit 8GB. Only useful for MoE models;
+#   a dense model like qwen3.5-9b has no expert tensors to offload.
 # - --jinja: already ENABLED BY DEFAULT in this build — needed for tool calling, don't add
 # - ttl 600: unload after 10 min idle, which is also the battery/thermal story
 #
-# NOTE: gemma-4-e4b and gemma-4-e2b deliberately do NOT live here anymore. They moved
+# NOTE: gemma-4-e2b deliberately does NOT live here. It moved
 # to the iGPU tier so that escalating from the daily driver to the reasoning model no
 # longer forces a llama-swap model swap on a single 8GB device.

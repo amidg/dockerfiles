@@ -2,7 +2,7 @@
 #
 # THIS FILE IS NO LONGER USED BY THE LAPTOP. The ThinkPad T1g runs two llama-swap
 # instances concurrently, each with its own config:
-#   ai/llama-swap-intel.yaml   Arc Pro iGPU   :8082  gemma-4-e4b, gemma-4-e2b
+#   ai/llama-swap-intel.yaml   Arc Pro iGPU   :8082  gemma-4-e2b
 #   ai/llama-swap-nvidia.yaml  RTX 5070 8GB   :8081  qwen3.5-9b
 # The "8GB tier" section below is kept so this file still works standalone on a
 # single-GPU box, but the laptop's copies of those models are tuned differently

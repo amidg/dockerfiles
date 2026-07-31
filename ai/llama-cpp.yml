@@ -29,10 +29,10 @@
 #  - postgres: tracks LiteLLM spending and virtual key management
 #
 # Agents point to http://litellm:4000/v1 with LITELLM_MASTER_KEY. Prefer the semantic
-# aliases (local-reasoning / local-fast / local-vision / local-tiny) over raw model
+# aliases (local-main / local-support / local-vision / local-tiny) over raw model
 # names so routing can change without touching the agent config.
 # Admin UI: http://localhost:4000/ui (login with master key)
-# Config: ai/litellm-config.yaml | Secrets: ai/litellm.env | DB: postgres://litellm:5432/litellm
+# Config: ai/litellm-config.{laptop,desktop}.yaml (profile-selected) | Secrets: ai/litellm.env
 #
 # TODO:
 # - Add health checks for all services
@@ -184,7 +184,7 @@ services:
   # The Arc iGPU serves the same class of work ~21x faster on a LARGER model, so the
   # small/fast tier lives there (gemma-4-e2b) instead. Tool calling does function here
   # (verified: correct arguments, finish_reason=tool_calls) — the limit is throughput,
-  # not capability. Kept for experimentation; litellm-config.yaml routes nothing to it.
+  # not capability. Kept for experimentation; no litellm config routes anything to it.
   # See ai/LLAMA-CPP.md for details/limitations.
   intel_npu_llama_server:
     profiles:
@@ -208,18 +208,18 @@ services:
       --host 0.0.0.0
 
   # LiteLLM gateway: one OpenAI-compatible endpoint -> local + cloud models
-  litellm:
+  #
+  # There are TWO litellm services below, one per machine, because the alias layer
+  # (local-main / local-support / local-vision / local-tiny) has to resolve to
+  # different models on different hardware. Both use container_name `litellm` and
+  # port 4000 — same rationale as port 8081 for "the primary GPU": these never run on
+  # the same host, and a shared ~/.hermes/config.yaml can point at one fixed endpoint.
+  # Everything except the config mount is shared via the base_litellm anchor.
+  base_litellm: &base_litellm
     profiles:
-      - litellm
-      - intel_llama_cpp
-      - amd_llama_cpp
-      - nvidia_llama_cpp
-      - intel_npu_llama_cpp
-      - laptop
+      - null_profile
     image: ghcr.io/berriai/litellm:main-latest
     container_name: litellm
-    volumes:
-      - ./litellm-config.yaml:/app/config.yaml:z,ro
     env_file:
       - path: ./litellm.env
         required: true
@@ -234,6 +234,28 @@ services:
       postgres:
         condition: service_healthy
     command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+
+  # LAPTOP gateway — aliases resolve across the RTX 5070 (:8081) and Arc iGPU (:8082)
+  litellm:
+    <<: *base_litellm
+    profiles:
+      - litellm
+      - intel_llama_cpp
+      - nvidia_llama_cpp
+      - intel_npu_llama_cpp
+      - laptop
+    volumes:
+      - ./litellm-config.laptop.yaml:/app/config.yaml:z,ro
+
+  # DESKTOP gateway — aliases all resolve to the single 7900 XTX (:8081) until a
+  # second GPU is added. Selected by the amd_llama_cpp profile, so there is no env
+  # var to forget and no way to accidentally load the laptop's topology here.
+  litellm_desktop:
+    <<: *base_litellm
+    profiles:
+      - amd_llama_cpp
+    volumes:
+      - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
 
   # open web-ui frontend (routes through LiteLLM)
   open-webui:

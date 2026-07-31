@@ -5,47 +5,62 @@
 # see ai/llama-swap-nvidia.yaml for the RTX 5070 tier and ai/llama-swap-config.yaml
 # for the 24GB AMD desktop.
 #
-# ROLE: vision, small/fast tasks (titles, classification, routing), and the fallback
-# tier when the RTX 5070 is asleep, busy, or you are on battery.
+# TWO MODELS, both resident at once: gemma-4-e2b (chat, backs local-support and
+# local-tiny) and Qwen3-Embedding-0.6B (backs local-embed). gemma-4-e4b was removed
+# because it is simply slower for no benefit this tier can exploit — measured on the
+# same 6524-token prompt:
 #
-# NOT the tier for large agent prompts. MEASURED on this laptop (6524-token prompt):
-#   Arc iGPU  gemma-4-e4b   146 tok/s prefill (44.7s)  |  10 tok/s decode
-#   RTX 5070  qwen3.5-9b   1932 tok/s prefill ( 3.4s)  |  48 tok/s decode
-# The dGPU is ~13x faster at prefill and ~5x faster at decode, so agent traffic
-# (which is prefill-dominated) belongs on llama-swap-nvidia.yaml. What the iGPU
-# genuinely buys you: it serves vision and cheap tasks WITHOUT waking the dGPU,
-# and it runs concurrently with it, so neither tier evicts the other's model.
+#   model         prefill              decode
+#   gemma-4-e4b   145.9 tok/s (44.7s)  10.1 tok/s
+#   gemma-4-e2b   194.1 tok/s (33.6s)  16.1 tok/s   <- 33% / 60% faster
 #
-# UBATCH TUNING (measured, 6524-token prefill on gemma-4-e4b):
-#   ubatch  128 (old 8GB-tier value)  104.3 tok/s   62.5s
-#   ubatch  512                       125.6 tok/s   51.9s
-#   ubatch 1024  <- current           145.9 tok/s   44.7s
-#   ubatch 2048                       135.8 tok/s   48.0s   (overshoots; slower)
-# 1024 is the sweet spot — beyond it, throughput regresses. The old value of 128 was
-# an 8GB CUDA-tier concession that bought nothing here, since the Arc iGPU has no
-# dedicated VRAM and allocates from 62GB of system RAM. Same reasoning for q8_0 KV.
-# Note the ceiling is memory bandwidth, not batch size: a 4x ubatch increase bought
-# only ~40%, so do not expect more from further tuning.
+# Both are vision-capable MoE Gemma 4 models, so e2b loses nothing structural.
+# The iGPU is memory-bandwidth-bound, so the smaller active-parameter count wins
+# directly. (e4b's block is still in git history if you want it back.)
+#
+# ROLE: RAG embeddings, plus background and fire-and-forget side tasks. NOT the tier
+# for work the user waits on, and no longer the vision tier — vision moved to
+# gemma-4-26b on the dGPU once that model gained its projector:
+#
+#   Arc iGPU  gemma-4-e2b    194 tok/s prefill  |  16 tok/s decode
+#   RTX 5070  gemma-4-26b    641 tok/s prefill  |  23 tok/s decode  (default)
+#   RTX 5070  qwen3.5-9b    1932 tok/s prefill  |  48 tok/s decode  (swap option)
+#
+# The dGPU wins on prefill by 3-10x, so the main agent, delegation and vision all
+# live on llama-swap-nvidia.yaml. What this tier genuinely buys: it serves embeddings
+# and cheap background work WITHOUT evicting gemma-4-26b from the 8GB card (which
+# holds exactly one model), and it runs concurrently with it.
+#
+# UBATCH TUNING (measured on gemma-4-e4b, 6524-token prefill — the shape of the
+# curve is a property of the iGPU, not the model):
+#   ubatch  128 (old 8GB-tier value)  104.3 tok/s
+#   ubatch  512                       125.6 tok/s
+#   ubatch 1024  <- current           145.9 tok/s
+#   ubatch 2048                       135.8 tok/s   (overshoots; regresses)
+# 1024 is the sweet spot. The old value of 128 was an 8GB CUDA-tier concession
+# that bought nothing here, since the Arc iGPU has no dedicated VRAM and allocates
+# from 62GB of system RAM. Same reasoning for q8_0 KV instead of q4_0. The ceiling
+# is memory bandwidth, not batch size — an 8x ubatch increase bought only ~40%, so
+# do not expect more from further tuning.
 #
 # MEMORY CAVEAT: the Arc iGPU reports free memory tracking host MemFree, NOT
-# MemAvailable (see ai/LLAMA-CPP.md). If a model fails to allocate, check `free -h`
-# first — dropping caches or closing apps may be the fix rather than lowering ubatch.
-# Fallback ladder if allocation genuinely fails: ubatch 1024 -> 512 -> 256.
+# MemAvailable (see ai/LLAMA-CPP.md). If the model fails to allocate, check
+# `free -h` first — dropping caches or closing apps may be the fix rather than
+# lowering ubatch. Fallback ladder if allocation genuinely fails:
+# ubatch 1024 -> 512 -> 256, then --ctx-size 65536 -> 32768.
 #
-# VISION / mmproj: each model needs the projector built for ITS OWN embedding dim.
-# Projectors are NOT interchangeable across model sizes — a mismatch makes llama-server
-# abort on load with "mismatch between text model (n_embd=X) and mmproj (n_embd=Y)",
-# and it surfaces only on the FIRST REQUEST, not at container start.
-# Gemma 4 embedding dims (all distinct, hence per-model projectors):
-#   gemma-4-12b 3840 | gemma-4-26b 2816 | gemma-4-e4b 2560 | gemma-4-e2b 1536
+# VISION / mmproj: the projector must match the model's OWN embedding dim.
+# Projectors are NOT interchangeable across model sizes — a mismatch makes
+# llama-server abort with "mismatch between text model (n_embd=X) and mmproj
+# (n_embd=Y)", and it surfaces only on the FIRST REQUEST, not at container start.
+# Gemma 4 embedding dims: 12b 3840 | 26b 2816 | e4b 2560 | e2b 1536.
+# So gemma-4-e2b REQUIRES gemma-4-e2b-mmproj-F16.gguf specifically.
 #
 healthCheckTimeout: 60
 #
-# Keep BOTH iGPU models resident at once. Without this, llama-swap evicts one to load
-# the other, and alternating local-fast (e4b) <-> local-tiny (e2b) costs a ~20s reload
-# every switch — which is exactly the pattern Hermes produces when a delegation agent
-# runs while the main flow generates titles. Combined weights are ~8GB against 62GB of
-# system RAM, so there is no reason to swap them.
+# Keep BOTH iGPU models resident. The embedding model is tiny (0.6B) and RAG calls
+# interleave with chat calls constantly, so letting them evict each other would add
+# a reload to every switch. Combined they are ~3.7GB against 62GB of system RAM.
 #   swap: false      -> members stay loaded instead of evicting each other
 #   exclusive: false -> loading these does not unload anything else
 groups:
@@ -53,17 +68,23 @@ groups:
     swap: false
     exclusive: false
     members:
-      - gemma-4-e4b
       - gemma-4-e2b
+      - embed
 #
 models:
-  # Gemma 4 E4B - MoE (4B active), instruction tuned, vision, Q4_K_XL (~5GB weights)
-  # The daily driver: `local-fast` and `local-vision` both resolve here.
-  "gemma-4-e4b":
+  # Gemma 4 E2B - MoE (2B active), instruction tuned, vision, Q4_K_XL (3.0GB weights)
+  # Backs local-support and local-tiny. The mmproj is kept even though local-vision
+  # now points at gemma-4-26b: it is the fallback target for local-vision, and a
+  # blind fallback would answer questions about images it cannot see.
+  #
+  # 64K context (not 32K) because local-support is declared at 65536 in
+  # ~/.hermes/config.yaml — the runtime window must cover the largest alias pointed
+  # at this model, or long sessions truncate mid-flight.
+  "gemma-4-e2b":
     cmd: |
       /app/llama-server \
-        --model /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-e4b-mmproj-F16.gguf \
+        --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
+        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
@@ -73,44 +94,34 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 #
-  # Gemma 4 E2B - MoE (2B active), instruction tuned, vision, Q4_K_XL (3.0GB weights)
-  # Small/fast tier: `local-tiny`. Title generation, classification, routing.
-  # This is the workload originally intended for the NPU — it lands here instead
-  # because the NPU serves it at 0.61 tok/s (~33s per title) vs ~1s here.
-  "gemma-4-e2b":
+  # Qwen3-Embedding 0.6B - Q8_0 (610MB), 1024-dim embeddings, 28 layers.
+  # Backs `local-embed` for research/RAG (qdrant already runs in ai/n8n.yml).
+  # Embedding work is prefill-only and stateless, which is exactly the shape the
+  # iGPU handles well — and it keeps RAG traffic off the primary GPU entirely.
+  #
+  # --pooling last, NOT mean. The GGUF declares pooling_type=3 (LAST), because
+  # Qwen3-Embedding derives the sentence vector from the final token rather than
+  # averaging. Passing `mean` here would silently produce degraded embeddings that
+  # still look plausible — no error, just worse retrieval. llama.cpp would use the
+  # model default if --pooling were omitted; it is stated explicitly so nobody
+  # "fixes" it to mean later.
+  #
+  # --ubatch-size must be >= the longest input: with pooling enabled the whole
+  # sequence has to fit in a single ubatch, so ubatch is pinned to ctx. 8192 covers
+  # any realistic RAG chunk (typically 512-1024) without sizing the compute buffer
+  # for the model's full 32768 native window.
+  #
+  # This server is EMBEDDINGS ONLY — it cannot serve /v1/chat/completions.
+  "embed":
     cmd: |
       /app/llama-server \
-        --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
+        --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf \
         --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 32768 --parallel 1 \
-        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --cache-reuse 256 \
-        --temp 1.0 --top-k 64 --top-p 0.95
+        --n-gpu-layers 99 --ctx-size 8192 --parallel 1 \
+        --embedding --pooling last \
+        --batch-size 8192 --ubatch-size 8192
     proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-#
-  # Embeddings for research/RAG (qdrant is already running in ai/n8n.yml).
-  # Prefill-only and stateless — cheap on the iGPU.
-  #
-  # DISABLED until the GGUF is downloaded to ${LLAMA_MODELS_DIR}. Left commented so
-  # llama-swap does not advertise a model whose weights are missing (it would only
-  # fail on first request, which is the hard failure mode to debug). To enable:
-  #   1. download Qwen3-Embedding-0.6B (or embeddinggemma-300m) as GGUF
-  #   2. uncomment this block and the matching `local-embed` entry in litellm-config.yaml
-  #   3. verify with: curl localhost:8082/v1/embeddings -d '{"model":"embed","input":"test"}'
-  #
-  # "embed":
-  #   cmd: |
-  #     /app/llama-server \
-  #       --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf \
-  #       --host 127.0.0.1 --port ${PORT} \
-  #       --n-gpu-layers 99 --ctx-size 1024 --parallel 1 \
-  #       --embedding --pooling mean \
-  #       --batch-size 1024 --ubatch-size 1024
-  #   proxy: "http://127.0.0.1:${PORT}"
-  #   ttl: 900
+    ttl: 900
 #
 # Flag notes (see ai/llama-swap-config.yaml for the full rationale):
 # - --flash-attn on: explicit value required by this llama-server build
@@ -120,7 +131,6 @@ models:
 # - --jinja: already ENABLED BY DEFAULT in this build — needed for tool calling, don't add
 # - ttl: seconds idle before unloading
 #
-# Both models here stay resident together (see the `groups` block above), and this
-# instance runs concurrently with the nvidia one — so neither switching between e4b
-# and e2b, nor escalating to qwen3.5-9b, causes a model swap. That is the point of
-# the split: three models loaded across two devices, zero eviction.
+# This instance runs concurrently with the nvidia one, so an iGPU request never
+# evicts gemma-4-26b from the dGPU and vice versa: three models loaded across two
+# devices (gemma-4-e2b + embed here, gemma-4-26b there), zero eviction.
