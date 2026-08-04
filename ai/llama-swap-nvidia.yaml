@@ -61,8 +61,12 @@ healthCheckTimeout: 60
 models:
   # Gemma 4 26B A4B - MoE (128 experts / 8 active ≈ 4B active of 26B), vision,
   # Q4_K_XL (15.8GB weights, ~14GB of which sits in system RAM via --n-cpu-moe).
-  # `local-main` AND `local-vision` both resolve here — same model, so vision costs
-  # no eviction. See the header for the --n-cpu-moe sweep behind N=26.
+  #
+  # ALTERNATIVE to qwen3.6-35b, and the FASTER of the two: 616 t/s prefill /
+  # 17.9 t/s decode at 6903 MiB, versus 395 / 14.9 at 7103 MiB. It is not the default
+  # only because qwen3.6-35b is a larger model. It is also the fallback target for
+  # `local-vision` (it has its own projector). Request "gemma-4-26b" by name; doing so
+  # evicts qwen3.6-35b (~15-30s swap). See the header for the --n-cpu-moe sweep behind N=26.
   "gemma-4-26b":
     cmd: |
       /app/llama-server \
@@ -74,6 +78,64 @@ models:
         --batch-size 1024 --ubatch-size 512 \
         --cache-reuse 256 \
         --temp 1.0 --top-k 64 --top-p 0.95
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+#
+  # Qwen 3.6 35B A3B - MoE (256 experts / 8 active ~= 3.6B of 35B), vision,
+  # UD-Q4_K_XL (20.8 GiB), 40 layers, head_count_kv=2 (so a small KV cache).
+  #
+  # DEFAULT. `local-main` AND `local-vision` both resolve here — same model, so vision
+  # costs no eviction. Chosen for capability (35B) over throughput; gemma-4-26b below
+  # is faster on both axes and is the alternative.
+  #
+  # QUANT CHOICE: Q4_K_XL, switched from UD-IQ4_XS (17.7 GB) after benchmarking.
+  # Same-session, both tuned, 6524-token prefill + 700-token generation:
+  #
+  #   quant             n-cpu-moe   prefill      decode    VRAM
+  #   UD-IQ4_XS         32 of 40    ~505-535 t/s  10.0 t/s  7089 MiB
+  #   UD-Q4_K_XL  <-    34 of 40    ~379-435 t/s  14.9 t/s  7103 MiB
+  #
+  # It is a genuine TRADE, not a clean win: +49% decode, -22% prefill.
+  #   * Decode improves because i-quant dequantization is markedly more expensive on
+  #     CPU than K-quant, and --n-cpu-moe puts ~92% of the weights on the CPU. This
+  #     was the predicted effect and it is the larger of the two.
+  #   * Prefill REGRESSES because the file is 26% bigger, so two fewer expert layers
+  #     fit on the GPU (N=34 vs 32). Prefill activates many experts across the batch,
+  #     so it is far more sensitive to expert-layer placement than decode is.
+  #
+  # Q4_K_XL wins whenever prompt_tokens < ~50x generated_tokens. Thinking models emit
+  # hundreds of reasoning tokens per turn, so typical agent turns land well inside
+  # that. Worked example (6524-token prompt + 700-token generation):
+  #   IQ4_XS   12.2s prefill + 70.0s decode = 82.2s
+  #   Q4_K_XL  16.5s prefill + 47.0s decode = 63.5s   (23% faster end to end)
+  # If your workload is huge prompts with terse outputs, IQ4_XS is the better pick —
+  # the file is still on disk. Swap the --model path and set --n-cpu-moe back to 32.
+  #
+  # SLOWER THAN gemma-4-26b, which measured 616 t/s prefill / 17.9 t/s decode at
+  # 6903 MiB in the same session — ~1.6x prefill and ~1.2x decode. This model is the
+  # default regardless, trading latency for a 35B-class model. Flip the two aliases in
+  # litellm-config.laptop.yaml if the latency matters more.
+  #
+  # --n-cpu-moe SWEEP for Q4_K_XL (40 layers; lower N = more on GPU = faster, more VRAM):
+  #   N=36  14.2 t/s  6137 MiB   vision OK
+  #   N=34  14.9 t/s  7103 MiB   vision OK  <- current, ~1.0GB headroom
+  #   N=33  16.4 t/s  7539 MiB   vision OK but only ~600 MiB headroom
+  #   N=32  15.4 t/s  7743 MiB   VISION CRASHES (HTTP 502, process exits)
+  #
+  # N=33 IS THE FLOOR FOR VISION and N=34 is the safe setting. N=33 is only ~4%
+  # faster for 464 MiB less headroom, which is the same margin that made the IQ4_XS
+  # build crash on images. Do not drop below 34 while --mmproj is set.
+  "qwen3.6-35b":
+    cmd: |
+      /app/llama-server \
+        --model /models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
+        --mmproj /models/qwen3.6-35b-mmproj-F16.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --n-cpu-moe 34 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 1024 --ubatch-size 512 \
+        --cache-reuse 256 \
+        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 #
