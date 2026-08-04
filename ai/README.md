@@ -45,7 +45,7 @@ shared `~/.hermes/config.yaml` drive either box. Only the model behind each name
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
 | `local-vision` | `qwen3.6-35b` | `qwen3.6-27b` | images and PDFs |
-| `local-tiny` | `gemma-4-e2b` | `gemma-4-12b` | titles, tags, background chores |
+| `local-tiny` | `qwen3.5-2b` | `gemma-4-12b` | titles, tags, background chores |
 | `local-embed` | `embed` | *(not available)* | RAG embeddings, 1024-dim |
 
 ```bash
@@ -61,7 +61,7 @@ Hardcoding a model name works but breaks the moment you run the same config on t
 | device | port | models | role |
 |---|---|---|---|
 | RTX 5070 8GB | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` | everything the user waits on |
-| Arc Pro iGPU | 8082 | `gemma-4-e2b`, `embed` | background chores + embeddings |
+| Arc Pro iGPU | 8082 | `qwen3.5-2b`, `embed` | background chores + embeddings |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
 The 26B and 35B models run on an 8GB card via `--n-cpu-moe`, which keeps Mixture-of-Experts weights

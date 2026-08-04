@@ -11,7 +11,7 @@
 # On THIS machine they resolve to:
 #   local-main     qwen3.6-35b  RTX 5070 8GB   :8081   MoE 35B/A3B via --n-cpu-moe
 #   local-vision   qwen3.6-35b  RTX 5070 8GB   :8081   same model — no swap for vision
-#   local-tiny     gemma-4-e2b  Arc iGPU       :8082   no vision, no reasoning
+#   local-tiny     qwen3.5-2b   Arc iGPU       :8082   no vision, no reasoning
 #   local-embed    embed        Arc iGPU       :8082   Qwen3-Embedding 0.6B, 1024-dim
 #
 # The three iGPU aliases all resolve to the SAME model. gemma-4-e4b was dropped:
@@ -26,7 +26,7 @@
 #   RTX 5070  qwen3.6-35b    395 tok/s prefill  14.9 tok/s decode  (35B MoE, vision) DEFAULT
 #   RTX 5070  gemma-4-26b    616 tok/s prefill  17.9 tok/s decode  (26B MoE, vision) alt
 #   RTX 5070  qwen3.5-9b    1932 tok/s prefill  48   tok/s decode  (9B dense, text only)
-#   Arc iGPU  gemma-4-e2b    194 tok/s prefill  16   tok/s decode  (text-only, no thinking)
+#   Arc iGPU  qwen3.5-2b     558 tok/s prefill  23.1 tok/s decode  (text-only, no thinking)
 #
 # NOTE gemma-4-26b is FASTER on both axes (~1.6x prefill, ~1.2x decode) and uses less
 # VRAM. qwen3.6-35b is the default anyway, chosen for capability over throughput — it
@@ -54,10 +54,12 @@ model_list:
   # Vision + small/fast + the second parallel lane. No dedicated VRAM — allocates from
   # 62GB system RAM, so these run bigger batches and q8_0 KV than the 8GB tier below.
   # Single model on this tier, so nothing ever evicts it.
-  - model_name: gemma-4-e2b
+  - model_name: qwen3.5-2b
     litellm_params:
-      model: openai/gemma-4-e2b        # MoE 2B active, TEXT-ONLY, 64K ctx (3.0GB)
-                                       # backs local-tiny; no vision, no reasoning
+      model: openai/qwen3.5-2b         # DENSE 2B, TEXT-ONLY, 64K ctx (1.28 GiB)
+                                       # backs local-tiny; no vision, no reasoning.
+                                       # Replaced gemma-4-e2b: 3.2x prefill, 1.4x
+                                       # decode, 43% the size, equal tool use.
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
@@ -145,7 +147,7 @@ router_settings:
     local-main: qwen3.6-35b     # PRIMARY GPU (RTX 5070)  — main agent, coding, large prompts
     local-vision: qwen3.6-35b   # PRIMARY GPU (RTX 5070)  — SAME model as local-main, so
                                 #   vision costs no model swap and gets a 35B-class model
-    local-tiny: gemma-4-e2b     # SECONDARY GPU (Arc iGPU) — titles/tags; no vision, no reasoning
+    local-tiny: qwen3.5-2b      # SECONDARY GPU (Arc iGPU) — titles/tags; no vision, no reasoning
     local-embed: embed          # SECONDARY GPU (Arc iGPU) — RAG embeddings, 1024-dim
     # local-embed: embed        # SECONDARY GPU (Arc iGPU) — enable with the embed model above
 
@@ -178,7 +180,7 @@ litellm_settings:
   # them — a confidently wrong answer is worse than an error.
   # local-vision NOW HAS a fallback, which it could not before: gemma-4-26b also has a
   # projector, so vision can degrade to it instead of failing. It must never fall back
-  # to qwen3.5-9b or gemma-4-e2b — neither has a projector, and a blind model
+  # to qwen3.5-9b or qwen3.5-2b — neither has a projector, and a blind model
   # confidently describing an image it cannot see is worse than a clean error.
   fallbacks:
     - qwen3.6-35b: ["gemma-4-26b"]

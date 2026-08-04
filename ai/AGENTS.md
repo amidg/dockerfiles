@@ -13,7 +13,7 @@ models its device can actually run:
 |---|---|---|---|---|
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8081 | `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-27b`, `qwen3.6-35b`, `qwen3-coder-30b` (+ an unused 8GB-tier section kept so the file works standalone) |
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (text-only, non-thinking), `embed` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b` (text-only, non-thinking), `embed` |
 
 LiteLLM is likewise per-machine — `litellm-config.laptop.yaml` and `litellm-config.desktop.yaml`,
 selected by the compose profile (`laptop` vs `amd_llama_cpp`), so there is no env var to forget.
@@ -42,7 +42,7 @@ measured in the same session.** The ratios have been stable across every repetit
 | RTX 5070 | `qwen3.6-35b` **(default)** | 395 tok/s | 14.9 tok/s | 7103 MiB |
 | RTX 5070 | `gemma-4-26b` (alternative) | **616 tok/s** | **17.9 tok/s** | 6903 MiB |
 | RTX 5070 | `qwen3.5-9b` | **1932 tok/s** | **48 tok/s** | 6303 MiB |
-| Arc iGPU | `gemma-4-e2b` | 194 tok/s | 16 tok/s | 2.62 GB RAM |
+| Arc iGPU | `qwen3.5-2b` | **558 tok/s** | **23.1 tok/s** | 1.34 GB RAM |
 | Arc iGPU | `embed` (Qwen3-Embedding-0.6B) | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 tok/s | **0.61 tok/s** | RAM |
 
@@ -124,7 +124,7 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` (RTX 5070) | `qwen3.6-27b` (7900 XTX) | main agent, delegation, anything user-facing |
 | `local-vision` | `qwen3.6-35b` (RTX 5070) | `qwen3.6-27b` | images/PDFs — same model as `local-main`, so no swap |
-| `local-tiny` | `gemma-4-e2b` (Arc iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
+| `local-tiny` | `qwen3.5-2b` (Arc iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
 | `local-embed` | `embed` (Arc iGPU) | **MISSING** | RAG embeddings, 1024-dim |
 
 Models with **no alias** are still reachable by name: `gemma-4-26b` and `qwen3.5-9b` on the laptop.
@@ -142,7 +142,7 @@ sync. If background delegation ever needs its own tier, add the alias back to bo
 
 **`local-vision` now has a fallback, which it could not before.** Both `qwen3.6-35b` and
 `gemma-4-26b` carry projectors, so vision degrades from one to the other instead of failing. It
-must never fall back to `qwen3.5-9b` or `gemma-4-e2b` — neither has a projector, and a blind model
+must never fall back to `qwen3.5-9b` or `qwen3.5-2b` — neither has a projector, and a blind model
 confidently describing an image it cannot see is worse than a clean error.
 
 **Delegation runs on `local-main`, not the secondary GPU — this is measured, not assumed.**
@@ -150,7 +150,7 @@ confidently describing an image it cannot see is worse than a clean error.
 | delegate_task, identical prompt | wall time |
 |---|---|
 | `local-main` (RTX 5070) | **33.6s** |
-| the Arc iGPU (`gemma-4-e2b`) | 2m05.8s |
+| the Arc iGPU (`gemma-4-e2b`, since replaced) | 2m05.8s |
 
 Three reasons the "parallel lane" does not pay off: during synchronous delegation the parent is
 idle so the primary GPU is free anyway (and the child reuses the already-loaded model, no
@@ -178,9 +178,9 @@ Auxiliary tasks split on **critical path vs background**, not on prompt size:
 
 | tier | tasks |
 |---|---|
-| `local-main` (dGPU) | `compression`, `web_extract`, `mcp`, `skills_hub`, `memory_query_rewrite`, `approval`, `triage_specifier`, `kanban_decomposer`, `goal_judge` |
+| `local-main` (dGPU) | `compression`, `mcp`, `skills_hub`, `triage_specifier`, `kanban_decomposer`, `goal_judge` |
 | `local-vision` (dGPU) | `vision` |
-| `local-tiny` (iGPU) | `title_generation`, `curator`, `profile_describer`, `monitor`, `tts_audio_tags` |
+| `local-tiny` (iGPU) | `title_generation`, `curator`, `profile_describer`, `monitor`, `tts_audio_tags`, `web_extract`, `approval`, `memory_query_rewrite` |
 
 Anything the user waits on goes to `local-main` — it is faster *and* reuses the already-loaded
 model. Fire-and-forget work goes to `local-tiny` on the iGPU specifically so it does **not** evict
@@ -188,11 +188,108 @@ the large model from the 8GB card. Timeouts are raised well above Hermes' defaul
 compression / 360s web_extract) because local models are slow and a timeout mid-compression drops
 context rather than degrading gracefully.
 
+**`approval` MUST stay on a non-thinking model — this is a correctness constraint, not a
+preference.** `tools/approval.py::_smart_approve` sends `max_tokens=16, temperature=0` and expects
+exactly one word (`APPROVE`/`DENY`/`ESCALATE`). On a thinking model the entire budget goes to
+reasoning. Measured on the identical prompt:
+
+| tier | model | result |
+|---|---|---|
+| `local-main` | qwen3.6-35b (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
+| `local-tiny` | qwen3.5-2b (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
+
+So smart approval was silently broken while it pointed at `local-main`. It now points at
+`local-tiny`. Do not move it back without also raising `max_tokens` in `tools/approval.py` —
+which is upstream code, so prefer leaving it here. `approvals.mode` resolves to `smart` by default
+even though the user config has no `approvals:` block.
+
+**Caveat on verifying it:** I could not get `_smart_approve` to fire from a `hermes -z` one-shot
+run even with a command the scanner flags (`chmod -R 777 ...`, confirmed flagged via
+`detect_dangerous_command`). Non-interactive runs appear to bypass the approval path. Verify in an
+interactive session, watching `podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"`.
+
+**`memory_query_rewrite` almost certainly never fires here.** It is referenced only by
+`plugins/memory/query_rewrite.py` and the Honcho plugin — i.e. **external** memory providers.
+`memory.provider` is empty (built-in, non-vector memory), so nothing invokes it. It was pointed at
+`local-tiny` for consistency, not effect.
+
+**`auxiliary.web_extract` is misleadingly named, and fires rarely.** It does *not* control the
+`web_extract` tool — `tools/web_tools.py` makes **no LLM call at all**, it truncates page text at
+`DEFAULT_EXTRACT_CHAR_LIMIT` (15000 chars) and stores the full copy on disk for `read_file` paging.
+The setting is consumed by `tools/browser_tool.py`, which summarises **browser page snapshots**
+with it (`task="web_extract"`, `max_tokens=4000`, `temperature=0.1`). Its gate is narrow:
+
+```python
+if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:   # 15000 chars
+    snapshot_text = _extract_relevant_content(snapshot_text, user_task)
+elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+    snapshot_text = _truncate_snapshot(snapshot_text)                  # no LLM
+```
+
+It was routed to `local-tiny` as a trial (2026-08-03). **In three realistic attempts — a plain
+page fetch, a browser navigation, and a deliberately link-heavy page — it never fired once**; the
+main agent read the content directly each time. Verify with request counts before concluding a
+change to it did anything:
+
+```bash
+podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"   # before and after
+```
+
+`AUXILIARY_WEB_EXTRACT_MODEL` (env) overrides the config value; it is unset here.
+
 **Hermes cannot consume `local-embed`.** There is no embedding config key anywhere in
 `hermes_cli/config_defaults.py` and nothing in the agent calls `/embeddings`; its built-in memory
 is not vector-based, and the external providers that do use embeddings (Hindsight) run
 `sentence-transformers` locally rather than hitting an OpenAI-compatible endpoint. `local-embed`
 is for the qdrant/n8n stack (`ai/n8n.yml`), `ai/research.yml`, or direct API use.
+
+## The tiny tier: model choice, and why dense beats sparse here
+
+`qwen3.5-2b` replaced `gemma-4-e2b` after benchmarking. Same iGPU, 64K ctx, 6524-token prefill,
+two interleaved rounds:
+
+| model | file | prefill | decode |
+|---|---|---|---|
+| `gemma-4-e2b` (was) | 3.00 GiB | 176.1 t/s | 16.3 t/s |
+| **`qwen3.5-2b` (now)** | **1.28 GiB** | **557.7 t/s** | **23.1 t/s** |
+| `Qwen3.5-4B` (rejected) | 2.71 GiB | 221.0 t/s | 11.9 t/s |
+| `gemma-4-e4b` (rejected) | 4.80 GiB | 141.2 t/s | 10.4 t/s |
+| `qwen3.5-9b` (rejected) | 5.60 GiB | 190.9 t/s | 7.4 t/s |
+
+**Dense beats sparse on this iGPU.** `gemma-4-e2b` and `-e4b` are MoE, and their expert gathers
+are inefficient here; a plain dense 2B saturates the device far better. The pattern is consistent:
+even dense `qwen3.5-9b` out-prefilled the 2B-active MoE. Prefill is compute-bound matrix-matrix
+work; decode is bandwidth-bound and scales with active parameters, which is why the 9B collapses
+to 7.4 t/s. **At the small end on this hardware, prefer dense.**
+
+Capability was verified equal, not assumed: single tool call, tool *selection* among four schemas
+with three required args, tool-result round-trip, and correctly declining to call a tool — all
+three candidates passed. Accuracy at temp 0 was identical. `qwen3.5-2b` additionally returns clean
+JSON where `gemma-4-e2b` wrapped it in ` ```json ` fences a consumer had to strip. It retrieved a
+needle at 60% depth in a 49,970-token context.
+
+**Two traps found while evaluating it:**
+
+1. **Unsloth's docs are wrong about default thinking.** They state the Qwen3.5 Small series
+   (0.8B/2B/4B/9B) has reasoning disabled by default. With this llama.cpp build it does not —
+   tested without the flag, the 2B emitted ~1388 chars of reasoning and hit the token cap with
+   **empty content**. The 4B *model card* (which says thinking is on) is the accurate source.
+   `--reasoning off` is still required.
+2. **Unsloth's recommended `presence_penalty` 1.5-2.0 destabilises short factual output.** At
+   temp 0.7 + presence_penalty 1.5 the 2B answered "17 times 4" as **56**; at temp 0 it answers 68.
+   The config uses 0.5. This nearly got recorded as a capability gap — it was sampling noise.
+
+**Context scaling is the reason this tier is not for big prompts.** Prefill collapses as context
+grows (attention is quadratic and the device is bandwidth-bound):
+
+| context | `qwen3.5-2b` prefill | time to ingest |
+|---|---|---|
+| 6.5K | 558 tok/s | 12s |
+| 19K | 252 tok/s | 75s |
+| 50K | 103 tok/s | **485s** |
+
+The dGPU holds ~396 tok/s at 19K. So **small prompts → iGPU wins; large prompts → dGPU wins**,
+and the crossover is around 10-15K tokens.
 
 ## The tiny tier: no vision, no reasoning
 
@@ -217,14 +314,14 @@ Three traps, all of which fail silently:
    strips it for `openai/`-prefixed custom endpoints. Thinking must be off at the *server*.
 3. Reasoning is a **server-level** flag, so it is set on the process, not the request.
 
-**Vision is also removed from this tier.** The `--mmproj` was dropped: `local-vision` resolves to
-the dGPU, which has a far better vision model, so the ~1GB projector here served nothing.
-`gemma-4-e2b` now correctly rejects images with `image input is not supported - hint: if this is
-unexpected, you may need to provide the mmproj`. Re-add
-`--mmproj /models/gemma-4-e2b-mmproj-F16.gguf` (n_embd 1536, that exact file) to restore it.
+**Vision is also absent from this tier**, deliberately: `local-vision` resolves to the dGPU, which
+has a far better vision model. The tier model correctly rejects images with `image input is not
+supported - hint: if this is unexpected, you may need to provide the mmproj`.
 
-Caveat: `--reasoning off` removes the reasoning waste, not e2b's chattiness. Given a vague prompt
-it still rambles to the `max_tokens` cap; given a well-specified one it answers in ~101 tokens.
+Caveat: `--reasoning off` removes the reasoning waste, not verbosity. Given a vague prompt a small
+model still rambles to the `max_tokens` cap; given a well-specified one ("Reply with ONLY the
+title") it answers in ~5-8 tokens. The chattiness once blamed on `gemma-4-e2b` was a **prompt**
+problem, not a model problem — worth fixing the prompt before swapping a model.
 
 ## Embeddings
 
@@ -247,11 +344,9 @@ This server is **embeddings only** — it cannot serve `/v1/chat/completions`.
 
 - **Intel iGPU (Arc)** — SYCL, via upstream-tracking `llama-swap:intel` image (`intel_llama_swap`
   profile). Runs two `llama-server` processes, **both resident simultaneously** via a `groups:`
-  block with `swap: false`: `gemma-4-e2b` (`local-tiny`) and `embed` (`local-embed`). RAG and
+  block with `swap: false`: `qwen3.5-2b` (`local-tiny`) and `embed` (`local-embed`). RAG and
   background calls interleave constantly, so letting them evict each other would add a reload to
-  every switch. Measured resident total **3.41 GB** (2.62 + 0.80) against 62GB of system RAM.
-  `gemma-4-e4b` was dropped earlier: on this bandwidth-bound iGPU, e2b is faster at everything
-  (194 vs 146 tok/s prefill, 16 vs 10 tok/s decode), so e4b cost latency for nothing.
+  every switch. Measured resident total **2.14 GB** against 62GB of system RAM.
   **Cold-start gotcha:** the `intel_sycl_cache` named volume (mounted at `/root/.cache`) persists
   the SYCL/Level-Zero JIT kernel cache across container restarts. Without it, every recreate
   recompiles all GPU kernels from scratch — measured 4m32s for the first request after a fresh
@@ -358,7 +453,7 @@ too, and remember the runtime window must cover the **largest** alias pointing a
 curl -s localhost:8081/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.6-35b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'  # dGPU
 curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"gemma-4-e2b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'  # iGPU
+  -d '{"model":"qwen3.5-2b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'   # iGPU
 curl -s localhost:8082/v1/embeddings -H 'Content-Type: application/json' \
   -d '{"model":"embed","input":"test"}'                                                      # iGPU
 
@@ -366,12 +461,12 @@ curl -s localhost:8082/v1/embeddings -H 'Content-Type: application/json' \
 # Use a WELL-SPECIFIED prompt: given a vague one e2b rambles to the cap either way.
 P='Generate a short title (max 6 words) for this conversation:\nUser: my postgres container keeps OOMing after about an hour\nAssistant: Lets check shared_buffers and work_mem first.'
 curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg p "$P" '{model:"gemma-4-e2b",messages:[{role:"user",content:$p}],max_tokens:400}')" \
+  -d "$(jq -nc --arg p "$P" '{model:"qwen3.5-2b",messages:[{role:"user",content:$p}],max_tokens:400}')" \
   | jq '{tokens:.usage.completion_tokens, reasoning:(.choices[0].message.reasoning_content // "" | length)}'
 
 # confirm vision is really gone from the tiny tier — must error, not answer
 curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"gemma-4-e2b","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":50}' \
+  -d '{"model":"qwen3.5-2b","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":50}' \
   | jq -r '.error.message // "UNEXPECTED: answered instead of erroring"'
 
 # aliases through the gateway (what agents actually use)

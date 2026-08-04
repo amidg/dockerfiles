@@ -6,7 +6,7 @@
 # for the 24GB AMD desktop.
 #
 # TWO llama-server processes, both resident at once:
-#   gemma-4-e2b   backs `local-tiny`  — no vision, no reasoning (see below)
+#   qwen3.5-2b    backs `local-tiny`  — no vision, no reasoning (see below)
 #   embed         backs `local-embed` — Qwen3-Embedding 0.6B
 #
 # `local-tiny` is the ONLY chat alias on this tier. It absorbed the former
@@ -18,23 +18,22 @@
 # is on the critical path of a user turn, and nothing here needs to see an image or
 # think out loud.
 #
-#   Arc iGPU  gemma-4-e2b    194 tok/s prefill  |  16 tok/s decode
-#   RTX 5070  gemma-4-26b    641 tok/s prefill  |  23 tok/s decode  (default)
-#   RTX 5070  qwen3.5-9b    1932 tok/s prefill  |  48 tok/s decode  (swap option)
+#   Arc iGPU  qwen3.5-2b     558 tok/s prefill  |  23.1 tok/s decode
+#   RTX 5070  qwen3.6-35b    395 tok/s prefill  |  14.9 tok/s decode  (default)
+#   RTX 5070  gemma-4-26b    616 tok/s prefill  |  17.9 tok/s decode  (alternative)
 #
-# The dGPU wins on prefill by 3-10x, so the main agent, delegation and vision all
-# live on llama-swap-nvidia.yaml. What this tier genuinely buys: it serves embeddings
-# and cheap background work WITHOUT evicting gemma-4-26b from the 8GB card (which
-# holds exactly one model), and it runs concurrently with it.
+# NOTE the iGPU now BEATS the dGPU main model on both axes at small context (558 vs
+# 395 prefill, 23.1 vs 14.9 decode) — qwen3.6-35b is a 35B with CPU-offloaded experts,
+# so it is slow per token. That reverses the old assumption that the iGPU is merely
+# the spare device. It flips back as context grows: at 19K the iGPU is down to 252 t/s
+# while the dGPU holds ~396. Small prompts -> iGPU wins; large prompts -> dGPU wins.
+# The iGPU also runs CONCURRENTLY and never evicts the dGPU model.
 #
-# NO VISION HERE — the --mmproj was deliberately removed. `local-vision` resolves to
-# gemma-4-26b on the dGPU, which has its own projector and is a far better vision
-# model. Keeping a projector loaded here cost ~1GB to serve nothing. Consequence:
-# there is NO vision fallback on this laptop, and litellm-config.laptop.yaml
-# deliberately declares no fallback for `local-vision` — a blind model confidently
-# describing an image it cannot see is worse than a clean error. gemma-4-e2b IS
-# vision-capable if you re-add --mmproj /models/gemma-4-e2b-mmproj-F16.gguf (n_embd
-# 1536 — that exact projector, never another size's).
+# NO VISION HERE — deliberately no --mmproj. `local-vision` resolves to qwen3.6-35b
+# on the dGPU, which has its own projector and is a far better vision model.
+# litellm-config.laptop.yaml routes local-vision's fallback to gemma-4-26b (also on
+# the dGPU, also with a projector) and never to a blind model — one confidently
+# describing an image it cannot see is worse than a clean error.
 #
 # NO REASONING HERE — every model in this stack is a thinking model, which is pure
 # waste for this tier's workload. Measured on a realistic title-generation prompt
@@ -55,9 +54,10 @@
 # `drop_params: true` for openai/-prefixed custom endpoints (310 tokens, full
 # reasoning, no warning). It has to be a server flag.
 #
-# Caveat: --reasoning off removes the reasoning waste, not e2b's chattiness. Given a
-# vague prompt it still rambles to the max_tokens cap; given a well-specified one it
-# answers in ~101 tokens. Constrain the prompt, not just the flag.
+# Caveat: --reasoning off removes the reasoning waste, not verbosity. Given a vague
+# prompt a small model still rambles to the max_tokens cap; given a well-specified one
+# ("Reply with ONLY the title") it answers in ~8 tokens. The chattiness once blamed on
+# gemma-4-e2b was a PROMPT problem, not a model problem. Constrain the prompt.
 #
 # UBATCH TUNING (measured on a 6524-token prefill — the shape of the curve is a
 # property of the iGPU, not the model):
@@ -89,30 +89,63 @@ groups:
     swap: false
     exclusive: false
     members:
-      - gemma-4-e2b
+      - qwen3.5-2b
       - embed
 #
 models:
-  # Gemma 4 E2B - MoE (2B active), instruction tuned, Q4_K_XL (3.0GB weights).
+  # Qwen 3.5 2B - DENSE 2B, 24 layers, head_count_kv=2 (small KV), Q4_K_XL (1.28 GiB).
   # Backs `local-tiny`, the only chat alias on this tier.
   #
+  # REPLACED gemma-4-e2b after benchmarking. Same iGPU, 64K ctx, 6524-token prefill,
+  # two interleaved rounds:
+  #
+  #   model         file      prefill      decode
+  #   gemma-4-e2b   3.00 GiB  176.1 t/s    16.3 t/s
+  #   Qwen3.5-2B    1.28 GiB  557.7 t/s    23.1 t/s   <- 3.2x prefill, 1.4x decode
+  #   Qwen3.5-4B    2.71 GiB  221.0 t/s    11.9 t/s   (rejected: slower decode than gemma)
+  #
+  # Dense beats sparse on this iGPU. gemma-4-e2b is MoE, and its expert gathers are
+  # inefficient here; a plain dense 2B saturates the device far better. The same
+  # pattern showed up with qwen3.5-9b (190 t/s prefill, beating the 2B-active MoE)
+  # — on this hardware, prefer dense models at the small end.
+  #
+  # Verified equal on capability: single tool call, tool SELECTION among 4 schemas
+  # with 3 required args, tool-result round-trip, and correctly NOT calling a tool.
+  # Accuracy at temp 0 identical. Bonus: returns clean JSON where gemma-4-e2b wrapped
+  # it in ```json fences a consumer had to strip.
+  #
   # TEXT-ONLY BY CHOICE (no --mmproj) and NON-THINKING BY CHOICE (--reasoning off).
-  # Both are deliberate; see the header before "restoring" either.
+  #
+  # --reasoning off IS STILL REQUIRED. Unsloth's docs claim the Qwen3.5 Small series
+  # (0.8B/2B/4B/9B) has reasoning disabled by default; that is NOT true with this
+  # llama.cpp build. Tested without the flag, the 2B emitted ~1388 chars of reasoning
+  # and hit the token cap with EMPTY content. The 4B model card (which says thinking
+  # is on) is the accurate one. Do not remove this flag on the docs' say-so.
+  #
+  # SAMPLING: presence_penalty is deliberately LOWER than Unsloth's recommended
+  # 1.5-2.0. At temp 0.7 + presence_penalty 1.5 the 2B answered "17 times 4" as 56;
+  # at temp 0 it answers 68. The aggressive penalty destabilises short factual output,
+  # which is exactly what this tier produces.
   #
   # 64K context because local-tiny is declared at 65536 in ~/.hermes/config.yaml —
-  # the runtime window must cover the largest alias pointed at this model, or long
-  # sessions truncate mid-flight.
-  "gemma-4-e2b":
+  # the runtime window must cover the largest alias pointed at this model. Verified:
+  # retrieved a needle at 60% depth in a 49,970-token context.
+  #
+  # CONTEXT SCALING — the reason this tier is not for big prompts. Prefill collapses
+  # as context grows (attention is quadratic, and this device is bandwidth-bound):
+  #   6.5K ctx  -> 558 t/s      19K ctx -> 252 t/s      50K ctx -> 103 t/s (485s!)
+  # Route large-prompt work to the dGPU, or accept minutes of prefill.
+  "qwen3.5-2b":
     cmd: |
       /app/llama-server \
-        --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
+        --model /models/Qwen3.5-2B-UD-Q4_K_XL.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
         --batch-size 2048 --ubatch-size 1024 \
         --cache-reuse 256 \
         --reasoning off \
-        --temp 1.0 --top-k 64 --top-p 0.95
+        --temp 0.7 --top-k 20 --top-p 0.8 --presence-penalty 0.5
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 #
@@ -157,4 +190,4 @@ models:
 #
 # This instance runs concurrently with the nvidia one, so an iGPU request never
 # evicts gemma-4-26b from the dGPU and vice versa: three models loaded across two
-# devices (gemma-4-e2b + embed here, gemma-4-26b there), zero eviction.
+# devices (qwen3.5-2b + embed here, qwen3.6-35b there), zero eviction.
