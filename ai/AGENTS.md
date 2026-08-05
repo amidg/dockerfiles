@@ -1,180 +1,216 @@
-# AGENTS.md — llama.cpp / llama-swap / LiteLLM stack
+# AGENTS.md — local LLM stack
 
-Operational notes for working on this AI inference stack. These capture non-obvious gotchas
-learned the hard way — read before editing any `llama-swap-*.yaml`, either `litellm-config.*.yaml`,
-or adding models. For "how do I run this", see `README.md`.
+Everything non-obvious about this stack lives here. Read before editing any config.
+
+## Document structure — where things belong
+
+| file | contains | audience |
+|---|---|---|
+| `README.md` | how to run it, endpoints, aliases, a handful of headline numbers | humans |
+| `AGENTS.md` | **all rules, rationale and accumulated learnings** | agents + whoever edits configs |
+| `*.yml`, `*.yaml` | **working config only — no comments** | the runtime |
+
+The benchmark harness lives in a **separate repo**,
+[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking) (`smoke.py`,
+`llmbench.py`). It has its own `AGENTS.md` covering how to run it and how to avoid drawing
+wrong conclusions from its output. Point it at this stack with
+`export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env`.
+
+**Configs carry no comments by design.** Rationale rots when it sits next to the flag it
+explains; it gets copied, contradicted, and never re-measured. If a setting needs
+justifying, justify it here with the measurement that produced it. If you change a tuned
+value, update the table here in the same commit.
 
 ## Architecture
 
-Two machines. Each llama-swap instance mounts exactly one config and therefore advertises only
-models its device can actually run:
+Two machines. Each llama-swap instance mounts one config and advertises only what its
+device can run.
 
-| config | instance | device | host port | models |
+| config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8081 | `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-27b`, `qwen3.6-35b`, `qwen3-coder-30b` (+ an unused 8GB-tier section kept so the file works standalone) |
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b` (text-only, non-thinking), `embed` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `embed` |
+| `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8081 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
-LiteLLM is likewise per-machine — `litellm-config.laptop.yaml` and `litellm-config.desktop.yaml`,
-selected by the compose profile (`laptop` vs `amd_llama_cpp`), so there is no env var to forget.
-Both files define the **same alias names**; only the models behind them differ.
+**Ports follow device rank, not machine:** 8081 = primary GPU, 8082 = secondary, 8083 =
+NPU. The desktop and laptop both use 8081 because each is its machine's primary GPU; they
+are separate hosts. Same reasoning lets both run `container_name: litellm` on 4000.
 
-**Ports follow device rank, not machine:** `8081` is always the primary GPU, `8082` the secondary
-GPU, `8083` the NPU. The AMD desktop and the laptop's RTX both sit on 8081 because each is its
-machine's primary GPU — they are separate hosts, so there is no conflict. A client pointed at
-`:8081` gets the best GPU available wherever it is running. Same reasoning lets both machines'
-LiteLLM run as `container_name: litellm` on port 4000.
+**The laptop runs nvidia + intel concurrently.** They used to share a container name and
+port via the `base_llama_swap` anchor, which made them mutually exclusive. `container_name`,
+`ports` and the config mount are per-service now — do not move them back into the anchor.
 
-**The laptop runs the nvidia and intel instances CONCURRENTLY** — `podman-compose -f
-ai/llama-cpp.yml --profile laptop up -d`. They used to share `container_name: llama_swap_server`
-and port 8081, which made them mutually exclusive; container name, ports and the config mount are
-now set per-service instead of on the `base_llama_swap` anchor. Do not move them back into the
-anchor.
+Request flow: agents → LiteLLM (`:4000`) → llama-swap (`:8081`/`:8082`) → a `llama-server`
+subprocess per model. GGUFs live in `${LLAMA_MODELS_DIR:-~/.llama/models}`, mounted at
+`/models` (this laptop: `/mnt/data/llama/models`).
 
-### Measured performance (laptop, 6524-token prefill + 700-token generation)
+## The alias contract
 
-All numbers below are same-session. Absolute values drift 20-30% with load and thermals — an
-earlier run had `gemma-4-26b` at 641 tok/s prefill, a later one 467 — so **only ever compare models
-measured in the same session.** The ratios have been stable across every repetition.
+Semantic aliases are the interface agents use. **Never hardcode a checkpoint name** — it
+breaks on the other machine. Alias names are identical everywhere; only the right-hand
+side differs. This is what lets one shared `~/.hermes/config.yaml` drive either box.
 
-> **Decode is two different numbers, and this table's old figures were the pessimistic one.**
-> `ai/bench/llmbench.py` reports `decode` (generation from a fresh short prompt, ~0 context —
-> the `tg128`-equivalent that most online figures mean) and `deep` (generation continuing from
-> the ~6.5K prefill, which is what an agent turn actually does). **Quote `deep` when judging an
-> agent tier.** The `qwen3.6-35b` row below said **14.9 tok/s** for a long time; re-measured on
-> the *unchanged* config it is **29.3 deep / 33.5 shallow** with prefill unchanged, so the old
-> number was a hand-measured deep figure taken before `ai/bench/` existed and was never
-> comparable to anything since. Rows not marked "re-measured" may have the same problem.
-
-| tier | model | prefill | decode (deep) | VRAM |
-|---|---|---|---|---|
-| RTX 5070 | `qwen3.6-35b` **(default)**, tuned 2026-08-05 | 411-454 tok/s | **31.4 tok/s** (36.6 shallow) | 6947 MiB |
-| RTX 5070 | ^ before tuning (Q4_K_XL, default threads) | 425 tok/s | 29.3 tok/s (33.5 shallow) | 7103 MiB |
-| RTX 5070 | `gemma-4-26b` (alternative) | **616 tok/s** | 17.9 tok/s *(stale, pre-`deep`)* | 6903 MiB |
-| RTX 5070 | `qwen3.5-9b` | **1932 tok/s** | **48 tok/s** *(stale)* | 6303 MiB |
-| Arc iGPU | `qwen3.5-2b` | **558 tok/s** | **23.1 tok/s** *(stale)* | 1.34 GB RAM |
-| Arc iGPU | `embed` (Qwen3-Embedding-0.6B) | — | — | 0.80 GB RAM |
-| Intel NPU | `Qwen3-1.7B` | 33 tok/s | **0.61 tok/s** | RAM |
-
-**The default is deliberately not the fastest option.** `gemma-4-26b` beats `qwen3.6-35b` on both
-axes (~1.6x prefill, ~1.2x decode) *and* uses less VRAM. `qwen3.6-35b` is the default anyway,
-trading latency for a 35B-class model over a 26B. A trivial Hermes turn costs **~60s** on
-`qwen3.6-35b` versus **~39s** on `gemma-4-26b` and **~2.6s** on `qwen3.5-9b`. If latency matters
-more than model size, flip `local-main`/`local-vision` to `gemma-4-26b` in
-`litellm-config.laptop.yaml` — nothing else has to change.
-
-### Running 26B/35B models on an 8GB card: `--n-cpu-moe`
-
-Both large models are Mixture-of-Experts, and in both ~90% of the weights are expert tensors that
-any given token never touches. `--n-cpu-moe N` keeps the expert tensors of the first N layers in
-system RAM while attention, embeddings, norms and the KV cache stay on the GPU. The dense parts
-every token needs are on the GPU; the sparse parts it skips are in RAM.
-
-| model | layers | experts | quant | tuned N | why that N |
-|---|---|---|---|---|---|
-| `qwen3.6-35b` | 40 | 256 / 8 active | UD-Q4_K_M (22.1 GB) | **34** | N buys ~nothing at depth (see below); 34 keeps ~1.2GB vision headroom |
-| `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GiB) | **26** | leaves room for the projector + ~1.2GB headroom |
-
-`--n-cpu-moe` composes with `--n-gpu-layers 99`: ngl decides layer placement, `--n-cpu-moe`
-overrides it for expert tensors only. It does nothing on dense models like `qwen3.5-9b`.
-
-Sweeps (lower N = more on GPU = faster, more VRAM):
-
-```
-qwen3.6-35b (Q4_K_XL)          gemma-4-26b (Q4_K_XL)
-  N=36  14.2 t/s  6137 MiB       N=30  21.8 t/s  3621 MiB
-  N=34  14.9 t/s  7103 MiB  <-   N=26  23.4 t/s  6883 MiB  <-
-  N=33  16.4 t/s  7539 MiB       N=24  24.4 t/s  6529 MiB (no mmproj)
-  N=32  VISION CRASHES           N=22  25.9 t/s  7435 MiB (no mmproj)
-                                 N<=18 OOM at load
-```
-
-**Those decode figures are shallow (~0-context) numbers, and N does NOT buy deep decode.**
-Re-measured on `UD-Q4_K_M` at `--threads 6`, sweeping N with everything else fixed:
-
-| N | mmproj | prefill | decode (shallow) | deep (8.6K ctx) | VRAM |
-|---|---|---|---|---|---|
-| 34 | yes | 454 t/s | 37.2 t/s | **31.4 t/s** | 6985 MiB |
-| 33 | yes | 461 t/s | 37.3 t/s | **31.8 t/s** | ~7452 MiB |
-| 31 | **no** | 483 t/s | 38.8 t/s | **31.7 t/s** | ~6100 MiB |
-
-Moving **three** expert layers from CPU to GPU changed deep decode by ~0.3 t/s — noise.
-Shallow decode moved (37.2 -> 38.8) and prefill moved (454 -> 483), but the number an agent
-turn actually experiences did not. The ~5.5 t/s shallow-to-deep gap is context-dependent
-attention work on the GPU, and expert placement cannot touch it.
-
-**So tune `--n-cpu-moe` for VRAM headroom and prefill, not for decode.** Since lower N buys
-almost nothing at depth, prefer the *higher* N that keeps vision headroom — N=34 costs
-~0.4 t/s against N=33 and buys 470 MiB of margin against the vision-crash boundary.
-
-### CPU thread count for `--n-cpu-moe`: fewer, faster threads win
-
-`--n-cpu-moe` puts ~92% of the weights on the CPU, so decode is gated by CPU expert
-dequant+gather — which makes `--threads` a real tuning lever, and the default wrong. This is
-a hybrid-core chip:
-
-```
-CPU 0-5    P-core   5400 MHz
-CPU 6-13   E-core   4500 MHz
-CPU 14-15  LP-E     2500 MHz   (SoC tile, ~half speed)
-```
-
-Measured on `qwen3.6-35b` UD-Q4_K_M, `--n-cpu-moe 34`, 8.6K prefill, interleaved rounds:
-
-| `--threads` / affinity | prefill | decode | deep |
+| alias | laptop | desktop | use |
 |---|---|---|---|
-| unset (spawns 16) | 448 t/s | 34.2 t/s | 30.5 t/s |
-| `14 --cpu-range 0-13 --cpu-strict 1` | 455 t/s | 25.0 t/s | 22.3 t/s |
-| `12 --cpu-range 0-11 --cpu-strict 1` | 453 t/s | 25.0 t/s | 22.2 t/s |
-| **`6 --cpu-range 0-5 --cpu-strict 1`** | 453 t/s | **36.9 t/s** | **31.6 t/s** |
+| `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
+| `local-vision` | `qwen3.6-35b` | `qwen3.6-27b` | images/PDFs — same model as `local-main`, so no swap |
+| `local-tiny` | `qwen3.5-2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
+| `local-embed` | `embed` (iGPU) | **missing** | RAG embeddings, 1024-dim |
+
+Models with no alias (`gemma-4-26b`, `qwen3.5-9b`) are reachable by name; requesting one
+evicts the loaded model (~15-30s) since only one fits in 8GB.
+
+- **`local-embed` is laptop-only.** The desktop has no embedding GGUF. Do not "fix" this
+  by pointing it at a chat model — a chat deployment cannot serve `/v1/embeddings`.
+- **There is deliberately no `local-support`.** It existed, resolved to the same iGPU
+  model as `local-tiny`, and had no consumer. Two names for one thing drift apart.
+- **`local-vision` must never fall back to a model without a projector.** A blind model
+  confidently describing an image is worse than a clean error. Both `qwen3.6-35b` and
+  `gemma-4-26b` carry projectors, so vision degrades between them.
+
+## Measured performance (laptop)
+
+Absolute values drift 20-30% with load and thermals — **only compare models measured in
+the same session.** Ratios have been stable across every repetition.
+
+| device | model | prefill | decode (deep) | VRAM |
+|---|---|---|---|---|
+| RTX 5070 | `qwen3.6-35b` **(default)** | 411-454 t/s | **31.4 t/s** (36.6 shallow) | 6947 MiB |
+| RTX 5070 | `gemma-4-26b` | 616 t/s | 17.9 t/s *(pre-`deep`, stale)* | 6903 MiB |
+| RTX 5070 | `qwen3.5-9b` | 1932 t/s | 48 t/s *(stale)* | 6303 MiB |
+| Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
+| Arc iGPU | `embed` | — | — | 0.80 GB RAM |
+| Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
+
+### Decode is two numbers, and mixing them wastes days
+
+- **shallow** — generation from a fresh short prompt (~0 context). The `tg128`-equivalent,
+  and what almost every figure quoted online means.
+- **deep** — generation continuing from a ~6.5K prefill. What an agent turn actually does,
+  because Hermes sends a large system prompt every time.
+
+**Judge an agent tier on `deep`.** This table once recorded `qwen3.6-35b` at 14.9 t/s;
+re-measured on the *unchanged* config it was 29.3 deep / 33.5 shallow. The old number was
+a hand-measured deep figure from before `bench/` existed and was never comparable to
+anything since — it triggered an entire optimisation effort against a problem that did not
+exist. Rows marked *stale* above may have the same defect.
+
+## Running 26B/35B models on an 8GB card
+
+Both large models are MoE, and ~90% of their weights are expert tensors any given token
+never touches. `--n-cpu-moe N` keeps the expert tensors of the first N layers in system
+RAM while attention, embeddings, norms and KV stay on the GPU. It composes with
+`--n-gpu-layers 99` (ngl places layers, `--n-cpu-moe` overrides for expert tensors only)
+and does nothing on dense models.
+
+| model | layers | experts | quant | N |
+|---|---|---|---|---|
+| `qwen3.6-35b` | 40 | 256 / 8 active | UD-Q4_K_M (22.1 GB) | **34** |
+| `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GB) | **26** |
+
+### N does not buy deep decode — tune it for VRAM headroom
+
+Measured on `qwen3.6-35b` UD-Q4_K_M at `--threads 6`, everything else fixed:
+
+| N | mmproj | prefill | shallow | **deep** | VRAM |
+|---|---|---|---|---|---|
+| **34** | yes | 454 t/s | 37.2 | **31.4** | 6947 MiB |
+| 33 | yes | 461 t/s | 37.3 | **31.8** | ~7452 MiB |
+| 31 | no | 483 t/s | 38.8 | **31.7** | ~6100 MiB |
+
+Moving **three** expert layers onto the GPU changed deep decode by 0.3 t/s — noise.
+Shallow decode and prefill do respond; the number an agent experiences does not, because
+the shallow→deep gap is attention work at context, which expert placement cannot touch.
+
+So prefer the **higher** N that preserves vision headroom. N=34 costs ~0.4 t/s against
+N=33 and buys 470 MiB of margin against the vision crash.
+
+### `qwen3.6-35b` is a hybrid, so context is cheap
+
+`full_attention_interval: 4` — only **10 of 40 layers** carry a KV cache; the rest are
+SSM/Mamba blocks with constant state. KV at 64K with `q4_0` is ~360 MiB. Halving
+`--ctx-size` frees under 200 MiB, so **context reduction is not a VRAM lever here.**
+
+### CPU thread count: fewer, faster threads win
+
+`--n-cpu-moe` puts ~92% of weights on the CPU, so decode is gated by CPU expert
+dequant+gather. Topology: `0-5` P-cores 5400 MHz, `6-13` E-cores 4500 MHz, `14-15` LP-E
+2500 MHz.
+
+| `--threads` / affinity | prefill | shallow | **deep** |
+|---|---|---|---|
+| unset (spawns 16) | 448 t/s | 34.2 | 30.5 |
+| `14 --cpu-range 0-13 --cpu-strict 1` | 455 t/s | 25.0 | 22.3 |
+| `12 --cpu-range 0-11 --cpu-strict 1` | 453 t/s | 25.0 | 22.2 |
+| `8 --cpu-range 0-7 --cpu-strict 1` | 453 t/s | 33.7 | 26.8 |
+| **`6 --cpu-range 0-5 --cpu-strict 1`** | 453 t/s | **36.9** | **31.6** |
 
 **The obvious hypothesis is wrong.** "The two 2500 MHz LP-E cores gate llama.cpp's per-op
-barrier, so exclude them" predicts `-t 14` wins. It loses badly — *worse* than leaving all 16
-unpinned. Excluding only the LP-E cores is the second-worst configuration tested.
+barrier, so exclude them" predicts `-t 14` wins. It is the second-*worst* setting tested,
+below leaving all 16 unpinned. The real rule is fewer, faster threads: the expert gather
+is synchronisation-bound, not throughput-bound, so mid-speed cores cost more in barrier
+overhead than they add.
 
-What actually holds is **fewer, faster threads**: 6 P-cores beat 16, while 12 and 14 are the
-worst. The expert gather is dominated by per-op synchronisation, not by aggregate CPU
-throughput, so adding mid-speed cores costs more in barrier overhead than they contribute.
+**Prefill is flat (448-455) across every setting** because it is GPU-bound. Never tune
+threads on a prefill number.
 
-**Prefill is unaffected** (448-455 t/s across every configuration) because it is GPU-bound —
-only decode responds to thread placement. Do not tune this on a prefill number.
+### Quant choice for CPU-offloaded MoE
 
-### Quant choice for CPU-offloaded MoE — it cuts both ways
+Head-to-head at identical threads, same session, 3 rounds:
 
-`qwen3.6-35b` was originally `UD-IQ4_XS` (17.7 GB) and was re-benchmarked on `UD-Q4_K_XL`
-(22.4 GB). Same session, each tuned to its own safe N:
+| quant | prefill | shallow | deep | VRAM |
+|---|---|---|---|---|
+| **UD-Q4_K_M** | 411 t/s | 36.6 | **31.4** | 6985 MiB |
+| UD-Q4_K_XL | 408 t/s | 35.6 | 30.4 | 7103 MiB |
 
-| quant | N | prefill | decode |
-|---|---|---|---|
-| UD-IQ4_XS | 32 | **535 tok/s** | 10.0 tok/s |
-| UD-Q4_K_XL | 34 | 395 tok/s | **14.9 tok/s** |
+Small but consistent every round, for 118 MiB less VRAM. Earlier, `UD-IQ4_XS` (17.7 GB)
+lost to `UD-Q4_K_XL` on decode (10.0 → 14.9) while winning prefill (535 → 395): i-quant
+dequantisation is markedly more expensive on the CPU, which is where the experts live, but
+the smaller file fits two more expert layers on the GPU and prefill activates many experts
+per batch. **Prefer K-quants for CPU-offloaded MoE**, and re-tune N *and* re-measure both
+axes after any quant change. IQ4_XS remains the pick only for huge-prompt/terse-output
+work; the file is still on disk.
 
-Decode improved **+49%**, prefill regressed **-22%**. Two independent effects:
+**File size alone does not predict VRAM.** Non-expert tensors are always GPU-resident, and
+quant recipes differ in how they treat them. Unsloth's Q4_K_XL and Q4_K_M both keep
+`attn_qkv`/`ssm_out` at Q8_0 (2.68 vs 2.56 GB non-expert), but a third-party Q4_K_M of the
+same model used Q5_K/Q4_K there — 1.65 GB, freeing ~983 MiB. Read the tensor table before
+predicting.
 
-- **Decode improves** because i-quant dequantization is markedly more expensive on CPU than
-  K-quant, and `--n-cpu-moe` puts ~90% of the weights there. This is the predicted effect.
-- **Prefill regresses** because the K-quant file is 26% larger, so two fewer expert layers fit on
-  the GPU (N=34 vs 32). Prefill activates many experts across the batch, so it is far more
-  sensitive to expert-layer placement than decode is.
+### The vision floor moves with the quant, and text tests will not find it
 
-Q4_K_XL wins whenever `prompt_tokens < ~50 x generated_tokens`. Thinking models emit hundreds of
-reasoning tokens per turn, so typical agent turns land well inside that — a 6524-token prompt plus
-a 700-token generation is 63.5s on Q4_K_XL versus 82.2s on IQ4_XS. Huge-prompt/terse-output
-workloads would prefer IQ4_XS; that file is still on disk.
+`qwen3.6-35b` on Q4_K_XL survived images at 7539 MiB and **crashed at 7743** (`upstream
+process exited unexpectedly`, HTTP 502, process gone). The older IQ4_XS build crashed at
+N=30 for the same reason: ~600 MiB of headroom cannot supply the vision encoder's compute
+buffer.
 
-**The lesson: for CPU-offloaded MoE, prefer K-quants over i-quants — but re-tune `--n-cpu-moe`
-afterwards and re-measure *both* axes.** A bigger file buys decode and costs prefill.
+**Every crashing configuration passes a full 6524-token text prefill.** Always send an
+image after re-tuning `--n-cpu-moe` on a model with `--mmproj`.
 
-### Splitting the 35B across BOTH GPUs with Vulkan — tested, rejected (2026-08-05)
+## Vision / mmproj — the #1 gotcha
 
-The intuition is compelling and will be proposed again, so here is the measurement that
-killed it. **Idea:** `--n-cpu-moe` makes the *CPU* do the expert dequant+gather every token;
-the laptop also has an Arc iGPU, so let the iGPU do that work instead.
+Each vision model needs the projector built for **its own embedding dim**. Projectors are
+not interchangeable. A mismatch aborts with `mismatch between text model (n_embd=X) and
+mmproj (n_embd=Y)` — and only on the **first image request**, not at load, because
+llama-swap spawns the subprocess on demand.
 
-**It is mechanically possible, and simpler than it sounds.** llama.cpp RPC is *not* needed —
-a single Vulkan process drives both GPUs at once. Neither `:cuda` nor `:intel` ships
-`rpc-server`, `libggml-rpc.so`, or a `--rpc` flag, so the RPC route would have meant building
-both sides; `:vulkan` needs none of that:
+| model | n_embd | projector |
+|---|---|---|
+| qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` |
+| gemma-4-26b | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
+| gemma-4-12b | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
+
+Adding one: read the GGUF `*.embedding_length`, then fetch `mmproj-F16.gguf` from *that
+exact model's* Unsloth repo. Never reuse another size's projector.
+
+## Splitting a model across both GPUs with Vulkan — tested, rejected (2026-08-05)
+
+The intuition is compelling and will be proposed again. `--n-cpu-moe` makes the *CPU* do
+the expert gather; the laptop also has an Arc iGPU, so use it instead.
+
+**It is mechanically possible and RPC is not needed** — one Vulkan process drives both
+GPUs. (Neither `:cuda` nor `:intel` ships `rpc-server`, `libggml-rpc.so` or `--rpc`, so
+the RPC route would have meant building both sides.)
 
 ```bash
 podman run --rm --device /dev/dri --device nvidia.com/gpu=all \
@@ -184,471 +220,310 @@ podman run --rm --device /dev/dri --device nvidia.com/gpu=all \
 #   Vulkan1: NVIDIA GeForce RTX 5070 Laptop   (8151 MiB,  6718 MiB free)
 ```
 
-**`--security-opt label=disable` is mandatory and non-obvious.** CDI injects the NVIDIA
-Vulkan ICD at `/etc/vulkan/icd.d/`, but SELinux blocks the driver it points at, and the
-failure is silent — only the Arc enumerates. The giveaway is
-`Could not get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr' for /usr/lib64/libGLX_nvidia.so.0`.
+- **`--security-opt label=disable` is mandatory.** CDI injects the NVIDIA Vulkan ICD at
+  `/etc/vulkan/icd.d/`, but SELinux blocks the driver it points at and **only the Arc
+  enumerates**. Tell-tale: `Could not get 'vkCreateInstance' via
+  'vk_icdGetInstanceProcAddr' for /usr/lib64/libGLX_nvidia.so.0`.
+- **`--tensor-split` is the wrong tool for MoE** — it divides *layers*, putting half the
+  attention and KV on the Arc. The MoE-correct split is
+  `-dev Vulkan1,Vulkan0 -sm layer -ts 1,0 -mg 0 -ngl 99 -ot 'ffn_.*_exps=Vulkan0'`.
+- **`-sm none` fails**: it deactivates the Arc backend and the load aborts with
+  `pre-allocated tensor (blk.0.ffn_down_exps.weight) in a buffer (Vulkan0) that cannot run
+  the operation (NONE)`. Both devices must stay active; `-ts 1,0` keeps layers on the dGPU.
 
-`--tensor-split` is the **wrong tool** for a MoE: it divides *layers*, so it puts half the
-attention and KV on the Arc. The MoE-correct split is the Arc standing in for the CPU:
-
-```
--dev Vulkan1,Vulkan0 -sm layer -ts 1,0 -mg 0 -ngl 99 -ot 'ffn_.*_exps=Vulkan0'
-```
-
-`-sm none` does **not** work — it deactivates the Arc backend, and the load aborts with
-`pre-allocated tensor (blk.0.ffn_down_exps.weight) in a buffer (Vulkan0) that cannot run the
-operation (NONE)`. Both devices must stay active; `-ts 1,0` is what keeps the layers on the
-dGPU. Placement then works exactly as intended — dGPU held only 2505 MiB (non-expert + KV)
-with ~19.6 GB of experts on the Arc.
-
-**The measurement (UD-Q4_K_M, 8665-token prefill, warm):**
+Placement worked exactly as designed — dGPU held only 2505 MiB, ~19.6 GB of experts on the
+Arc. The measurement (UD-Q4_K_M, 8665-token prefill, warm):
 
 | config | prefill | decode |
 |---|---|---|
-| CUDA dGPU + CPU experts (incumbent) | **425 t/s** | **29.3 t/s** |
+| CUDA dGPU + CPU experts | **425 t/s** | **29.3 t/s** |
 | Vulkan dGPU + CPU experts *(diagnostic)* | 224.8 t/s | 9.67 t/s |
-| Vulkan dGPU + **Arc** experts *(the idea)* | 135.5 t/s | 12.00 t/s |
-
-Decomposed, which is the whole point of running the middle row:
+| Vulkan dGPU + **Arc** experts | 135.5 t/s | 12.00 t/s |
 
 ```
-CUDA->Vulkan   (expert device held at CPU)   prefill -47%   decode -67%
-CPU->Arc       (backend held at Vulkan)      prefill -40%   decode +24%
+CUDA -> Vulkan   (expert device held at CPU)   prefill -47%   decode -67%
+CPU  -> Arc      (backend held at Vulkan)      prefill -40%   decode +24%
 ```
 
-**The Arc really is faster than the CPU at expert gather — +24% decode.** That part of the
-intuition is correct. But the Vulkan backend costs 67% of decode first, and recovering 24%
-of what remains nets out to **12.0 t/s vs 29.3 — 2.4x slower than doing nothing.** The Arc
-also *hurts* prefill (224.8 -> 135.5), consistent with the tiny-tier finding below that its
-expert gathers are inefficient; prefill activates many experts per batch, so it is hit hardest.
+**The Arc really does beat the CPU at expert gather (+24% decode).** But Vulkan costs 67%
+of decode first, so it nets to 12.0 vs 29.3 — 2.4x slower than doing nothing. The Arc also
+*hurts* prefill, consistent with its known weakness at expert gathers.
 
-Two structural reasons this was never going to pay, worth remembering before re-proposing it:
+Two structural reasons it was never going to pay:
 
-- **The Arc is not a second memory pool.** Its "47779 MiB" is system RAM on the same LPDDR5x
-  bus the CPU uses. Moving expert work there adds a second *compute unit*, not bandwidth.
-- **CUDA is worth more than the iGPU.** Any dual-GPU scheme on this laptop must go through
-  Vulkan, because CUDA cannot see the Intel device — so it pays the -67% before it starts.
+- **The Arc is not a second memory pool.** Its "47779 MiB" is system RAM on the same
+  LPDDR5x bus the CPU uses. It adds a compute unit, not bandwidth.
+- **CUDA is worth more than the iGPU**, and any dual-GPU scheme here must go through
+  Vulkan because CUDA cannot see the Intel device — so it pays -67% before it starts.
 
-**Practical trap while testing:** the Arc allocates against `MemFree`, not `MemAvailable`.
-Holding ~19.6 GB of experts there drove the host to **529 MiB free with zram swap already
-full**, and the whole llama-swap stack was killed off. Tear down the test container
-(`podman rm -f ...`) before drawing conclusions about a "hang", and expect to
-`podman-compose --profile laptop up -d` afterwards.
+**The diagnostic row is the lesson.** Comparing only the incumbent against the proposal
+changes backend *and* expert device at once and cannot say why the number moved. Always
+include the config that varies one.
 
-### The vision floor moves with the quant, and text tests will not find it
+**Memory trap:** the Arc allocates against `MemFree`, not `MemAvailable`. Holding ~19.6 GB
+of experts there drove the host to 529 MiB free with zram swap full, and **the whole
+llama-swap stack was killed**. Tear down test containers before diagnosing a "hang".
 
-`qwen3.6-35b` crashes on image requests at `--n-cpu-moe 32` — `upstream process exited
-unexpectedly`, HTTP 502, process gone. The old IQ4_XS build crashed at N=30 for the same reason.
-~600 MiB of headroom cannot supply the vision encoder's compute buffer.
+## Speculative decoding and MTP
 
-**Every crashing configuration passes a full 6524-token text prefill.** Text-only benchmarking will
-not reveal this. Always send an image after re-tuning `--n-cpu-moe` on a model with `--mmproj`.
+**No MTP support.** There is no `--mtp` flag; every `--spec-draft-*` option needs a
+separate draft model file. Unsloth's `MTP-GGUF` variants carry weights this build cannot
+activate — a bigger download for identical speed.
 
-### The alias contract
+Classic speculative decoding does work, but the draft model's **vocabulary must match the
+target**, and the drafter competes for the ~1.1 GB of dGPU headroom (`--spec-draft-ngl` /
+`--spec-draft-n-cpu-moe` can place it). A real experiment, not a free win. Worth
+revisiting after a llama.cpp upgrade — decode here is memory-bound, the regime where it
+pays most.
 
-Semantic aliases are the interface agents use — **never hardcode a checkpoint name**, it will
-break on the other machine. The alias NAMES are identical across machines; only the right-hand
-side differs. This is what lets one shared `~/.hermes/config.yaml` drive either box.
+## The tiny tier (Arc iGPU)
 
-| alias | laptop | desktop | use |
-|---|---|---|---|
-| `local-main` | `qwen3.6-35b` (RTX 5070) | `qwen3.6-27b` (7900 XTX) | main agent, delegation, anything user-facing |
-| `local-vision` | `qwen3.6-35b` (RTX 5070) | `qwen3.6-27b` | images/PDFs — same model as `local-main`, so no swap |
-| `local-tiny` | `qwen3.5-2b` (Arc iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
-| `local-embed` | `embed` (Arc iGPU) | **MISSING** | RAG embeddings, 1024-dim |
+### Dense beats sparse here
 
-Models with **no alias** are still reachable by name: `gemma-4-26b` and `qwen3.5-9b` on the laptop.
-Requesting one evicts the loaded model (~15-30s swap) — only one fits in 8GB.
-
-> **Known asymmetry:** `local-embed` exists only on the laptop — the desktop has no embedding
-> GGUF, so the alias is absent from `litellm-config.desktop.yaml`. Anything routed to
-> `local-embed` will fail there. Either download an embedding model on the desktop and add the
-> alias, or keep embedding consumers laptop-only. Do not "fix" this by pointing `local-embed` at
-> a chat model — a chat deployment cannot serve `/v1/embeddings`.
-
-There is deliberately **no `local-support`**. It existed briefly, resolved to the same iGPU model
-as `local-tiny`, and never had a consumer — two names for one thing is just a way to drift out of
-sync. If background delegation ever needs its own tier, add the alias back to both litellm configs.
-
-**`local-vision` now has a fallback, which it could not before.** Both `qwen3.6-35b` and
-`gemma-4-26b` carry projectors, so vision degrades from one to the other instead of failing. It
-must never fall back to `qwen3.5-9b` or `qwen3.5-2b` — neither has a projector, and a blind model
-confidently describing an image it cannot see is worse than a clean error.
-
-**Delegation runs on `local-main`, not the secondary GPU — this is measured, not assumed.**
-
-| delegate_task, identical prompt | wall time |
-|---|---|
-| `local-main` (RTX 5070) | **33.6s** |
-| the Arc iGPU (`gemma-4-e2b`, since replaced) | 2m05.8s |
-
-Three reasons the "parallel lane" does not pay off: during synchronous delegation the parent is
-idle so the primary GPU is free anyway (and the child reuses the already-loaded model, no
-eviction); each llama-swap instance is `--parallel 1`, so concurrent children serialize on the iGPU
-exactly as they would on the dGPU; and subagent cost is **prefill-dominated** (large system
-prompt), where the iGPU is weakest. The iGPU wins only for `background=true` delegation, where the
-parent really is generating at the same time.
-
-## Hermes wiring (`~/.hermes/config.yaml`)
-
-That file is **shared between both machines** and names only aliases. Relevant keys:
-
-- `model.default: local-main` — the main agent.
-- `delegation.model: local-main` — subagents (see measurement above). `provider`/`base_url`/
-  `api_key` left empty so children inherit the parent's LiteLLM endpoint.
-- `custom_providers[0].models.*.context_length` — pinned to **65536** for every alias. Without
-  these, Hermes reads `*.context_length` from GGUF metadata and advertises the model's native
-  window (256K for both large models), overrunning the actual `--ctx-size` KV allocation. Values
-  are the **minimum across both machines**, so the shared file is safe either way.
-- `auxiliary.<task>.{provider,model,base_url,api_key,timeout}` — 15 side tasks, each pinned.
-  `base_url` is set explicitly on every one so they can never silently fall back to openrouter
-  (no key is configured here).
-
-Auxiliary tasks split on **critical path vs background**, not on prompt size:
-
-| tier | tasks |
-|---|---|
-| `local-main` (dGPU) | `compression`, `mcp`, `skills_hub`, `triage_specifier`, `kanban_decomposer`, `goal_judge` |
-| `local-vision` (dGPU) | `vision` |
-| `local-tiny` (iGPU) | `title_generation`, `curator`, `profile_describer`, `monitor`, `tts_audio_tags`, `web_extract`, `approval`, `memory_query_rewrite` |
-
-Anything the user waits on goes to `local-main` — it is faster *and* reuses the already-loaded
-model. Fire-and-forget work goes to `local-tiny` on the iGPU specifically so it does **not** evict
-the large model from the 8GB card. Timeouts are raised well above Hermes' defaults (120s
-compression / 360s web_extract) because local models are slow and a timeout mid-compression drops
-context rather than degrading gracefully.
-
-**`approval` MUST stay on a non-thinking model — this is a correctness constraint, not a
-preference.** `tools/approval.py::_smart_approve` sends `max_tokens=16, temperature=0` and expects
-exactly one word (`APPROVE`/`DENY`/`ESCALATE`). On a thinking model the entire budget goes to
-reasoning. Measured on the identical prompt:
-
-| tier | model | result |
-|---|---|---|
-| `local-main` | qwen3.6-35b (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
-| `local-tiny` | qwen3.5-2b (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
-
-So smart approval was silently broken while it pointed at `local-main`. It now points at
-`local-tiny`. Do not move it back without also raising `max_tokens` in `tools/approval.py` —
-which is upstream code, so prefer leaving it here. `approvals.mode` resolves to `smart` by default
-even though the user config has no `approvals:` block.
-
-**Caveat on verifying it:** I could not get `_smart_approve` to fire from a `hermes -z` one-shot
-run even with a command the scanner flags (`chmod -R 777 ...`, confirmed flagged via
-`detect_dangerous_command`). Non-interactive runs appear to bypass the approval path. Verify in an
-interactive session, watching `podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"`.
-
-**`memory_query_rewrite` almost certainly never fires here.** It is referenced only by
-`plugins/memory/query_rewrite.py` and the Honcho plugin — i.e. **external** memory providers.
-`memory.provider` is empty (built-in, non-vector memory), so nothing invokes it. It was pointed at
-`local-tiny` for consistency, not effect.
-
-**`auxiliary.web_extract` is misleadingly named, and fires rarely.** It does *not* control the
-`web_extract` tool — `tools/web_tools.py` makes **no LLM call at all**, it truncates page text at
-`DEFAULT_EXTRACT_CHAR_LIMIT` (15000 chars) and stores the full copy on disk for `read_file` paging.
-The setting is consumed by `tools/browser_tool.py`, which summarises **browser page snapshots**
-with it (`task="web_extract"`, `max_tokens=4000`, `temperature=0.1`). Its gate is narrow:
-
-```python
-if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:   # 15000 chars
-    snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-    snapshot_text = _truncate_snapshot(snapshot_text)                  # no LLM
-```
-
-It was routed to `local-tiny` as a trial (2026-08-03). **In three realistic attempts — a plain
-page fetch, a browser navigation, and a deliberately link-heavy page — it never fired once**; the
-main agent read the content directly each time. Verify with request counts before concluding a
-change to it did anything:
-
-```bash
-podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"   # before and after
-```
-
-`AUXILIARY_WEB_EXTRACT_MODEL` (env) overrides the config value; it is unset here.
-
-**Hermes cannot consume `local-embed`.** There is no embedding config key anywhere in
-`hermes_cli/config_defaults.py` and nothing in the agent calls `/embeddings`; its built-in memory
-is not vector-based, and the external providers that do use embeddings (Hindsight) run
-`sentence-transformers` locally rather than hitting an OpenAI-compatible endpoint. `local-embed`
-is for the qdrant/n8n stack (`ai/n8n.yml`), `ai/research.yml`, or direct API use.
-
-## The tiny tier: model choice, and why dense beats sparse here
-
-`qwen3.5-2b` replaced `gemma-4-e2b` after benchmarking. Same iGPU, 64K ctx, 6524-token prefill,
-two interleaved rounds:
+Same iGPU, 64K ctx, 6524-token prefill, interleaved rounds:
 
 | model | file | prefill | decode |
 |---|---|---|---|
-| `gemma-4-e2b` (was) | 3.00 GiB | 176.1 t/s | 16.3 t/s |
-| **`qwen3.5-2b` (now)** | **1.28 GiB** | **557.7 t/s** | **23.1 t/s** |
+| **`qwen3.5-2b` (current)** | **1.28 GiB** | **557.7 t/s** | **23.1 t/s** |
 | `Qwen3.5-4B` (rejected) | 2.71 GiB | 221.0 t/s | 11.9 t/s |
+| `gemma-4-e2b` (replaced) | 3.00 GiB | 176.1 t/s | 16.3 t/s |
 | `gemma-4-e4b` (rejected) | 4.80 GiB | 141.2 t/s | 10.4 t/s |
 | `qwen3.5-9b` (rejected) | 5.60 GiB | 190.9 t/s | 7.4 t/s |
 
-**Dense beats sparse on this iGPU.** `gemma-4-e2b` and `-e4b` are MoE, and their expert gathers
-are inefficient here; a plain dense 2B saturates the device far better. The pattern is consistent:
-even dense `qwen3.5-9b` out-prefilled the 2B-active MoE. Prefill is compute-bound matrix-matrix
-work; decode is bandwidth-bound and scales with active parameters, which is why the 9B collapses
-to 7.4 t/s. **At the small end on this hardware, prefer dense.**
+The gemma E-series are MoE and their expert gathers are inefficient on this device; a
+dense 2B saturates it far better. Even dense `qwen3.5-9b` out-prefilled the 2B-active MoE.
+**At the small end on this hardware, prefer dense.**
 
-Capability was verified equal, not assumed: single tool call, tool *selection* among four schemas
-with three required args, tool-result round-trip, and correctly declining to call a tool — all
-three candidates passed. Accuracy at temp 0 was identical. `qwen3.5-2b` additionally returns clean
-JSON where `gemma-4-e2b` wrapped it in ` ```json ` fences a consumer had to strip. It retrieved a
-needle at 60% depth in a 49,970-token context.
+Capability was verified equal, not assumed: single call, selection among four schemas,
+tool-result round-trip, and correctly declining. `qwen3.5-2b` also returns clean JSON where
+`gemma-4-e2b` wrapped it in ``` fences. It retrieved a needle at 60% depth in 49,970 tokens.
 
-**Two traps found while evaluating it:**
+### Context scaling — why this tier is not for big prompts
 
-1. **Unsloth's docs are wrong about default thinking.** They state the Qwen3.5 Small series
-   (0.8B/2B/4B/9B) has reasoning disabled by default. With this llama.cpp build it does not —
-   tested without the flag, the 2B emitted ~1388 chars of reasoning and hit the token cap with
-   **empty content**. The 4B *model card* (which says thinking is on) is the accurate source.
-   `--reasoning off` is still required.
-2. **Unsloth's recommended `presence_penalty` 1.5-2.0 destabilises short factual output.** At
-   temp 0.7 + presence_penalty 1.5 the 2B answered "17 times 4" as **56**; at temp 0 it answers 68.
-   The config uses 0.5. This nearly got recorded as a capability gap — it was sampling noise.
-
-**Context scaling is the reason this tier is not for big prompts.** Prefill collapses as context
-grows (attention is quadratic and the device is bandwidth-bound):
-
-| context | `qwen3.5-2b` prefill | time to ingest |
+| context | prefill | time to ingest |
 |---|---|---|
-| 6.5K | 558 tok/s | 12s |
-| 19K | 252 tok/s | 75s |
-| 50K | 103 tok/s | **485s** |
+| 6.5K | 558 t/s | 12s |
+| 19K | 252 t/s | 75s |
+| 50K | 103 t/s | **485s** |
 
-The dGPU holds ~396 tok/s at 19K. So **small prompts → iGPU wins; large prompts → dGPU wins**,
-and the crossover is around 10-15K tokens.
+The dGPU holds ~396 t/s at 19K. **Small prompts → iGPU; large prompts → dGPU**, crossover
+around 10-15K.
 
-## The tiny tier: no vision, no reasoning
-
-Every model here is a thinking model, which is pure waste for `local-tiny` work. Measured on a
-realistic title-generation prompt (identical three-word answer in every case):
+### No reasoning, no vision — both deliberate
 
 | configuration | completion tokens | reasoning leaked into `content`? |
 |---|---|---|
-| default (thinking on) | 302 (~40s) | no — but ~290 tokens wasted |
+| default (thinking on) | 302 (~40s) | no — but ~290 wasted |
 | `--reasoning-budget 0` | 358 | **YES** |
-| `--reasoning off` | **101-111 (~17s)** | no |
+| **`--reasoning off`** | **101-111 (~17s)** | no |
 
-Three traps, all of which fail silently:
+1. **`--reasoning-budget 0` is not an off switch.** It suppresses thought-tag *parsing*
+   only — the model still reasons and the trace lands in `content`, so titles come back as
+   `"Thinking Process:\n\n1. **Analyze the conversation**..."`. It measured *worse* than
+   leaving thinking on.
+2. **Per-request `reasoning_effort` does not survive LiteLLM.** Sent straight to
+   llama-server it works (108 tokens, zero reasoning); through the gateway it is
+   **silently dropped** by `drop_params: true` (310 tokens, full reasoning, no warning).
+   Reasoning must be off at the *server*.
+3. **Unsloth's docs are wrong** about the Qwen3.5 Small series defaulting to reasoning off.
+   Without the flag the 2B emitted ~1388 chars of reasoning and hit the cap with empty
+   content. `--reasoning off` is required.
+4. **`presence_penalty` 1.5-2.0 (Unsloth's recommendation) destabilises short factual
+   output.** At temp 0.7 + pp 1.5 the 2B answered "17 times 4" as **56**; at temp 0, 68.
+   The config uses 0.5.
 
-1. **`--reasoning-budget 0` is not an off switch.** It suppresses thought-tag *parsing* only — the
-   model still reasons, and the trace lands in `message.content`. Session titles come back reading
-   `"Thinking Process:\n\n1. **Analyze the conversation**..."`. It measured *worse* than leaving
-   thinking on. Use `--reasoning off`.
-2. **Per-request `reasoning_effort` does not work through LiteLLM.** Sent straight to llama-server
-   it works perfectly (108 tokens, zero reasoning). Sent through the gateway with the identical
-   body it is **silently dropped** — 310 tokens with full reasoning, no warning. `drop_params: true`
-   strips it for `openai/`-prefixed custom endpoints. Thinking must be off at the *server*.
-3. Reasoning is a **server-level** flag, so it is set on the process, not the request.
+Caveat: `--reasoning off` removes reasoning waste, not verbosity. A vague prompt still
+rambles to the cap; a well-specified one ("Reply with ONLY the title") answers in ~8
+tokens. Chattiness once blamed on `gemma-4-e2b` was a **prompt** problem.
 
-**Vision is also absent from this tier**, deliberately: `local-vision` resolves to the dGPU, which
-has a far better vision model. The tier model correctly rejects images with `image input is not
-supported - hint: if this is unexpected, you may need to provide the mmproj`.
-
-Caveat: `--reasoning off` removes the reasoning waste, not verbosity. Given a vague prompt a small
-model still rambles to the `max_tokens` cap; given a well-specified one ("Reply with ONLY the
-title") it answers in ~5-8 tokens. The chattiness once blamed on `gemma-4-e2b` was a **prompt**
-problem, not a model problem — worth fixing the prompt before swapping a model.
+Vision is absent because `local-vision` resolves to the dGPU's far better model. The tier
+correctly rejects images with `image input is not supported`.
 
 ## Embeddings
 
-`embed` = `Qwen3-Embedding-0.6B-Q8_0.gguf`, 1024-dim, 28 layers, native ctx 32768, on the iGPU.
-Two non-obvious constraints:
+`embed` = `Qwen3-Embedding-0.6B-Q8_0.gguf`, 1024-dim, 28 layers, native ctx 32768.
 
-- **`--pooling last`, NOT `mean`.** The GGUF declares `pooling_type: 3` (LAST) — Qwen3-Embedding
-  derives the sentence vector from the final token rather than averaging. Passing `mean` produces
-  degraded embeddings that still look plausible: unit-norm vectors, no error, just worse retrieval.
-  llama.cpp uses the model default when `--pooling` is omitted; it is stated explicitly so nobody
-  "corrects" it later. Sanity check after any change — related pairs must separate from unrelated
-  ones (measured: `cat~kitten` 0.673, `db~sql` 0.809, `cat~db` 0.308, `kitten~sql` 0.204).
-- **`--ubatch-size` must be >= the longest input.** With pooling enabled the whole sequence must fit
-  in a single ubatch, so ubatch is pinned to `--ctx-size` (8192). That covers any realistic RAG
-  chunk (typically 512-1024) without sizing the compute buffer for the full 32768 window.
+- **`--pooling last`, NOT `mean`.** The GGUF declares `pooling_type: 3` (LAST) —
+  Qwen3-Embedding derives the sentence vector from the final token. `mean` produces
+  degraded embeddings that still look plausible: unit-norm, no error, worse retrieval.
+  Sanity check after any change — related pairs must separate from unrelated
+  (`cat~kitten` 0.673, `db~sql` 0.809, `cat~db` 0.308, `kitten~sql` 0.204).
+- **`--ubatch-size` must be ≥ the longest input.** With pooling the whole sequence must fit
+  one ubatch, so it is pinned to `--ctx-size` (8192) — covers any realistic RAG chunk
+  without sizing the compute buffer for the full 32768 window.
 
-This server is **embeddings only** — it cannot serve `/v1/chat/completions`.
+**Embeddings only** — this server cannot serve `/v1/chat/completions`.
 
 ## Per-device notes
 
-- **Intel iGPU (Arc)** — SYCL, via upstream-tracking `llama-swap:intel` image (`intel_llama_swap`
-  profile). Runs two `llama-server` processes, **both resident simultaneously** via a `groups:`
-  block with `swap: false`: `qwen3.5-2b` (`local-tiny`) and `embed` (`local-embed`). RAG and
-  background calls interleave constantly, so letting them evict each other would add a reload to
-  every switch. Measured resident total **2.14 GB** against 62GB of system RAM.
-  **Cold-start gotcha:** the `intel_sycl_cache` named volume (mounted at `/root/.cache`) persists
-  the SYCL/Level-Zero JIT kernel cache across container restarts. Without it, every recreate
-  recompiles all GPU kernels from scratch — measured 4m32s for the first request after a fresh
-  volume vs. 18s once warm. If iGPU requests look "stuck"/timed-out right after `up`, that's this,
-  not a broken deployment — wait it out once, or warm it manually before sending real traffic.
-  Client-side timeouts are often shorter than the cold-compile time, so the first real request can
-  look like total failure (200 response, 0-byte body) even though the backend is fine.
-  The Intel image also **crashes on `--help` without a GPU device** (SYCL init failure), so read
-  flag documentation from the `:cuda` image instead.
-- **Intel NPU (EXPERIMENTAL, not routed)** — `intel_npu_llama_cpp` profile,
-  `intel_npu_llama_server` service. Standalone `llama-server` (no llama-swap integration exists for
-  the OpenVINO backend yet), one fixed model (`Qwen3-1.7B-Q4_0.gguf`), host port 8083, `-c 1024`.
-  At 0.61 tok/s decode a 24-token tool call took 39s, versus ~7s warm on the iGPU. Tool calling
-  *does* work (correct arguments, `finish_reason: tool_calls`) — the limit is throughput, not
-  capability. No litellm config routes to it. Reach it directly on `localhost:8083`.
-  Can run alongside either GPU tier since it uses a separate device (`/dev/accel`) — but the iGPU
-  and NPU share the same LPDDR5x bus as the CPU, so running both concurrently slows both. They are
-  not independent throughput adders. See `ai/LLAMA-CPP.md` for the measurements.
+**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. Runs `qwen3.5-2b` and
+`embed` **both resident** via `groups:` with `swap: false`; RAG and background calls
+interleave constantly, so eviction would add a reload to every switch. ~2.14 GB total.
 
-Request flow: agents -> LiteLLM (`:4000`) -> the appropriate llama-swap instance (`:8081` primary
-GPU / `:8082` iGPU on the host) -> spawned `llama-server` subprocess per model. LiteLLM also routes
-to cloud (Anthropic/Gemini). Model GGUFs live in `${LLAMA_MODELS_DIR:-~/.llama/models}` (host),
-mounted to `/models` — export `LLAMA_MODELS_DIR` before `podman-compose up` to point elsewhere
-(this laptop uses `/mnt/data/llama/models`).
+- **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
+  JIT kernel cache. Without it every recreate recompiles all kernels — measured **4m32s**
+  for the first request vs 18s warm. Client timeouts are usually shorter than that, so the
+  first request after `up` can look like total failure (200 response, 0-byte body) while
+  the backend is fine.
+- **`--help` crashes without a GPU device** (SYCL init failure). Read flag docs from `:cuda`.
+- **Memory:** reports free memory tracking host `MemFree`, not reclaimable `MemAvailable`.
+  Check `free -h` before lowering ubatch.
+- **ubatch sweep** (6524-token prefill): 128 → 104 t/s, 512 → 126, **1024 → 146 (best)**,
+  2048 → 136 (regresses). The ceiling is bandwidth, not batch size — an 8x increase bought
+  ~40%. The old value of 128 was an 8GB-tier concession that buys nothing here, same for
+  `q8_0` KV instead of `q4_0`.
 
-## Vision / mmproj — the #1 gotcha
-
-Each vision model needs the multimodal projector built for **its own embedding dim**. Projectors
-are **not** interchangeable across model sizes. A mismatch makes `llama-server` abort on load:
-`mismatch between text model (n_embd=X) and mmproj (n_embd=Y)`.
-
-This fails **silently** until first use: llama-swap spawns the subprocess on demand, so a
-misconfigured model looks fine until an agent actually requests it, then crashes with
-`upstream command exited prematurely` / `connection refused`.
-
-| model | n_embd | native ctx | projector file | in use |
-|---|---|---|---|---|
-| qwen3.6-35b | 2048 | 256K | `qwen3.6-35b-mmproj-F16.gguf` | **laptop `local-vision`** + desktop |
-| gemma-4-26b | 2816 | 256K | `gemma-4-26b-mmproj-F16.gguf` | laptop vision fallback + desktop |
-| gemma-4-12b | 3840 | 256K | `gemma-4-12b-mmproj-F16.gguf` | desktop |
-| gemma-4-e4b | 2560 | 128K | `gemma-4-e4b-mmproj-F16.gguf` | no longer used |
-| gemma-4-e2b | 1536 | 128K | `gemma-4-e2b-mmproj-F16.gguf` | **not loaded** — removed from the tiny tier |
-
-Qwen 3.6 27b also uses its own per-model projector.
-
-**Adding a vision model:** read the GGUF `*.embedding_length` metadata, then fetch the projector
-from *that exact model's* Unsloth `*-GGUF` repo (file is `mmproj-F16.gguf`), saved as
-`<model>-mmproj-F16.gguf`. Never reuse another size's projector.
-
-## Build-specific facts
-
-The three images (`llama-swap:rocm` desktop, `:cuda` and `:intel` laptop) track upstream llama.cpp
-and behave the same on these points:
-
-- `--jinja` is **enabled by default** — do not add it; chat templates + reasoning extraction work.
-- `--flash-attn` needs an explicit value: `--flash-attn on`.
-- Qwen 3.6 is supported out of the box — the "must build from source for Qwen3.6 rope" advice from
-  older guides does **not** apply.
-- Available and used: `--cache-reuse`, `--batch-size`/`--ubatch-size`, `--cache-type-k/v`,
-  `--n-cpu-moe`, `--reasoning`, `--pooling`, `--embedding`, per-model sampling flags.
-- **No MTP (multi-token prediction) support.** There is no `--mtp` flag; every speculative-decoding
-  option (`--spec-draft-model`, `--spec-draft-hf`, `--spec-draft-ngl`, ...) requires a *separate
-  draft model file*. Unsloth's `MTP-GGUF` variants carry weights this build cannot activate, so
-  they are a larger download for identical speed. Re-check after a llama.cpp upgrade — decode here
-  is memory-bound, exactly the regime where speculative decoding pays off most.
-
-## Context: metadata vs runtime
-
-Clients read `*.context_length` from GGUF metadata and advertise the model's **native training
-context** (256K for both large models), regardless of the runtime `--ctx-size` cap. The actual KV
-allocation is whatever `--ctx-size` sets. For Hermes this is not cosmetic — it is pinned explicitly
-per alias in `custom_providers[0].models`. When changing a model's `--ctx-size`, update that map
-too, and remember the runtime window must cover the **largest** alias pointing at that model.
-
-## Tuning conventions in this config
-
-- All models `--parallel 1` so `--ctx-size` is the full per-request window.
-- 24GB tier: `q8_0` KV cache, `--ubatch-size` raised (2048 for the small-weight 12b, 1024 for the
-  ~17GB models). Verify VRAM with `rocm-smi` after changing batch sizes; if a 17GB model OOMs,
-  drop its `--ubatch-size` back to 512.
-- 8GB dGPU tier (`llama-swap-nvidia.yaml`): `q4_0` KV cache — 8GB is a hard wall. At 64K ctx:
-  `qwen3.6-35b` (UD-Q4_K_M) + `--n-cpu-moe 34` + mmproj = 6947 MiB (~1.2GB headroom) and
-  `--threads 6 --cpu-range 0-5 --cpu-strict 1`; `gemma-4-26b` +
-  `--n-cpu-moe 26` + mmproj = 6903 MiB (~1.2GB); `qwen3.5-9b` + `--ubatch-size 512` = 6303 MiB
-  (~1.8GB). If a MoE model OOMs, raise `--n-cpu-moe` (trades decode for VRAM without touching
-  context); for the dense `qwen3.5-9b`, step `--ubatch-size` 512 -> 384 -> 256, then ctx 64K -> 32K.
-- iGPU tier (`llama-swap-intel.yaml`): `q8_0` KV and much larger batches than the dGPU tier,
-  because the Arc iGPU has **no dedicated VRAM** — it allocates from 62GB of system RAM, so the
-  8GB-tier concessions buy nothing there. Measured ubatch sweep on a 6524-token prefill:
-  128 -> 104 tok/s, 512 -> 126, **1024 -> 146 (best)**, 2048 -> 136 (overshoots, regresses).
-  The ceiling is memory bandwidth, not batch size: an 8x ubatch increase bought only ~40%.
-  **Memory caveat:** the Arc iGPU reports free memory tracking host `MemFree`, not reclaimable
-  `MemAvailable`. If a model fails to allocate, check `free -h` before lowering ubatch.
-- Per-model sampling baked in as defaults (Qwen: temp 0.7/top-k 20/top-p 0.95/min-p 0;
-  Gemma: temp 1.0/top-k 64/top-p 0.95). Clients can override per request.
-- `groups:` with `swap: false` keeps multiple models resident in one instance. Used on the iGPU.
-  **Not** usable on the 8GB dGPU — the large models cannot co-reside, so switching between them is
-  an inherent ~15-30s swap.
-- Deliberately not used: `--mlock` (fights llama-swap's TTL load/unload).
-
-## Testing / verification
-
-Two stdlib-only scripts live in `ai/bench/` — see `ai/bench/README.md`:
+**Intel NPU (experimental, not routed)** — `intel_npu_llama_cpp` profile, standalone
+`llama-server` on the OpenVINO backend (no llama-swap integration exists), `Qwen3-1.7B-Q4_0`,
+port 8083, `-c 1024`. **0.61 t/s decode** — a 24-token tool call took 39s vs ~7s warm on the
+iGPU, ~21x slower on a model 2.4x smaller. Tool calling *does* work (correct arguments,
+`finish_reason: tool_calls`); the limit is throughput, not capability. Stateless only, no
+`--parallel > 1`, Q4_0-oriented quant. No image exists upstream — build from
+`.devops/openvino.Dockerfile` with the llama.cpp repo as build context:
 
 ```bash
-ai/bench/smoke.py                                  # health-check every tier + alias
-ai/bench/llmbench.py --models a b --tests all      # compare models
-ai/bench/llmbench.py --models local-main --fail-on-regression   # CI gate
+podman build -t localhost/llama-cpp-openvino:server-5d8ccdf \
+  -f .devops/openvino.Dockerfile --target server \
+  "https://github.com/ggml-org/llama.cpp.git#5d8ccdf9d1273bfd83ad8f72565885acc450997e"
+```
+
+The iGPU and NPU share the LPDDR5x bus with the CPU — running both concurrently slows
+both. **They are not independent throughput adders.**
+
+## llama.cpp build facts
+
+The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
+
+- `--jinja` is **enabled by default** — do not add it.
+- `--flash-attn` needs an explicit value: `--flash-attn on`.
+- Qwen 3.6 works out of the box; the "build from source for Qwen3.6 rope" advice does not
+  apply.
+- `--mlock` / `--no-mmap` / `--direct-io` are **deprecated** in favour of
+  `-lm, --load-mode {none,mmap,mlock,mmap+mlock,dio}`.
+- Available and used: `--cache-reuse`, `--batch-size`/`--ubatch-size`, `--cache-type-k/v`,
+  `--n-cpu-moe`, `-ot/--override-tensor`, `--threads`/`--cpu-range`/`--cpu-strict`,
+  `--reasoning`, `--pooling`, `--embedding`.
+- **Log format changed at b10257**: it now emits `srv llama_server: model loaded` instead
+  of the classic `llm_load_tensors` / `buffer size` / `KV self` lines. Greps for the old
+  strings make a healthy server look hung.
+
+## Hermes wiring (`~/.hermes/config.yaml`)
+
+Shared between both machines; names only aliases.
+
+- `model.default: local-main`, `delegation.model: local-main`.
+- `custom_providers[0].models.*.context_length` pinned to **65536** for every alias.
+  Without it Hermes reads `*.context_length` from GGUF metadata and advertises the native
+  window (256K), overrunning the actual `--ctx-size` KV allocation. Values are the
+  **minimum across both machines**. When changing a model's `--ctx-size`, update this too.
+- `auxiliary.<task>.{provider,model,base_url,api_key,timeout}` — `base_url` set explicitly
+  on every one so they cannot silently fall back to openrouter.
+
+Auxiliary tasks split on **critical path vs background**, not prompt size:
+
+| tier | tasks |
+|---|---|
+| `local-main` | `compression`, `mcp`, `skills_hub`, `triage_specifier`, `kanban_decomposer`, `goal_judge` |
+| `local-vision` | `vision` |
+| `local-tiny` | `title_generation`, `curator`, `profile_describer`, `monitor`, `tts_audio_tags`, `web_extract`, `approval`, `memory_query_rewrite` |
+
+Anything the user waits on goes to `local-main` — it is faster *and* reuses the loaded
+model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
+Timeouts are well above Hermes' defaults because a timeout mid-compression drops context.
+
+**Delegation runs on `local-main`, measured not assumed:** 33.6s vs 2m05.8s on the iGPU.
+During synchronous delegation the parent is idle so the primary GPU is free anyway and the
+child reuses the loaded model; each instance is `--parallel 1` so concurrent children
+serialize either way; and subagent cost is prefill-dominated, where the iGPU is weakest.
+The iGPU only wins for `background=true` delegation.
+
+**`approval` MUST stay on a non-thinking model — correctness, not preference.**
+`tools/approval.py::_smart_approve` sends `max_tokens=16, temperature=0` and expects one
+word. On a thinking model the whole budget goes to reasoning:
+
+| tier | result |
+|---|---|
+| `local-main` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
+| `local-tiny` (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
+
+Smart approval was silently broken while it pointed at `local-main`. Do not move it back
+without raising `max_tokens` in upstream code. Caveat: `_smart_approve` would not fire from
+a `hermes -z` one-shot even with a flagged command — verify interactively, watching
+`podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"`.
+
+**`memory_query_rewrite` almost certainly never fires** — only external memory providers
+reference it, and `memory.provider` is empty.
+
+**`auxiliary.web_extract` is misleadingly named.** It does not control the `web_extract`
+tool (`tools/web_tools.py` makes no LLM call — it truncates at 15000 chars). It is consumed
+by `tools/browser_tool.py` for browser *snapshots*, gated on
+`len(snapshot_text) > 15000 and user_task`. In three realistic attempts it never fired
+once. Verify with request counts before concluding a change to it did anything.
+
+**Hermes cannot consume `local-embed`** — no embedding config key exists and nothing calls
+`/embeddings`. It is for the qdrant/n8n stack, `research.yml`, or direct API use.
+
+## LiteLLM
+
+- **Takes ~30-60s to become ready** after `up`/`restart`. Requests before then return an
+  empty body that looks like a model failure. Poll `/health/liveliness`.
+- **`request_timeout: 600`** — local inference trips the default; a cold load plus vision
+  prefill surfaced as a useless `InternalServerError - Connection error`. Don't lower it.
+- **Fallbacks match the name as *requested*, not resolved.** `local-vision` does not
+  inherit a fallback declared for `qwen3.6-35b` — it fails with `No fallback model group
+  found for original model_group=local-vision`. Every alias needs its own entry.
+- **Do not list one machine's models in the other's config.** The laptop once carried the
+  desktop's entries pointing at an unreachable host; once the laptop gained its own
+  `gemma-4-26b` that became a duplicate `model_name` and LiteLLM would have load-balanced
+  across a live and a dead endpoint.
+
+## Operational gotchas
+
+- **Editing a bind-mounted file replaces its inode**, so the container keeps serving the
+  old one. `podman-compose up -d` is a no-op (nothing in the compose file changed) and
+  llama-swap's own 2s config poll watches the stale inode. **`podman restart
+  llama_swap_nvidia` is the fix** after any config edit.
+- **`localhost` resolves to `::1` first.** llama-server binds IPv4 `0.0.0.0`, so podman's
+  IPv6 forward accepts then resets — `Connection reset by peer`, which reads as a dead
+  process. Use `127.0.0.1`. This also makes containers report `(unhealthy)` spuriously.
+- **Thinking models return empty `content` on small budgets.** `qwen3.5-9b` asked to "reply
+  with just OK" spent 176 tokens reasoning first, and returned empty at `max_tokens: 16`.
+  Give local models 400+, and 1200+ if the test must see an answer.
+- **Only one dGPU model is resident.** `groups: swap: false` keeps multiple resident on the
+  iGPU but the 8GB card cannot co-locate the large models — switching is an inherent
+  ~15-30s swap.
+- **Deliberately not used:** `--mlock` (fights llama-swap's TTL load/unload).
+
+## Testing
+
+From the [llm-benchmarking](https://github.com/amidg/llm-benchmarking) repo, with
+`LITELLM_ENV` pointing at `ai/litellm.env`:
+
+```bash
+./smoke.py                                       # every tier + alias; non-zero on failure
+./llmbench.py --models a b --tests all           # compare models
+./llmbench.py --models local-main --fail-on-regression
 ```
 
 `smoke.py` replays the exact `max_tokens=16` approval shape and flags empty-content
-responses, which is how the smart-approval breakage was found. `llmbench.py` interleaves
-models across rounds so thermal drift is shared rather than stacked. Raw curl equivalents:
+responses — that is how the smart-approval breakage was found. `llmbench.py` interleaves
+models across rounds so thermal drift is shared rather than stacked.
+
+**Benchmark methodology rules learned the hard way:**
+
+- **Give tests a thinking-model-sized budget.** `t_tools` and `t_quality` once ran at
+  400/300 tokens; a model that spent the whole budget reasoning scored identically to one
+  that answered wrong. A **3/4 where a different case fails each run is a budget problem,
+  not a defect.** Both now budget 1200 and report `empty` separately.
+- **Repeated identical prompts hit the prompt cache.** A single-model loop shows `ptok=4`
+  on rounds 2+ and a meaningless prefill number. `llmbench.py` avoids this by alternating
+  models, which flushes the cache — only round 1 is valid otherwise.
+- **Vision must be tested with a real image** — see the vision floor above.
 
 ```bash
-# direct to a llama-swap instance (bypasses LiteLLM) — fastest way to smoke-test a model loads
-curl -s localhost:8081/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.6-35b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'  # dGPU
-curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.5-2b","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'   # iGPU
-curl -s localhost:8082/v1/embeddings -H 'Content-Type: application/json' \
-  -d '{"model":"embed","input":"test"}'                                                      # iGPU
-
-# confirm thinking is really off on the tiny tier — `reasoning` must be 0.
-# Use a WELL-SPECIFIED prompt: given a vague one e2b rambles to the cap either way.
-P='Generate a short title (max 6 words) for this conversation:\nUser: my postgres container keeps OOMing after about an hour\nAssistant: Lets check shared_buffers and work_mem first.'
-curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg p "$P" '{model:"qwen3.5-2b",messages:[{role:"user",content:$p}],max_tokens:400}')" \
-  | jq '{tokens:.usage.completion_tokens, reasoning:(.choices[0].message.reasoning_content // "" | length)}'
-
-# confirm vision is really gone from the tiny tier — must error, not answer
-curl -s localhost:8082/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.5-2b","messages":[{"role":"user","content":[{"type":"text","text":"what is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":50}' \
-  | jq -r '.error.message // "UNEXPECTED: answered instead of erroring"'
-
-# aliases through the gateway (what agents actually use)
-curl -s localhost:4000/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"local-main","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'
-
-# which models are loaded right now, per tier
-curl -s localhost:8081/v1/models | jq '[.data[] | {id, status: .status.value}]'
-curl -s localhost:8082/v1/models | jq '[.data[] | {id, status: .status.value}]'
-
-podman logs --tail 20 llama_swap_intel      # or llama_swap_nvidia — "Health check passed"/crashes
-nvidia-smi --query-gpu=memory.used,memory.total --format=csv   # dGPU VRAM after a model loads
-free -h                                                        # iGPU "VRAM" is host RAM
+curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
+podman logs --tail 20 llama_swap_nvidia
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+free -h                                          # iGPU "VRAM" is host RAM
+curl -s -X POST 127.0.0.1:8081/api/models/unload  # free the GPU between runs
 ```
-
-**LiteLLM takes ~30-60s to become ready** after `up` or `restart`. Requests sent before then return
-an empty body, which looks like a model failure but is not. Poll
-`curl -s localhost:4000/health/liveliness` before benchmarking.
-
-Gemma/Qwen are **thinking models**: with a small `max_tokens` the answer can land entirely in
-`reasoning_content` with empty `content` and `finish_reason: length`. That's not a failure — raise
-`max_tokens`. This bites harder than it sounds: `qwen3.5-9b` asked to "reply with just OK" spent
-176 completion tokens reasoning before emitting `OK`, and returned **empty content** at
-`max_tokens: 16`. Give local models generous budgets (400+) or agents will see blank replies.
-
-**LiteLLM timeouts:** local inference is slow enough to trip LiteLLM's default request timeout —
-a cold load plus a vision prefill measured 19.4s and surfaced as a useless
-`InternalServerError - Connection error`. `request_timeout: 600` is set in both litellm configs;
-don't lower it.
-
-**LiteLLM fallbacks are matched on the requested name, not the resolved one.** A request for the
-alias `local-vision` does *not* inherit a fallback declared for `qwen3.6-35b` — it fails with
-`No fallback model group found for original model_group=local-vision`. Every alias needs its own
-entry in the `fallbacks` list; keep them in sync when adding aliases.
-
-**Do not list one machine's models in the other's litellm config.** The laptop config previously
-carried the desktop's entries pointing at `llama_swap_server` (unreachable from the laptop), and
-once the laptop gained its own `gemma-4-26b` deployment that became a duplicate `model_name` —
-LiteLLM would have load-balanced across a live and a dead endpoint. Each config lists only what its
-own machine can serve.

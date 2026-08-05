@@ -1,38 +1,20 @@
-# llama-swap configuration — 24GB AMD DESKTOP TIER (7900 XTX, ROCm)
-#
-# THIS FILE IS NO LONGER USED BY THE LAPTOP. The ThinkPad T1g runs two llama-swap
-# instances concurrently, each with its own config:
-#   ai/llama-swap-intel.yaml   Arc Pro iGPU   :8082  gemma-4-e2b
-#   ai/llama-swap-nvidia.yaml  RTX 5070 8GB   :8081  qwen3.5-9b
-# The "8GB tier" section below is kept so this file still works standalone on a
-# single-GPU box, but the laptop's copies of those models are tuned differently
-# (bigger batches on the iGPU, since it draws from system RAM rather than 8GB of
-# VRAM). Do not sync tuning between them — see ai/AGENTS.md for the measurements.
-#
-# Models are hot-swappable: llama-swap spawns/kills llama-server processes
-# on demand based on which model is requested via OpenAI /v1 API.
-#
-# Place GGUF model files in ~/.llama/models (created automatically on first run)
-# Example: mkdir -p ~/.llama/models && cp your-model.gguf ~/.llama/models/
-#
-# VISION / mmproj: each model needs the projector built for ITS OWN embedding dim.
-# Projectors are NOT interchangeable across model sizes — a mismatch makes llama-server
-# abort on load with "mismatch between text model (n_embd=X) and mmproj (n_embd=Y)".
-# Gemma 4 embedding dims (all distinct, hence per-model projectors):
-#   gemma-4-12b 3840 | gemma-4-26b 2816 | gemma-4-e4b 2560 | gemma-4-e2b 1536
-# Qwen 3.6 27b and 35b also use their own per-model projectors.
-#
 healthCheckTimeout: 60
-#
+
 models:
-  #############################################################################
-  # BIG MODELS — 24GB VRAM, 64K+ context, optimized for prefill throughput
-  # (ROCm 7900 XTX tier: gemma-4-12b, gemma-4-26b, qwen3.6-27b/35b, qwen3-coder-30b)
-  #############################################################################
-  #
-  # Gemma 4 12B - dense, instruction tuned, vision, Q4_K_M (6.7GB weights)
-  # Small weights + big headroom on 24GB → can afford 256K context and high batch sizes
-  #
+  "qwen3.6-27b":
+    cmd: |
+      /app/llama-server \
+        --model /models/Qwen3.6-27B-UD-Q4_K_XL.gguf \
+        --mmproj /models/qwen3.6-27b-mmproj-F16.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
+        --cache-reuse 256 \
+        --batch-size 2048 --ubatch-size 1024 \
+        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 300
+
   "gemma-4-12b":
     cmd: |
       /app/llama-server \
@@ -46,10 +28,7 @@ models:
         --temp 1.0 --top-k 64 --top-p 0.95
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
-#
-  # Gemma 4 26B - MoE (A4B, 4.3B active), instruction tuned, vision, Q4_K_M (16GB weights)
-  # 64K context with q8_0 KV (~3.5GB) = ~19.5GB total, leaving 4.5GB compute headroom
-  #
+
   "gemma-4-26b":
     cmd: |
       /app/llama-server \
@@ -64,25 +43,6 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
-  # Qwen 3.6 27B - dense, instruction tuned, vision, Q4_K_XL (17GB weights)
-  # 64K context with q8_0 KV (~3.5GB) = ~20.5GB total, leaving 3.5GB compute headroom
-  "qwen3.6-27b":
-    cmd: |
-      /app/llama-server \
-        --model /models/Qwen3.6-27B-UD-Q4_K_XL.gguf \
-        --mmproj /models/qwen3.6-27b-mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
-        --cache-reuse 256 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 300
-#
-  # Qwen 3.6 35B - MoE (A3B, 3.6B active), instruction tuned, vision, IQ4_XS (17GB weights)
-  # 64K context with q8_0 KV (~3.5GB) = ~20.5GB total, only 8/256 experts per token
-  #
   "qwen3.6-35b":
     cmd: |
       /app/llama-server \
@@ -96,10 +56,7 @@ models:
         --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 300
-#
-  # Qwen 3 Coder 30B - MoE (A3B, 3.6B active), code-specialized, Q4_K_XL (17GB weights)
-  # 64K context with q8_0 KV (~3.5GB) = ~20.5GB total, leaving 3.5GB compute headroom
-  #
+
   "qwen3-coder-30b":
     cmd: |
       /app/llama-server \
@@ -112,94 +69,3 @@ models:
         --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 300
-#
-  #############################################################################
-  # SMALL MODELS — 8GB VRAM, 64K context, conservative batch sizes for fit
-  # (CUDA RTX 5070 tier: qwen3.5-9b, gemma-4-e4b, gemma-4-e2b)
-  #############################################################################
-  #
-  # Qwen 3.5 9B - dense, instruction tuned, Q4_K_XL (5.6GB weights)
-  # 64K context with q4_0 KV (~1.5GB) = ~7.1GB total (tight fit; dense → no expert offload)
-  #
-  "qwen3.5-9b":
-    cmd: |
-      /app/llama-server \
-        --model /models/Qwen3.5-9B-UD-Q4_K_XL.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 384 --ubatch-size 192 \
-        --cache-reuse 256 \
-        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-#
-  # Gemma 4 E4B - MoE (4B active), instruction tuned, vision, Q4_K_XL (~5GB weights)
-  # 64K context with q4_0 KV (~1.5GB) = ~6.5GB total, safe margin for compute buffer
-  #
-  "gemma-4-e4b":
-    cmd: |
-      /app/llama-server \
-        --model /models/gemma-4-E4B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-e4b-mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 256 --ubatch-size 128 \
-        --cache-reuse 256 \
-        --temp 1.0 --top-k 64 --top-p 0.95
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-#
-  # Gemma 4 E2B - MoE (2B active), instruction tuned, vision, Q4_K_XL (3.0GB weights)
-  # 64K context with q4_0 KV (~1.5GB) = ~4.5GB total, very safe margin for compute
-  #
-  "gemma-4-e2b":
-    cmd: |
-      /app/llama-server \
-        --model /models/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 512 --ubatch-size 256 \
-        --cache-reuse 256 \
-        --temp 1.0 --top-k 64 --top-p 0.95
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-#
-# Flag notes:
-# - --flash-attn on: explicit value required by this llama-server build (~/30% VRAM reduction)
-# - --cache-type-k/v q8_0: higher quality KV cache for 24GB models (halves footprint vs f16)
-# - --cache-type-k/v q4_0: VRAM-saving KV cache for 8GB models
-# - --n-gpu-layers 99: offload all layers to GPU (attention on GPU, experts on CPU spill ok for MoE)
-# - --cache-reuse 256: enable KV-shift prefix reuse for multi-turn / agentic loops
-# - --batch-size / --ubatch-size: prefill throughput tuning (24GB models bumped for speed)
-# - --temp / --top-k / --top-p / --min-p: per-model sampling defaults (client can override per-request)
-# - ${PORT}: auto-substituted by llama-swap per model subprocess
-# - ttl: seconds idle before unloading (0 = never unload)
-#
-# What we DIDN'T apply (and why):
-# - --mlock: would fight llama-swap's TTL load/unload cycle and pin host RAM unnecessarily
-# - --n-cpu-moe N: not needed; every model already fits its tier's VRAM safely. Lever to pull if
-#   you later want CPU-offloaded experts for bigger models or longer contexts.
-# - --cache-ram: left at default (8192 MiB). Only tune if on memory-constrained 8GB laptops.
-# - --jinja: already ENABLED BY DEFAULT in this llama-server build; no need to specify
-#
-# All models use parallel=1 so --ctx-size is the full per-request context window.
-#
-# VRAM footprint (weights + KV cache @ stated context):
-#   24GB tier (q8_0 KV @ 64K, except gemma-4-12b @ 256K):
-#     - gemma-4-12b      6.7GB + ~2.4GB KV @ 256K = tight fit but intentional (small model, big context)
-#     - gemma-4-26b      16GB  + ~3.5GB KV @ 64K  = ~19.5GB
-#     - qwen3.6-27b      17GB  + ~3.5GB KV @ 64K  = ~20.5GB
-#     - qwen3.6-35b      17GB  + ~3.5GB KV @ 64K  = ~20.5GB (MoE: only 8/256 experts active per token)
-#     - qwen3-coder-30b  17GB  + ~3.5GB KV @ 64K  = ~20.5GB
-#   8GB tier (q4_0 KV @ 64K):
-#     - qwen3.5-9b       5.6GB + ~1.5GB KV @ 64K = ~7.1GB (dense, no expert offload possible)
-#     - gemma-4-e4b      ~5GB  + ~1.5GB KV @ 64K = ~6.5GB (MoE: only 4B active)
-#     - gemma-4-e2b      3.0GB + ~1.5GB KV @ 64K = ~4.5GB (MoE: only 2B active)
-#
-# NOTE on 8GB tier: qwen3.5-9b at 64K context is tight; if it OOMs under load on the real RTX 5070,
-# fallback levers (in order): (1) reduce --ubatch-size to 128/64, (2) reduce --ctx-size to 32768.
-#

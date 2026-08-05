@@ -1,24 +1,24 @@
 # Local LLM stack — llama.cpp + llama-swap + LiteLLM
 
-Self-hosted inference for the Hermes agent across two machines. One OpenAI-compatible endpoint
-(`localhost:4000`), stable model aliases, and per-machine hardware config behind them.
+Self-hosted inference for the Hermes agent across two machines. One OpenAI-compatible
+endpoint, stable model aliases, per-machine hardware config behind them.
 
-For the *why* behind every tuning decision — and the traps that cost hours — read
-[`AGENTS.md`](AGENTS.md). This file is just how to run it.
+This file is **how to run it**. For why anything is tuned the way it is — and the traps
+that cost hours — read [`AGENTS.md`](AGENTS.md).
 
-## Quick start
+## Run it
 
 ```bash
-export LLAMA_MODELS_DIR=/mnt/data/llama/models          # where the GGUFs live
+export LLAMA_MODELS_DIR=/mnt/data/llama/models     # where the GGUFs live
 
-# laptop: RTX 5070 + Arc iGPU concurrently
+# laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
 
 # desktop: 7900 XTX
 podman-compose -f ai/llama-cpp.yml --profile amd_llama_cpp up -d
 ```
 
-LiteLLM needs ~30-60s to become ready. Poll before sending traffic:
+LiteLLM needs ~30-60s. Poll before sending traffic:
 
 ```bash
 curl -s localhost:4000/health/liveliness
@@ -27,19 +27,33 @@ curl -s localhost:4000/health/liveliness
 | endpoint | what |
 |---|---|
 | `localhost:4000/v1` | LiteLLM gateway — **point agents here** |
-| `localhost:4000/ui` | LiteLLM admin (log in with `LITELLM_MASTER_KEY`) |
+| `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
 | `localhost:8080` | Open WebUI |
 | `localhost:8081` | primary GPU, direct to llama-swap |
 | `localhost:8082` | secondary GPU (laptop iGPU), direct |
 | `localhost:8083` | Intel NPU (experimental, nothing routes here) |
 
-Ports follow **device rank, not machine**: 8081 is always the primary GPU, whichever box you are
-on. Secrets live in `ai/litellm.env`; models in `$LLAMA_MODELS_DIR`.
+Ports follow **device rank, not machine** — 8081 is the primary GPU on whichever box you
+are on. Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
+
+## Architecture
+
+```
+agents ──> LiteLLM :4000 ──┬──> llama-swap :8081 ──> llama-server (primary GPU)
+           (aliases,       │
+            fallbacks,     └──> llama-swap :8082 ──> llama-server (iGPU, laptop only)
+            cloud models)
+```
+
+LiteLLM resolves a **semantic alias** to a model and forwards to the llama-swap instance
+that owns it. llama-swap spawns and kills one `llama-server` per model on demand, and
+unloads after an idle TTL. Cloud models (Anthropic, Gemini) route through the same
+gateway.
 
 ## Use the aliases, not model names
 
-Agents should target these. The names are identical on both machines — that is what lets one
-shared `~/.hermes/config.yaml` drive either box. Only the model behind each name changes.
+The names are identical on both machines — that is what lets one shared
+`~/.hermes/config.yaml` drive either box. Only the model behind each name changes.
 
 | alias | laptop | desktop | for |
 |---|---|---|---|
@@ -54,7 +68,7 @@ curl -s localhost:4000/v1/chat/completions \
   -d '{"model":"local-main","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'
 ```
 
-Hardcoding a model name works but breaks the moment you run the same config on the other machine.
+Hardcoding a model name works but breaks on the other machine.
 
 ## What runs where (laptop)
 
@@ -64,93 +78,93 @@ Hardcoding a model name works but breaks the moment you run the same config on t
 | Arc Pro iGPU | 8082 | `qwen3.5-2b`, `embed` | background chores + embeddings |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
-The 26B and 35B models run on an 8GB card via `--n-cpu-moe`, which keeps Mixture-of-Experts weights
-(~90% of the file) in system RAM while attention and the KV cache stay on the GPU.
+Only **one** dGPU model is resident at a time. `gemma-4-26b` and `qwen3.5-9b` have no
+alias — request them by name, at the cost of a ~15-30s swap.
 
-Only **one** dGPU model is resident at a time. `gemma-4-26b` and `qwen3.5-9b` have no alias —
-request them by name, at the cost of a ~15-30s swap.
+## Key findings
 
-### Picking a main model
+The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
 
-| model | prefill | decode | trivial Hermes turn |
-|---|---|---|---|
-| `qwen3.6-35b` **(default)** | 395 tok/s | 14.9 tok/s | ~60s |
-| `gemma-4-26b` | 616 tok/s | 17.9 tok/s | ~39s |
-| `qwen3.5-9b` | 1932 tok/s | 48 tok/s | ~2.6s |
+- **A 35B runs on an 8GB card** via `--n-cpu-moe`, which keeps Mixture-of-Experts weights
+  (~90% of the file) in system RAM while attention and KV stay on the GPU.
+  `qwen3.6-35b` → **411-454 t/s prefill, 31.4 t/s decode, 6947 MiB**.
+- **Decode is two different numbers.** Generation from a short prompt is much faster than
+  generation continuing from a large one. Judge an agent tier on the latter — it is what a
+  Hermes turn actually does.
+- **Fewer, faster CPU threads win.** `--threads 6` pinned to the P-cores beats the default
+  16 by ~5% and beats 12 or 14 threads by ~40%. Prefill is unaffected.
+- **`--n-cpu-moe` does not buy decode at context** — tune it for VRAM headroom instead.
+- **Splitting the model across both GPUs with Vulkan was tested and rejected**: the iGPU
+  does beat the CPU at expert work (+24%), but leaving CUDA for Vulkan costs 67% first.
+- **Text tests will not catch a vision crash.** Always send a real image after retuning.
+- **At the small end, prefer dense over MoE** — expert gathers are inefficient on the Arc.
 
-The default is **not** the fastest — it trades latency for a 35B-class model. To prefer speed,
-change `local-main` and `local-vision` in `ai/litellm-config.laptop.yaml`:
+## Check it works
 
-```yaml
-model_group_alias:
-  local-main: gemma-4-26b
-  local-vision: gemma-4-26b
+The benchmark harness lives in a separate repo:
+[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking).
+
+```bash
+git clone git@github.com:amidg/llm-benchmarking.git
+cd llm-benchmarking
+export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
+
+./smoke.py          # every tier, every alias, vision, approval shape
+./smoke.py --quick  # just show what is loaded where
+
+./llmbench.py --models qwen3.6-35b gemma-4-26b --tests all
 ```
-
-then `podman restart litellm`. Nothing else needs to change — that is the point of the alias layer.
 
 ## Files
 
 | file | what |
 |---|---|
 | `llama-cpp.yml` | compose: llama-swap instances, LiteLLM, Open WebUI, postgres |
-| `llama-swap-nvidia.yaml` | laptop primary GPU — model definitions + tuning |
+| `llama-swap-nvidia.yaml` | laptop primary GPU |
 | `llama-swap-intel.yaml` | laptop secondary GPU (iGPU) |
 | `llama-swap-config.yaml` | desktop 7900 XTX |
 | `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
 | `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
 | `litellm.env` | secrets (gitignored) |
-| `bench/smoke.py` | health-check every tier and alias; exits non-zero on failure |
-| `bench/llmbench.py` | compare models: throughput, tool use, quality, long context, vision |
-| `AGENTS.md` | **tuning rationale and gotchas — read before editing anything above** |
-| `LLAMA-CPP.md` | llama.cpp flag reference + Intel iGPU/NPU research |
+| `AGENTS.md` | **rules, rationale, learnings — read before editing any config** |
 
-`ollama.yml`, `n8n.yml`, `research.yml` are separate stacks that predate this one.
-
-## Checking it works
-
-```bash
-ai/bench/smoke.py          # every tier, every alias, vision, and the approval shape
-ai/bench/smoke.py --quick  # just show what is loaded where
-```
-
-To compare models (throughput, tool use, quality, long context):
-
-```bash
-ai/bench/llmbench.py --models qwen3.6-35b gemma-4-26b --tests all
-```
-
-See `ai/bench/README.md` for what each test catches and how to read the numbers.
+Configs deliberately carry **no comments**; all rationale lives in `AGENTS.md`.
+`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml` are separate stacks.
 
 ## Troubleshooting
 
-**Empty response right after `up`.** Either LiteLLM is still starting (~30-60s — poll
-`/health/liveliness`), or the Arc iGPU is JIT-compiling SYCL kernels on a cold cache. The latter
-took 4m32s once; the `intel_sycl_cache` volume makes it a one-time cost.
+**Config edit had no effect.** Editing a bind-mounted file replaces its inode, so the
+container keeps the old one. `podman restart llama_swap_nvidia`.
 
-**Blank `content` with a filled `reasoning_content`.** These are thinking models and the budget ran
-out before the answer. Not a failure — raise `max_tokens` to 400+.
+**Connection reset / container shows `(unhealthy)`.** `localhost` resolves to `::1` but
+llama-server binds IPv4. Use `127.0.0.1`.
 
-**A model answers text fine but dies on images.** VRAM headroom too low for the vision encoder.
-Raise `--n-cpu-moe` by 1-2 and retest *with an image* — text-only tests pass in exactly the
-configurations that crash.
+**Empty response right after `up`.** LiteLLM still starting (~30-60s — poll
+`/health/liveliness`), or the Arc is JIT-compiling SYCL kernels on a cold cache (one-time,
+took 4m32s once; the `intel_sycl_cache` volume prevents a repeat).
 
-**Out of VRAM on the dGPU.** Raise `--n-cpu-moe` (moves experts to RAM; costs decode speed, leaves
-context alone). For the dense `qwen3.5-9b` instead step `--ubatch-size` 512 → 384 → 256.
+**Blank `content` with filled `reasoning_content`.** Thinking model, budget ran out. Raise
+`max_tokens` to 400+.
 
-**iGPU model will not load.** Check `free -h`. The Arc iGPU allocates against `MemFree`, not
-reclaimable `MemAvailable`, so a full page cache can look like exhaustion.
+**Answers text fine but dies on images.** VRAM headroom too low for the vision encoder.
+Raise `--n-cpu-moe` by 1-2 and retest *with an image*.
+
+**Out of VRAM on the dGPU.** Raise `--n-cpu-moe`. For the dense `qwen3.5-9b` instead step
+`--ubatch-size` 512 → 384 → 256.
+
+**iGPU model will not load.** Check `free -h` — the Arc allocates against `MemFree`, not
+reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
 
 ```bash
-podman ps                                                     # what is up
-podman logs --tail 30 llama_swap_nvidia                       # or llama_swap_intel / litellm
-curl -s localhost:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
+podman ps
+podman logs --tail 30 llama_swap_nvidia
+curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
 ```
 
 ## Reaching the gateway from a libvirt VM
 
-LiteLLM binds to loopback only. To let VMs on `virbr0` reach it:
+LiteLLM binds to loopback only:
 
 ```bash
 sudo iptables -t nat -I PREROUTING -i virbr0 -p tcp --dport 4000 -j DNAT --to-destination 127.0.0.1:4000

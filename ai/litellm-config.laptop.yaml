@@ -1,118 +1,34 @@
-# LiteLLM gateway config — LAPTOP (ThinkPad T1g Gen 8).
-# The desktop uses ai/litellm-config.desktop.yaml. Both define the SAME four aliases,
-# which is what lets one shared ~/.hermes/config.yaml drive either machine.
-#
-# THE ALIAS CONTRACT (identical names on every machine, different models behind them):
-#   local-main     primary GPU    main agent, delegation, anything user-facing
-#   local-vision   whichever tier has a vision model
-#   local-tiny     cheapest tier  short background/fire-and-forget side tasks
-#   local-embed    RAG embeddings (laptop only — see note below)
-#
-# On THIS machine they resolve to:
-#   local-main     qwen3.6-35b  RTX 5070 8GB   :8081   MoE 35B/A3B via --n-cpu-moe
-#   local-vision   qwen3.6-35b  RTX 5070 8GB   :8081   same model — no swap for vision
-#   local-tiny     qwen3.5-2b   Arc iGPU       :8082   no vision, no reasoning
-#   local-embed    embed        Arc iGPU       :8082   Qwen3-Embedding 0.6B, 1024-dim
-#
-# The three iGPU aliases all resolve to the SAME model. gemma-4-e4b was dropped:
-# on this bandwidth-bound iGPU e2b is faster at everything (194 vs 146 tok/s
-# prefill, 16 vs 10 tok/s decode) and is equally vision-capable. Keeping the three
-# alias names distinct still matters — they are the portability contract, and the
-# desktop maps them to three different models.
-#
-# Never put a raw model name in a Hermes config — it will break on the other machine.
-#
-# MEASURED throughput (6524-token prompt):
-#   RTX 5070  qwen3.6-35b    395 tok/s prefill  14.9 tok/s decode  (35B MoE, vision) DEFAULT
-#   RTX 5070  gemma-4-26b    616 tok/s prefill  17.9 tok/s decode  (26B MoE, vision) alt
-#   RTX 5070  qwen3.5-9b    1932 tok/s prefill  48   tok/s decode  (9B dense, text only)
-#   Arc iGPU  qwen3.5-2b     558 tok/s prefill  23.1 tok/s decode  (text-only, no thinking)
-#
-# NOTE gemma-4-26b is FASTER on both axes (~1.6x prefill, ~1.2x decode) and uses less
-# VRAM. qwen3.6-35b is the default anyway, chosen for capability over throughput — it
-# is a 35B against a 26B. Switch local-main/local-vision back to gemma-4-26b if the
-# latency matters more than the model size; nothing else has to change.
-#
-# The dGPU wins on prefill by 3-10x, so everything the user waits on goes to
-# local-main — including delegation, which measured 33.6s there versus 2m05.8s on the
-# iGPU. The iGPU is NOT a useful second lane: each llama-swap instance is --parallel 1,
-# so concurrent work serializes there just as it would on the dGPU, and subagent cost
-# is prefill-dominated where the iGPU is weakest. What the iGPU actually buys is that
-# background chatter never evicts gemma-4-26b from the 8GB card.
-#
-# api_base tells you which physical tier serves a model:
-#   llama_swap_intel   Arc iGPU, laptop      (ai/llama-swap-intel.yaml)
-#   llama_swap_nvidia  RTX 5070 8GB, laptop  (ai/llama-swap-nvidia.yaml)
-#
-# The desktop's models are deliberately NOT listed here — they are unreachable from
-# this machine, and `gemma-4-26b` in particular would collide with the laptop's own
-# deployment of that model. See ai/litellm-config.desktop.yaml.
-#
 model_list:
-  # ---- Local: laptop SECONDARY GPU, Arc iGPU (llama_swap_intel, host :8082) ----
-  # Text-only and non-thinking by design (--mmproj removed, --reasoning off).
-  # Vision + small/fast + the second parallel lane. No dedicated VRAM — allocates from
-  # 62GB system RAM, so these run bigger batches and q8_0 KV than the 8GB tier below.
-  # Single model on this tier, so nothing ever evicts it.
+  - model_name: qwen3.6-35b
+    litellm_params:
+      model: openai/qwen3.6-35b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-26b
+    litellm_params:
+      model: openai/gemma-4-26b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: qwen3.5-9b
+    litellm_params:
+      model: openai/qwen3.5-9b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+
   - model_name: qwen3.5-2b
     litellm_params:
-      model: openai/qwen3.5-2b         # DENSE 2B, TEXT-ONLY, 64K ctx (1.28 GiB)
-                                       # backs local-tiny; no vision, no reasoning.
-                                       # Replaced gemma-4-e2b: 3.2x prefill, 1.4x
-                                       # decode, 43% the size, equal tool use.
+      model: openai/qwen3.5-2b
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
-  # Qwen3-Embedding 0.6B — 1024-dim, last-token pooling. EMBEDDINGS ONLY; this
-  # deployment cannot serve /v1/chat/completions.
   - model_name: embed
     litellm_params:
       model: openai/embed
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
-  # ---- Local: laptop PRIMARY GPU, RTX 5070 8GB (llama_swap_nvidia, host :8081) ----
-  # Two models share this tier but only ONE fits in 8GB at a time, so requesting the
-  # non-default one costs a ~15s swap. llama-swap unloads after 10 min idle (a
-  # sustained load here pins 40-60W).
-  #
-  # A 26B model runs on an 8GB card via --n-cpu-moe: gemma-4-26b-A4B is MoE with 128
-  # experts / 8 active, and ~88% of its weights are expert tensors that most tokens
-  # skip. Those live in system RAM for 26 of 30 layers; attention + KV stay on the GPU.
-  # See ai/llama-swap-nvidia.yaml for the full tuning sweep.
-  - model_name: gemma-4-26b
-    litellm_params:
-      model: openai/gemma-4-26b        # MoE 26B/A4B (~4B active), VISION, 64K ctx
-                                       # 6883 of 8151 MiB; backs local-main + local-vision
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-
-  - model_name: qwen3.6-35b
-    litellm_params:
-      model: openai/qwen3.6-35b        # MoE 35B/A3B (~3.6B active), VISION, 64K ctx
-                                       # UD-Q4_K_XL, 7103 of 8151 MiB via --n-cpu-moe 34.
-                                       # Alternative to gemma-4-26b, which still beats it
-                                       # (616 vs 395 t/s prefill, 17.9 vs 14.9 decode), so
-                                       # it gets no alias. Request by name.
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-
-  - model_name: qwen3.5-9b
-    litellm_params:
-      model: openai/qwen3.5-9b         # dense 9B, text-only, 64K ctx (6303 of 8151 MiB)
-                                       # the speed option: ~3x prefill, ~2x decode of
-                                       # gemma-4-26b. No alias — request by name.
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-
-  # ---- Intel NPU: NOT ROUTED ----
-  # The OpenVINO NPU backend runs at 0.61 tok/s decode (a 24-token tool call took 39s,
-  # vs ~7s warm on the iGPU). The container and the intel_npu_llama_cpp
-  # profile are kept for experimentation, but no model_list entry points at it and no
-  # alias resolves to it. Reach it directly on localhost:8083 if you want to poke at it.
-  # See ai/LLAMA-CPP.md for the full measurements.
-
-  # ---- Anthropic ----
   - model_name: claude-opus-4-8
     litellm_params:
       model: anthropic/claude-opus-4-8
@@ -128,7 +44,6 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ---- Google Gemini ----
   - model_name: gemini-3.1-pro
     litellm_params:
       model: gemini/gemini-3.1-pro
@@ -140,48 +55,21 @@ model_list:
       api_key: os.environ/GEMINI_API_KEY
 
 router_settings:
-  # Semantic roles for Hermes' main agent and delegation agents. Agents name a ROLE,
-  # not a checkpoint, so the model behind a role can be swapped (or moved to another
-  # tier) without touching any agent definition.
   model_group_alias:
-    local-main: qwen3.6-35b     # PRIMARY GPU (RTX 5070)  — main agent, coding, large prompts
-    local-vision: qwen3.6-35b   # PRIMARY GPU (RTX 5070)  — SAME model as local-main, so
-                                #   vision costs no model swap and gets a 35B-class model
-    local-tiny: qwen3.5-2b      # SECONDARY GPU (Arc iGPU) — titles/tags; no vision, no reasoning
-    local-embed: embed          # SECONDARY GPU (Arc iGPU) — RAG embeddings, 1024-dim
-    # local-embed: embed        # SECONDARY GPU (Arc iGPU) — enable with the embed model above
+    local-main: qwen3.6-35b
+    local-vision: qwen3.6-35b
+    local-tiny: qwen3.5-2b
+    local-embed: embed
 
 litellm_settings:
   drop_params: true
-  num_retries: 3                     # workaround: prevents NoneType > int crash in router
-  log_model_api_calls: true          # log all API calls
-  log_model_api_calls_to_db: true    # log to DB for spend tracking
+  num_retries: 3
+  log_model_api_calls: true
+  log_model_api_calls_to_db: true
   ui_access_controls:
-    admin_only: true                 # /ui only accessible to admin
-  database_type: postgres            # explicit DB type
-
-  # Local inference is slow enough to trip LiteLLM's default timeout: a cold model load
-  # plus a vision prefill on the iGPU measured 19.4s end-to-end, which surfaced as
-  # "InternalServerError - Connection error" rather than anything diagnostic. Give
-  # local tiers room; a 6.5K-token prompt on the iGPU alone costs ~45s.
+    admin_only: true
+  database_type: postgres
   request_timeout: 600
-
-  # Degrade instead of erroring when a tier is down or busy. The important one is
-  # qwen3.5-9b -> gemma-4-e4b: if the dGPU tier is unavailable (container down, VRAM
-  # contention, laptop on battery), reasoning requests fall back to the iGPU rather
-  # than failing the agent outright.
-  #
-  # NOTE: fallbacks are matched against the model group NAME AS REQUESTED. A request
-  # for the alias `local-vision` does NOT inherit the fallback declared for
-  # `gemma-4-e4b` — it fails with "No fallback model group found for original
-  # model_group=local-vision". So the aliases are listed explicitly as well.
-  # local-vision has NO fallback on purpose: qwen3.5-9b has no projector, so
-  # falling back would answer questions about images without being able to see
-  # them — a confidently wrong answer is worse than an error.
-  # local-vision NOW HAS a fallback, which it could not before: gemma-4-26b also has a
-  # projector, so vision can degrade to it instead of failing. It must never fall back
-  # to qwen3.5-9b or qwen3.5-2b — neither has a projector, and a blind model
-  # confidently describing an image it cannot see is worse than a clean error.
   fallbacks:
     - qwen3.6-35b: ["gemma-4-26b"]
     - local-main: ["gemma-4-26b", "qwen3.5-9b"]

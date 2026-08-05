@@ -1,134 +1,6 @@
-# llama-swap configuration — RTX 5070 8GB TIER (laptop: ThinkPad T1g Gen 8)
-#
-# Runs alongside llama-swap-intel.yaml on the SAME machine (different container,
-# different host port). This instance advertises only models that fit in 8GB;
-# see ai/llama-swap-intel.yaml for the Arc iGPU tier.
-#
-# ROLE: primary agent tier. Complex reasoning, coding, vision, and any prompt large
-# enough that prefill dominates — which is most agent traffic.
-#
-# TWO MODELS, one loaded at a time (they cannot co-reside in 8GB, so requesting the
-# other costs a ~15s swap — that is fine, only gemma-4-26b has aliases pointed at it):
-#   gemma-4-26b  DEFAULT. `local-main` and `local-vision` both resolve here.
-#   qwen3.5-9b   kept available: ~2.5x faster, dense, no vision. Request by name.
-#
-# RUNNING A 26B MODEL ON AN 8GB CARD — how this works.
-# gemma-4-26b-A4B is a Mixture-of-Experts model: 128 experts, 8 active per token
-# (~4B active of 26B total). 30 layers. Critically, ~88% of its parameters are expert
-# tensors that are mostly IDLE on any given token. `--n-cpu-moe N` keeps the expert
-# weights of the first N layers in system RAM (62GB here) while attention, embeddings,
-# norms and the KV cache stay on the GPU. Only the 8 selected experts per layer are
-# read from RAM per token, so the PCIe/DRAM traffic is a fraction of the 15.8GB weights.
-# This is the whole trick: the dense parts that every token touches live on the GPU,
-# the sparse parts that most tokens skip live in RAM.
-#
-# MEASURED SWEEP (6524-token prompt, 64K ctx, --ubatch-size 512). N is how many of the
-# 30 layers keep experts on CPU, so LOWER N = more on GPU = faster but more VRAM:
-#   N=30 (all on CPU)   ~21.8 tok/s decode   3621 MiB
-#   N=26  <- current     640.8 tok/s prefill / 23.4 decode   6883 MiB (with mmproj)
-#   N=24                 681.0 tok/s prefill / 24.4 decode   6529 MiB (no mmproj)
-#   N=22                 729.7 tok/s prefill / 25.9 decode   7435 MiB (no mmproj) — too tight
-#   N=18 and below       OOM, fails to load
-# N=26 is chosen because it leaves room for the vision projector AND ~1.2GB headroom.
-# Going to N=22 buys only ~10% for 2.5GB more VRAM and risks OOM on long prompts.
-#
-# COST VS qwen3.5-9b — this is a deliberate quality-for-speed trade:
-#   qwen3.5-9b    1932 tok/s prefill  |  48 tok/s decode  |  dense 9B, no vision
-#   gemma-4-26b    641 tok/s prefill  |  23 tok/s decode  |  26B/A4B MoE, vision
-# ~3x slower prefill and ~2x slower decode, in exchange for a much larger model and
-# native vision. 23 tok/s still comfortably outruns reading speed. If a workload needs
-# raw throughput more than capability, request qwen3.5-9b by name.
-#
-# BUDGET: the RTX 5070 Laptop reports 8151 MiB and does NOT drive the display
-# (the Arc iGPU does), so effectively all of it is available.
-#   gemma-4-26b  ~2GB non-expert weights + 1.2GB mmproj + KV @ 64K = 6883 MiB
-#   qwen3.5-9b   5.6GB weights + ~1.5GB q4_0 KV @ 64K = 6303 MiB
-# If either OOMs under heavier desktop load: for gemma raise --n-cpu-moe (26 -> 28 -> 30),
-# for qwen step ubatch 512 -> 384 -> 256, then ctx 64K -> 32K.
-#
-# THINKING-MODEL GOTCHA: these models emit reasoning into `reasoning_content` first. A
-# qwen3.5-9b request with max_tokens=16 returned EMPTY `content` (all budget spent
-# reasoning); the same prompt with max_tokens=600 used 176 tokens and returned "OK".
-# Give local models generous max_tokens or agents will see blank replies.
-#
-# VISION / mmproj: the projector must match the model's OWN embedding dim —
-# gemma-4-26b is n_embd 2816, so it REQUIRES gemma-4-26b-mmproj-F16.gguf. A mismatch
-# aborts with "mismatch between text model (n_embd=X) and mmproj (n_embd=Y)", and only
-# on the FIRST REQUEST, not at load.
-#
 healthCheckTimeout: 60
-#
+
 models:
-  # Gemma 4 26B A4B - MoE (128 experts / 8 active ≈ 4B active of 26B), vision,
-  # Q4_K_XL (15.8GB weights, ~14GB of which sits in system RAM via --n-cpu-moe).
-  #
-  # ALTERNATIVE to qwen3.6-35b, and the FASTER of the two: 616 t/s prefill /
-  # 17.9 t/s decode at 6903 MiB, versus 395 / 14.9 at 7103 MiB. It is not the default
-  # only because qwen3.6-35b is a larger model. It is also the fallback target for
-  # `local-vision` (it has its own projector). Request "gemma-4-26b" by name; doing so
-  # evicts qwen3.6-35b (~15-30s swap). See the header for the --n-cpu-moe sweep behind N=26.
-  "gemma-4-26b":
-    cmd: |
-      /app/llama-server \
-        --model /models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
-        --mmproj /models/gemma-4-26b-mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --n-cpu-moe 26 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 1024 --ubatch-size 512 \
-        --cache-reuse 256 \
-        --temp 1.0 --top-k 64 --top-p 0.95
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-#
-  # Qwen 3.6 35B A3B - MoE (256 experts / 8 active ~= 3.6B of 35B), vision,
-  # UD-Q4_K_M (22.1 GB), 40 layers.
-  #
-  # DEFAULT. `local-main` AND `local-vision` both resolve here — same model, so vision
-  # costs no eviction.
-  #
-  # HYBRID ARCHITECTURE, which is why the KV cache is small and context is cheap:
-  # full_attention_interval=4, so only 10 of the 40 layers carry a KV cache — the rest
-  # are SSM/Mamba blocks with constant state. KV at 64K with q4_0 is only ~360 MiB, so
-  # shrinking --ctx-size frees far less VRAM than on a normal transformer. Do not reach
-  # for context reduction as a VRAM lever here.
-  #
-  # MEASURED 2026-08-05 (llama.cpp b10257, 8.6K prefill, 3 interleaved rounds):
-  #   prefill 411-454 t/s | decode 36.6 t/s shallow | 31.4 t/s DEEP | 6947 MiB
-  # "deep" = generation continuing from the long prefill, which is what an agent turn
-  # does; "shallow" = from a fresh short prompt (the tg128-equivalent most quoted
-  # numbers mean). Judge this tier on DEEP. See ai/bench/README.md.
-  #
-  # QUANT CHOICE: UD-Q4_K_M, switched from UD-Q4_K_XL 2026-08-05. Head-to-head at
-  # identical --threads, same session, 3 rounds (prefill / shallow / deep):
-  #   UD-Q4_K_M   <-  411 t/s / 36.6 / 31.4   6985 MiB
-  #   UD-Q4_K_XL      408 t/s / 35.6 / 30.4   7103 MiB
-  # A small but consistent win on every round, for 118 MiB less VRAM. Both are K-quants;
-  # the older UD-IQ4_XS (17.7 GB) is still on disk and remains the pick ONLY for
-  # huge-prompt/terse-output workloads — i-quant dequant is markedly more expensive on
-  # the CPU, which is where --n-cpu-moe puts ~92% of the weights.
-  #
-  # --n-cpu-moe: N=34, and NOT for the reason the old sweep suggested.
-  # Re-measured 2026-08-05 on UD-Q4_K_M at --threads 6, everything else fixed:
-  #   N        prefill  shallow  DEEP(8.6K)  VRAM
-  #   34  <-   454 t/s  37.2     31.4        6985 MiB   current
-  #   33       461 t/s  37.3     31.8        ~7452 MiB  at the vision-crash boundary
-  #   31 (no mmproj)  483 t/s  38.8  31.7    ~6100 MiB
-  # Moving THREE expert layers to the GPU moved deep decode by 0.3 t/s — noise. Only
-  # shallow decode and prefill respond to N; the number an agent turn actually sees does
-  # not, because the shallow->deep gap is attention work at context, not expert placement.
-  # So N is tuned for VRAM headroom, not speed: N=34 costs ~0.4 t/s vs N=33 and buys
-  # 470 MiB of margin against the vision crash (Q4_K_XL survived 7539 MiB, died at 7743).
-  #
-  # --threads 6 --cpu-range 0-5 --cpu-strict 1 : P-cores only. This is worth +3-5% deep
-  # and the intuitive alternative is much worse — see the table in ai/AGENTS.md. Briefly:
-  # unset(16)=30.5, t14(exclude LP-E)=22.3, t12=22.2, t6=31.6, t8=26.8 deep. Fewer, faster
-  # threads win; the expert gather is synchronisation-bound, not throughput-bound.
-  # Prefill is GPU-bound and flat (448-455) across every thread setting — do not tune on it.
-  #
-  # QUANT: UD-Q4_K_M, switched from UD-Q4_K_XL 2026-08-05. Head-to-head at identical
-  # threads, same session, 3 rounds: 411/36.6/31.4 vs 408/35.6/30.4 (prefill/shallow/deep),
-  # and 118 MiB less VRAM. Small but consistent across every round.
   "qwen3.6-35b":
     cmd: |
       /app/llama-server \
@@ -143,11 +15,21 @@ models:
         --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
-#
-  # Qwen 3.5 9B - dense, instruction tuned, Q4_K_XL (5.6GB weights), text-only.
-  # Kept as the speed option: ~3x the prefill and ~2x the decode of gemma-4-26b.
-  # No alias points here — request "qwen3.5-9b" by name. Doing so evicts gemma-4-26b
-  # (~15s swap), and the next local-main request swaps it back.
+
+  "gemma-4-26b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf \
+        --mmproj /models/gemma-4-26b-mmproj-F16.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --n-cpu-moe 26 --ctx-size 65536 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 1024 --ubatch-size 512 \
+        --cache-reuse 256 \
+        --temp 1.0 --top-k 64 --top-p 0.95
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+
   "qwen3.5-9b":
     cmd: |
       /app/llama-server \
@@ -160,4 +42,3 @@ models:
         --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
-

@@ -1,73 +1,34 @@
-# LiteLLM gateway config — DESKTOP (Radeon 7900 XTX 24GB, ROCm).
-# The laptop uses ai/litellm-config.laptop.yaml. Both define the SAME alias names,
-# which is what lets one shared ~/.hermes/config.yaml drive either machine.
-#
-# THE ALIAS CONTRACT (identical names on every machine, different models behind them):
-#   local-main     primary GPU    main agent, coding, big prompts
-#   local-vision   whichever tier has a vision model
-#   local-tiny     cheapest tier  short background/fire-and-forget side tasks
-#
-# On THIS machine they resolve to:
-#   local-main     qwen3.6-27b   7900 XTX  :8081  dense 27B, vision, 64K
-#   local-vision   qwen3.6-27b   7900 XTX  :8081
-#   local-tiny     gemma-4-12b   7900 XTX  :8081  dense 12B, vision, 256K
-#
-# SINGLE-GPU CAVEAT — this machine has ONE GPU, so all three aliases are served by
-# ONE llama-swap instance holding ONE model at a time. Alternating local-main and
-# local-tiny therefore EVICTS AND RELOADS a large model on every switch. On the
-# laptop that cost is avoided because local-tiny lives on a physically separate iGPU;
-# here there is nowhere else to put it.
-#
-# If background chatter (titles, monitors) makes this machine feel slow, point
-# local-tiny at qwen3.6-27b as well. One resident model and no swapping beats a
-# smaller model you have to keep reloading — 12b is only "cheaper" when it is free
-# to keep loaded, which it is not here.
-#
-# local-embed is NOT defined on this machine (no embedding GGUF present). Anything
-# routed to it will fail here. See the note in litellm-config.laptop.yaml.
-#
-# WHEN THE SECOND GPU ARRIVES: add a second llama-swap service on port 8082 (mirroring
-# the laptop's intel/nvidia split in ai/llama-cpp.yml — distinct container_name, distinct
-# port, its own llama-swap config), then repoint local-tiny at it. No Hermes config
-# change is needed; that is the point of the alias layer.
-#
-# Never put a raw model name in a Hermes config — it will break on the other machine.
-#
 model_list:
-  # ---- Local: PRIMARY GPU, 7900 XTX 24GB (llama_swap_server, host :8081) ----
-  # model_name must match a key in llama-swap-config.yaml
-  # llama-swap handles all inference params; only routing info needed here
+  - model_name: qwen3.6-27b
+    litellm_params:
+      model: openai/qwen3.6-27b
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+
   - model_name: gemma-4-12b
     litellm_params:
-      model: openai/gemma-4-12b        # dense 12B, 256K ctx, q8_0 KV (6.7GB)
+      model: openai/gemma-4-12b
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: gemma-4-26b
     litellm_params:
-      model: openai/gemma-4-26b        # MoE 26B/A4B, 64K ctx (16GB)
-      api_base: http://llama_swap_server:8080/v1
-      api_key: sk-no-key-required
-
-  - model_name: qwen3.6-27b
-    litellm_params:
-      model: openai/qwen3.6-27b        # dense 27B, vision, 64K ctx, q8_0 KV (17GB)
+      model: openai/gemma-4-26b
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3.6-35b
     litellm_params:
-      model: openai/qwen3.6-35b        # MoE 35B/A3B, vision, 64K ctx, q8_0 KV (17GB)
+      model: openai/qwen3.6-35b
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
   - model_name: qwen3-coder-30b
     litellm_params:
-      model: openai/qwen3-coder-30b    # MoE coder 30B/A3B, 64K ctx (17GB)
+      model: openai/qwen3-coder-30b
       api_base: http://llama_swap_server:8080/v1
       api_key: sk-no-key-required
 
-  # ---- Anthropic ----
   - model_name: claude-opus-4-8
     litellm_params:
       model: anthropic/claude-opus-4-8
@@ -83,7 +44,6 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ---- Google Gemini ----
   - model_name: gemini-3.1-pro
     litellm_params:
       model: gemini/gemini-3.1-pro
@@ -95,30 +55,20 @@ model_list:
       api_key: os.environ/GEMINI_API_KEY
 
 router_settings:
-  # Same alias names as the laptop config — this is the portability contract.
-  # Only the right-hand side differs per machine.
   model_group_alias:
-    local-main: qwen3.6-27b       # PRIMARY GPU — main agent, coding, large prompts
-    local-vision: qwen3.6-27b     # PRIMARY GPU — vision
-    local-tiny: gemma-4-12b       # PRIMARY GPU — titles, classification, query rewrite
+    local-main: qwen3.6-27b
+    local-vision: qwen3.6-27b
+    local-tiny: gemma-4-12b
 
 litellm_settings:
   drop_params: true
-  num_retries: 3                     # workaround: prevents NoneType > int crash in router
-  log_model_api_calls: true          # log all API calls
-  log_model_api_calls_to_db: true    # log to DB for spend tracking
+  num_retries: 3
+  log_model_api_calls: true
+  log_model_api_calls_to_db: true
   ui_access_controls:
-    admin_only: true                 # /ui only accessible to admin
-  database_type: postgres            # explicit DB type
-
-  # Local inference is slow enough to trip LiteLLM's default timeout, and this machine
-  # swaps ~17GB models between aliases — a cold load alone can take tens of seconds.
+    admin_only: true
+  database_type: postgres
   request_timeout: 600
-
-  # NOTE: fallbacks are matched against the model group NAME AS REQUESTED. A request
-  # for the alias `local-vision` does NOT inherit the fallback declared for
-  # `qwen3.6-27b` — it fails with "No fallback model group found for original
-  # model_group=local-vision". So the aliases are listed explicitly as well.
   fallbacks:
     - qwen3.6-27b: ["gemma-4-26b"]
     - gemma-4-26b: ["gemma-4-12b"]
