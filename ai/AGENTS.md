@@ -10,11 +10,9 @@ Everything non-obvious about this stack lives here. Read before editing any conf
 | `AGENTS.md` | **all rules, rationale and accumulated learnings** | agents + whoever edits configs |
 | `*.yml`, `*.yaml` | **working config only — no comments** | the runtime |
 
-The benchmark harness lives in a **separate repo**,
-[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking) (`smoke.py`,
-`llmbench.py`). It has its own `AGENTS.md` covering how to run it and how to avoid drawing
-wrong conclusions from its output. Point it at this stack with
-`export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env`.
+**The benchmark harness is not in this repo.** It lives in
+[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking) — see
+[Benchmarking](#benchmarking) below before measuring anything.
 
 **Configs carry no comments by design.** Rationale rots when it sits next to the flag it
 explains; it gets copied, contradicted, and never re-measured. If a setting needs
@@ -30,11 +28,15 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `embed` |
-| `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8081 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
+| `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
-**Ports follow device rank, not machine:** 8081 = primary GPU, 8082 = secondary, 8083 =
-NPU. The desktop and laptop both use 8081 because each is its machine's primary GPU; they
-are separate hosts. Same reasoning lets both run `container_name: litellm` on 4000.
+Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
+llama-swap is on **8080** and Open WebUI on **3000**. Both machines run
+`container_name: litellm` on 4000 — they are separate hosts, so there is no conflict.
+
+Container-internal ports are always 8080, which is why `litellm-config.*.yaml` points at
+`http://llama_swap_*:8080/v1` regardless of the host mapping. Changing a host port does
+not require a LiteLLM change.
 
 **The laptop runs nvidia + intel concurrently.** They used to share a container name and
 port via the `base_llama_swap` anchor, which made them mutually exclusive. `container_name`,
@@ -494,22 +496,61 @@ once. Verify with request counts before concluding a change to it did anything.
   ~15-30s swap.
 - **Deliberately not used:** `--mlock` (fights llama-swap's TTL load/unload).
 
-## Testing
+## Benchmarking
 
-From the [llm-benchmarking](https://github.com/amidg/llm-benchmarking) repo, with
-`LITELLM_ENV` pointing at `ai/litellm.env`:
+**Every number in this file was produced by
+[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking)** — two stdlib-only
+scripts (`smoke.py`, `llmbench.py`), no dependencies, no venv. It used to live at
+`ai/bench/` and was split out so it can be pointed at any OpenAI-compatible stack.
+
+Local checkout on this machine: `~/Projects/llm-benchmarking`.
+
+### Setup
 
 ```bash
-./smoke.py                                       # every tier + alias; non-zero on failure
-./llmbench.py --models a b --tests all           # compare models
-./llmbench.py --models local-main --fail-on-regression
+git clone git@github.com:amidg/llm-benchmarking.git ~/Projects/llm-benchmarking
+cd ~/Projects/llm-benchmarking
+export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env   # or LITELLM_MASTER_KEY directly
 ```
 
-`smoke.py` replays the exact `max_tokens=16` approval shape and flags empty-content
-responses — that is how the smart-approval breakage was found. `llmbench.py` interleaves
-models across rounds so thermal drift is shared rather than stacked.
+On the **laptop** `LITELLM_ENV` is the only wiring needed — the scripts default to
+`localhost:8081` (primary GPU), `:8082` (secondary) and `:4000` (gateway), which matches.
+Without a key, `smoke.py --endpoint-only` still works.
 
-**Benchmark methodology rules learned the hard way:**
+On the **desktop** llama-swap is on host port **8080**, so `smoke.py`'s tier probe will
+report the primary GPU unreachable. Either edit `TIERS` at the top of `smoke.py`, or use
+`llmbench.py --endpoint http://localhost:8080/v1`. The gateway checks are unaffected —
+LiteLLM is on 4000 on both machines, and going through aliases is the better test anyway.
+
+### When to run what
+
+```bash
+./smoke.py                    # after ANY config edit, container restart, or model swap
+./smoke.py --quick            # just show what is loaded where (no generation)
+
+./llmbench.py --models qwen3.6-35b gemma-4-26b --tests perf --rounds 3
+./llmbench.py --models qwen3.6-35b --tests all          # before promoting a config
+./llmbench.py --models local-main --fail-on-regression  # CI gate
+```
+
+`smoke.py` is the gate after any change to this repo. It replays the exact `max_tokens=16`
+approval shape and flags empty-content responses — that is how the smart-approval breakage
+was found, and it is the one failure mode a "does it respond" check misses.
+
+`llmbench.py --tests all` is what a config must pass **before being promoted** into
+`local-main`: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a
+real image.
+
+### Reading its output against this stack
+
+`llmbench.py --tests perf` prints `prefill`, `decode` and `deep`. **`deep` is the number
+this stack is tuned on** — see [Decode is two numbers](#decode-is-two-numbers-and-mixing-them-wastes-days).
+The `--n-cpu-moe`, thread and quant tables above are all `deep` figures at
+`--perf-lines 320` (~6.5-8.6K prompt). Use `--perf-lines 2800` for ~58K if you need the
+full-context picture.
+
+Its own `AGENTS.md` documents the interpretation traps in detail. The three that have
+actually bitten this stack:
 
 - **Give tests a thinking-model-sized budget.** `t_tools` and `t_quality` once ran at
   400/300 tokens; a model that spent the whole budget reasoning scored identically to one
@@ -518,7 +559,19 @@ models across rounds so thermal drift is shared rather than stacked.
 - **Repeated identical prompts hit the prompt cache.** A single-model loop shows `ptok=4`
   on rounds 2+ and a meaningless prefill number. `llmbench.py` avoids this by alternating
   models, which flushes the cache — only round 1 is valid otherwise.
-- **Vision must be tested with a real image** — see the vision floor above.
+- **Vision must be tested with a real image** — see the vision floor above. Every
+  configuration that crashed on an image passed a full 6524-token text prefill first.
+
+### Practical notes for this hardware
+
+- **Free the GPU first.** `curl -s -X POST 127.0.0.1:8081/api/models/unload`. A model left
+  resident from a previous run skews the first measurement and can OOM a second load.
+- **Long runs belong in the background.** `--tests all` across two 35B models takes 20-40
+  minutes; model swaps (~15-30s each) dominate. Poll the output file rather than blocking.
+- **Watch `free -h`, not just `nvidia-smi`.** `--n-cpu-moe` puts ~20 GB in system RAM, and
+  the Arc allocates against `MemFree`. Memory pressure has killed the whole stack mid-run.
+- If you tune anything, **update the tables in this file in the same commit**, with the
+  measurement that produced the change.
 
 ```bash
 curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'

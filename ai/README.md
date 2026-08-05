@@ -28,13 +28,13 @@ curl -s localhost:4000/health/liveliness
 |---|---|
 | `localhost:4000/v1` | LiteLLM gateway — **point agents here** |
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
-| `localhost:8080` | Open WebUI |
-| `localhost:8081` | primary GPU, direct to llama-swap |
-| `localhost:8082` | secondary GPU (laptop iGPU), direct |
+| `localhost:3000` | Open WebUI |
+| `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap |
+| `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
 | `localhost:8083` | Intel NPU (experimental, nothing routes here) |
+| `localhost:8080` | desktop llama-swap (7900 XTX), direct |
 
-Ports follow **device rank, not machine** — 8081 is the primary GPU on whichever box you
-are on. Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
+Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
 ## Architecture
 
