@@ -37,12 +37,22 @@ All numbers below are same-session. Absolute values drift 20-30% with load and t
 earlier run had `gemma-4-26b` at 641 tok/s prefill, a later one 467 — so **only ever compare models
 measured in the same session.** The ratios have been stable across every repetition.
 
-| tier | model | prefill | decode | VRAM |
+> **Decode is two different numbers, and this table's old figures were the pessimistic one.**
+> `ai/bench/llmbench.py` reports `decode` (generation from a fresh short prompt, ~0 context —
+> the `tg128`-equivalent that most online figures mean) and `deep` (generation continuing from
+> the ~6.5K prefill, which is what an agent turn actually does). **Quote `deep` when judging an
+> agent tier.** The `qwen3.6-35b` row below said **14.9 tok/s** for a long time; re-measured on
+> the *unchanged* config it is **29.3 deep / 33.5 shallow** with prefill unchanged, so the old
+> number was a hand-measured deep figure taken before `ai/bench/` existed and was never
+> comparable to anything since. Rows not marked "re-measured" may have the same problem.
+
+| tier | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `qwen3.6-35b` **(default)** | 395 tok/s | 14.9 tok/s | 7103 MiB |
-| RTX 5070 | `gemma-4-26b` (alternative) | **616 tok/s** | **17.9 tok/s** | 6903 MiB |
-| RTX 5070 | `qwen3.5-9b` | **1932 tok/s** | **48 tok/s** | 6303 MiB |
-| Arc iGPU | `qwen3.5-2b` | **558 tok/s** | **23.1 tok/s** | 1.34 GB RAM |
+| RTX 5070 | `qwen3.6-35b` **(default)**, tuned 2026-08-05 | 411-454 tok/s | **31.4 tok/s** (36.6 shallow) | 6947 MiB |
+| RTX 5070 | ^ before tuning (Q4_K_XL, default threads) | 425 tok/s | 29.3 tok/s (33.5 shallow) | 7103 MiB |
+| RTX 5070 | `gemma-4-26b` (alternative) | **616 tok/s** | 17.9 tok/s *(stale, pre-`deep`)* | 6903 MiB |
+| RTX 5070 | `qwen3.5-9b` | **1932 tok/s** | **48 tok/s** *(stale)* | 6303 MiB |
+| Arc iGPU | `qwen3.5-2b` | **558 tok/s** | **23.1 tok/s** *(stale)* | 1.34 GB RAM |
 | Arc iGPU | `embed` (Qwen3-Embedding-0.6B) | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 tok/s | **0.61 tok/s** | RAM |
 
@@ -62,7 +72,7 @@ every token needs are on the GPU; the sparse parts it skips are in RAM.
 
 | model | layers | experts | quant | tuned N | why that N |
 |---|---|---|---|---|---|
-| `qwen3.6-35b` | 40 | 256 / 8 active | UD-Q4_K_XL (20.8 GiB) | **34** | vision floor is 33; 34 keeps ~1.0GB headroom |
+| `qwen3.6-35b` | 40 | 256 / 8 active | UD-Q4_K_M (22.1 GB) | **34** | N buys ~nothing at depth (see below); 34 keeps ~1.2GB vision headroom |
 | `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GiB) | **26** | leaves room for the projector + ~1.2GB headroom |
 
 `--n-cpu-moe` composes with `--n-gpu-layers 99`: ngl decides layer placement, `--n-cpu-moe`
@@ -78,6 +88,56 @@ qwen3.6-35b (Q4_K_XL)          gemma-4-26b (Q4_K_XL)
   N=32  VISION CRASHES           N=22  25.9 t/s  7435 MiB (no mmproj)
                                  N<=18 OOM at load
 ```
+
+**Those decode figures are shallow (~0-context) numbers, and N does NOT buy deep decode.**
+Re-measured on `UD-Q4_K_M` at `--threads 6`, sweeping N with everything else fixed:
+
+| N | mmproj | prefill | decode (shallow) | deep (8.6K ctx) | VRAM |
+|---|---|---|---|---|---|
+| 34 | yes | 454 t/s | 37.2 t/s | **31.4 t/s** | 6985 MiB |
+| 33 | yes | 461 t/s | 37.3 t/s | **31.8 t/s** | ~7452 MiB |
+| 31 | **no** | 483 t/s | 38.8 t/s | **31.7 t/s** | ~6100 MiB |
+
+Moving **three** expert layers from CPU to GPU changed deep decode by ~0.3 t/s — noise.
+Shallow decode moved (37.2 -> 38.8) and prefill moved (454 -> 483), but the number an agent
+turn actually experiences did not. The ~5.5 t/s shallow-to-deep gap is context-dependent
+attention work on the GPU, and expert placement cannot touch it.
+
+**So tune `--n-cpu-moe` for VRAM headroom and prefill, not for decode.** Since lower N buys
+almost nothing at depth, prefer the *higher* N that keeps vision headroom — N=34 costs
+~0.4 t/s against N=33 and buys 470 MiB of margin against the vision-crash boundary.
+
+### CPU thread count for `--n-cpu-moe`: fewer, faster threads win
+
+`--n-cpu-moe` puts ~92% of the weights on the CPU, so decode is gated by CPU expert
+dequant+gather — which makes `--threads` a real tuning lever, and the default wrong. This is
+a hybrid-core chip:
+
+```
+CPU 0-5    P-core   5400 MHz
+CPU 6-13   E-core   4500 MHz
+CPU 14-15  LP-E     2500 MHz   (SoC tile, ~half speed)
+```
+
+Measured on `qwen3.6-35b` UD-Q4_K_M, `--n-cpu-moe 34`, 8.6K prefill, interleaved rounds:
+
+| `--threads` / affinity | prefill | decode | deep |
+|---|---|---|---|
+| unset (spawns 16) | 448 t/s | 34.2 t/s | 30.5 t/s |
+| `14 --cpu-range 0-13 --cpu-strict 1` | 455 t/s | 25.0 t/s | 22.3 t/s |
+| `12 --cpu-range 0-11 --cpu-strict 1` | 453 t/s | 25.0 t/s | 22.2 t/s |
+| **`6 --cpu-range 0-5 --cpu-strict 1`** | 453 t/s | **36.9 t/s** | **31.6 t/s** |
+
+**The obvious hypothesis is wrong.** "The two 2500 MHz LP-E cores gate llama.cpp's per-op
+barrier, so exclude them" predicts `-t 14` wins. It loses badly — *worse* than leaving all 16
+unpinned. Excluding only the LP-E cores is the second-worst configuration tested.
+
+What actually holds is **fewer, faster threads**: 6 P-cores beat 16, while 12 and 14 are the
+worst. The expert gather is dominated by per-op synchronisation, not by aggregate CPU
+throughput, so adding mid-speed cores costs more in barrier overhead than they contribute.
+
+**Prefill is unaffected** (448-455 t/s across every configuration) because it is GPU-bound —
+only decode responds to thread placement. Do not tune this on a prefill number.
 
 ### Quant choice for CPU-offloaded MoE — it cuts both ways
 
@@ -104,6 +164,77 @@ workloads would prefer IQ4_XS; that file is still on disk.
 
 **The lesson: for CPU-offloaded MoE, prefer K-quants over i-quants — but re-tune `--n-cpu-moe`
 afterwards and re-measure *both* axes.** A bigger file buys decode and costs prefill.
+
+### Splitting the 35B across BOTH GPUs with Vulkan — tested, rejected (2026-08-05)
+
+The intuition is compelling and will be proposed again, so here is the measurement that
+killed it. **Idea:** `--n-cpu-moe` makes the *CPU* do the expert dequant+gather every token;
+the laptop also has an Arc iGPU, so let the iGPU do that work instead.
+
+**It is mechanically possible, and simpler than it sounds.** llama.cpp RPC is *not* needed —
+a single Vulkan process drives both GPUs at once. Neither `:cuda` nor `:intel` ships
+`rpc-server`, `libggml-rpc.so`, or a `--rpc` flag, so the RPC route would have meant building
+both sides; `:vulkan` needs none of that:
+
+```bash
+podman run --rm --device /dev/dri --device nvidia.com/gpu=all \
+  --security-opt label=disable --group-add 105 --group-add 39 \
+  --entrypoint /app/llama-server ghcr.io/mostlygeek/llama-swap:vulkan --list-devices
+#   Vulkan0: Intel(R) Graphics (ARL)          (47779 MiB, 30480 MiB free)
+#   Vulkan1: NVIDIA GeForce RTX 5070 Laptop   (8151 MiB,  6718 MiB free)
+```
+
+**`--security-opt label=disable` is mandatory and non-obvious.** CDI injects the NVIDIA
+Vulkan ICD at `/etc/vulkan/icd.d/`, but SELinux blocks the driver it points at, and the
+failure is silent — only the Arc enumerates. The giveaway is
+`Could not get 'vkCreateInstance' via 'vk_icdGetInstanceProcAddr' for /usr/lib64/libGLX_nvidia.so.0`.
+
+`--tensor-split` is the **wrong tool** for a MoE: it divides *layers*, so it puts half the
+attention and KV on the Arc. The MoE-correct split is the Arc standing in for the CPU:
+
+```
+-dev Vulkan1,Vulkan0 -sm layer -ts 1,0 -mg 0 -ngl 99 -ot 'ffn_.*_exps=Vulkan0'
+```
+
+`-sm none` does **not** work — it deactivates the Arc backend, and the load aborts with
+`pre-allocated tensor (blk.0.ffn_down_exps.weight) in a buffer (Vulkan0) that cannot run the
+operation (NONE)`. Both devices must stay active; `-ts 1,0` is what keeps the layers on the
+dGPU. Placement then works exactly as intended — dGPU held only 2505 MiB (non-expert + KV)
+with ~19.6 GB of experts on the Arc.
+
+**The measurement (UD-Q4_K_M, 8665-token prefill, warm):**
+
+| config | prefill | decode |
+|---|---|---|
+| CUDA dGPU + CPU experts (incumbent) | **425 t/s** | **29.3 t/s** |
+| Vulkan dGPU + CPU experts *(diagnostic)* | 224.8 t/s | 9.67 t/s |
+| Vulkan dGPU + **Arc** experts *(the idea)* | 135.5 t/s | 12.00 t/s |
+
+Decomposed, which is the whole point of running the middle row:
+
+```
+CUDA->Vulkan   (expert device held at CPU)   prefill -47%   decode -67%
+CPU->Arc       (backend held at Vulkan)      prefill -40%   decode +24%
+```
+
+**The Arc really is faster than the CPU at expert gather — +24% decode.** That part of the
+intuition is correct. But the Vulkan backend costs 67% of decode first, and recovering 24%
+of what remains nets out to **12.0 t/s vs 29.3 — 2.4x slower than doing nothing.** The Arc
+also *hurts* prefill (224.8 -> 135.5), consistent with the tiny-tier finding below that its
+expert gathers are inefficient; prefill activates many experts per batch, so it is hit hardest.
+
+Two structural reasons this was never going to pay, worth remembering before re-proposing it:
+
+- **The Arc is not a second memory pool.** Its "47779 MiB" is system RAM on the same LPDDR5x
+  bus the CPU uses. Moving expert work there adds a second *compute unit*, not bandwidth.
+- **CUDA is worth more than the iGPU.** Any dual-GPU scheme on this laptop must go through
+  Vulkan, because CUDA cannot see the Intel device — so it pays the -67% before it starts.
+
+**Practical trap while testing:** the Arc allocates against `MemFree`, not `MemAvailable`.
+Holding ~19.6 GB of experts there drove the host to **529 MiB free with zram swap already
+full**, and the whole llama-swap stack was killed off. Tear down the test container
+(`podman rm -f ...`) before drawing conclusions about a "hang", and expect to
+`podman-compose --profile laptop up -d` afterwards.
 
 ### The vision floor moves with the quant, and text tests will not find it
 
@@ -428,7 +559,8 @@ too, and remember the runtime window must cover the **largest** alias pointing a
   ~17GB models). Verify VRAM with `rocm-smi` after changing batch sizes; if a 17GB model OOMs,
   drop its `--ubatch-size` back to 512.
 - 8GB dGPU tier (`llama-swap-nvidia.yaml`): `q4_0` KV cache — 8GB is a hard wall. At 64K ctx:
-  `qwen3.6-35b` + `--n-cpu-moe 34` + mmproj = 7103 MiB (~1.0GB headroom); `gemma-4-26b` +
+  `qwen3.6-35b` (UD-Q4_K_M) + `--n-cpu-moe 34` + mmproj = 6947 MiB (~1.2GB headroom) and
+  `--threads 6 --cpu-range 0-5 --cpu-strict 1`; `gemma-4-26b` +
   `--n-cpu-moe 26` + mmproj = 6903 MiB (~1.2GB); `qwen3.5-9b` + `--ubatch-size 512` = 6303 MiB
   (~1.8GB). If a MoE model OOMs, raise `--n-cpu-moe` (trades decode for VRAM without touching
   context); for the dense `qwen3.5-9b`, step `--ubatch-size` 512 -> 384 -> 256, then ctx 64K -> 32K.
@@ -447,6 +579,18 @@ too, and remember the runtime window must cover the **largest** alias pointing a
 - Deliberately not used: `--mlock` (fights llama-swap's TTL load/unload).
 
 ## Testing / verification
+
+Two stdlib-only scripts live in `ai/bench/` — see `ai/bench/README.md`:
+
+```bash
+ai/bench/smoke.py                                  # health-check every tier + alias
+ai/bench/llmbench.py --models a b --tests all      # compare models
+ai/bench/llmbench.py --models local-main --fail-on-regression   # CI gate
+```
+
+`smoke.py` replays the exact `max_tokens=16` approval shape and flags empty-content
+responses, which is how the smart-approval breakage was found. `llmbench.py` interleaves
+models across rounds so thermal drift is shared rather than stacked. Raw curl equivalents:
 
 ```bash
 # direct to a llama-swap instance (bypasses LiteLLM) — fastest way to smoke-test a model loads

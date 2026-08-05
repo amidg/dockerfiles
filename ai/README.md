@@ -100,10 +100,27 @@ then `podman restart litellm`. Nothing else needs to change — that is the poin
 | `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
 | `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
 | `litellm.env` | secrets (gitignored) |
+| `bench/smoke.py` | health-check every tier and alias; exits non-zero on failure |
+| `bench/llmbench.py` | compare models: throughput, tool use, quality, long context, vision |
 | `AGENTS.md` | **tuning rationale and gotchas — read before editing anything above** |
 | `LLAMA-CPP.md` | llama.cpp flag reference + Intel iGPU/NPU research |
 
 `ollama.yml`, `n8n.yml`, `research.yml` are separate stacks that predate this one.
+
+## Checking it works
+
+```bash
+ai/bench/smoke.py          # every tier, every alias, vision, and the approval shape
+ai/bench/smoke.py --quick  # just show what is loaded where
+```
+
+To compare models (throughput, tool use, quality, long context):
+
+```bash
+ai/bench/llmbench.py --models qwen3.6-35b gemma-4-26b --tests all
+```
+
+See `ai/bench/README.md` for what each test catches and how to read the numbers.
 
 ## Troubleshooting
 
