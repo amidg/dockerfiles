@@ -74,12 +74,12 @@ Hardcoding a model name works but breaks on the other machine.
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP), `qwen3.6-35b-128k`, `gemma-4-26b` | everything the user waits on |
+| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `gemma-4-e2b` (vision), `gemma-4-e4b`, `qwen3.5-2b`, `qwen3.5-4b` | background chores + vision |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
-Only **one** dGPU model is resident at a time. `qwen3.6-35b-128k` and `gemma-4-26b` have no
-alias — request them by name, at the cost of a ~15-30s swap.
+Only **one** dGPU model is resident at a time. `gemma-4-26b` has no alias — request it by
+name, at the cost of a ~15-30s swap.
 
 ## Key findings
 
@@ -87,10 +87,10 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
 
 - **A 35B runs on an 8GB card** via `--n-cpu-moe`, which keeps Mixture-of-Experts weights
   (~90% of the file) in system RAM while attention and KV stay on the GPU.
-  `qwen3.6-35b` → **1329 t/s prefill, 47.6 t/s decode, 7305 MiB**.
-- **Need more than 64K?** Request `qwen3.6-35b-128k` by name. Doubling the window is free;
-  the VRAM it forces you to buy costs ~7% of everyday decode, and TTFT at 118K is 133s —
-  which is why it is a separate entry rather than the default.
+  `qwen3.6-35b` → **991 t/s prefill, 46.3 t/s decode, 128K context, ~7275 MiB**.
+- **128K is the default**, validated on a real 118,018-token prompt. Buy context headroom by
+  lowering `--ubatch-size`, never by raising `--n-cpu-moe`: at 96K the two routes were
+  measured head to head and ubatch cost **zero** decode while N cost 2.3%.
 - **Q4_K_M is the quant floor here.** Both a smaller K-quant (Q3_K_XL) and an i-quant
   (IQ4_XS) lose on decode despite reading fewer bytes: dequantisation cost on this
   AVX2-only CPU outweighs the saving.
@@ -99,8 +99,8 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
   fully-GPU-resident models that had no batching slack left. With experts on the CPU there
   is a 14x gap between prefill and batch-1 decode, and MTP collects it. Use
   `--spec-draft-n-max 2`; **3 is not lossless on this build**.
-- **`--ubatch-size 2048` triples dGPU prefill** (410 → 1323 t/s) at no decode cost. The old
-  512 was inherited from the iGPU, where the opposite is true.
+- **`--ubatch-size` is the dGPU's context lever.** 2048 gives peak prefill (1323 t/s) at 64K;
+  1024 is what makes 128K fit, costing ~25% prefill and no decode.
 - **`--load-mode none` beats mmap** when experts are CPU-resident — llama.cpp says so on
   every load, and it is right (+decode, +prefill, no cold-start penalty).
 - **`gemma-4-26b` runs MTP too** (+9% decode), and there it *frees* VRAM rather than costing
@@ -112,8 +112,8 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
   Hermes turn actually does.
 - **Fewer, faster CPU threads win.** `--threads 6` pinned to the P-cores beats the default
   16 by ~5% and beats 12 or 14 threads by ~40%. Prefill is unaffected.
-- **`--n-cpu-moe` is cheap without MTP and expensive with it** — 4 layers cost ~7% of decode
-  on the promoted config. Buy VRAM headroom from `--ubatch-size` first.
+- **`--n-cpu-moe` is cheap without MTP and expensive with it** — and non-linear: N=36 costs
+  3.3 t/s more than N=35. Buy VRAM headroom from `--ubatch-size` first.
 - **Splitting the model across both GPUs with Vulkan was tested and rejected**: the iGPU
   does beat the CPU at expert work (+24%), but leaving CUDA for Vulkan costs 67% first.
 - **Text tests will not catch a vision crash.** Always send a real image after retuning.

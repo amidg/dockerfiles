@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP), `qwen3.6-35b-128k`, `gemma-4-26b` |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `qwen3.5-4b`, `gemma-4-e2b` (vision), `gemma-4-e4b` |
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
@@ -59,12 +59,8 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 | `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget |
 | `local-embed` | **unwired** | **missing** | RAG embeddings, 1024-dim |
 
-Models with no alias (`qwen3.6-35b-128k`, `gemma-4-26b`) are reachable by name; requesting
-one evicts the loaded model (~15-30s) since only one fits in 8GB.
-
-**`qwen3.6-35b-128k` is the escape hatch for >64K work** — document analysis, whole-repo
-reads. It is deliberately not an alias: it costs 7% of everyday decode and 133s TTFT at
-118K, so it should be a conscious choice, not the default path.
+`gemma-4-26b` has no alias; requesting it evicts the loaded model (~15-30s) since only one
+fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-context entry.
 
 - **`local-embed` is currently unwired on BOTH machines.** `llama-swap-intel.yaml` no longer
   defines an `embed` model and there is no alias, though `Qwen3-Embedding-0.6B-Q8_0.gguf` is
@@ -89,10 +85,9 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `qwen3.6-35b` **(default, MTP)** | **1329 t/s** | **47.6 t/s** (42.8 shallow) | 7305 MiB |
-| RTX 5070 | `qwen3.6-35b-128k` *(on demand)* | 1273 t/s | 45.1 t/s @6.5K, 36.4 @118K | ~6533 MiB |
+| RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
-| RTX 5070 | `gemma-4-26b` *(MTP, vision)* | 1621 t/s | 24.9 t/s (24.1 shallow) | ~6575 MiB |
+| RTX 5070 | `gemma-4-26b` *(MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
 | Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
 | Arc iGPU | `embed` | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
@@ -120,7 +115,7 @@ and does nothing on dense models.
 
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
-| `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **34** |
+| `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **35** |
 | `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
 
 ### N is nearly free WITHOUT MTP and expensive WITH it — do not confuse the two
@@ -153,33 +148,49 @@ dropping `--ubatch-size` first (2048 → 1024 costs prefill, which has 3x of mar
 of decode, which has none). N=34 is the promoted value and should stay unless a load
 actually fails.
 
-### 128K context is free; the VRAM it forces you to buy is not (2026-08-06)
+### 128K is the default, bought with `ubatch` not `N` (2026-08-06)
 
-`qwen3.6-35b-128k` exists as a **separate name-addressable entry, deliberately not the
-default.** Measured on the promoted config with only one variable moving at a time:
+**`--ctx-size 131072`, `--n-cpu-moe 35`, `--ubatch-size 1024`.** The separate
+`qwen3.6-35b-128k` entry is gone — one model, one window.
 
-| arm | N | ctx | prefill | **deep @6.5K** |
-|---|---|---|---|---|
-| `qwen3.6-35b` | 34 | 64K | 1329 t/s | **47.6** |
-| *(isolation)* | 38 | 64K | 1278 t/s | 44.3 |
-| `qwen3.6-35b-128k` | 38 | 128K | 1273 t/s | 45.1 |
+This came from an OpenCode failure: `request (72027 tokens) exceeds the available context
+size (65536)` at session step 12. **The suspected cause — `AGENTS.md` being too big — was
+wrong.** This file is ~12-14K tokens, under 20% of a 64K window. The 72K was system prompt +
+tool schemas + this file + file reads + twelve turns of history.
 
-**Doubling the window costs nothing** (44.3 → 45.1 at fixed N is noise). The whole 7%
-penalty is `--n-cpu-moe 38`, which 128K needs only because **128K does not fit at N=34** —
-Q4_K_M OOMs at load there.
+The route to a bigger window is the thing worth remembering:
 
-Without the middle row this reads as "128K costs 8%", which is wrong and would have been
-recorded as fact. Always isolate.
+| ctx | N | ubatch | prefill | **deep** | accept @depth | free VRAM |
+|---|---|---|---|---|---|---|
+| 64K | 34 | 2048 | 1322 t/s | 47.1 | 77% | 442 MiB |
+| 96K | 34 | 2048 | — | — | — | **OOM** |
+| 96K | 35 | 2048 | 1316 t/s | 46.0 | 77% | 390 MiB |
+| **96K** | **34** | **1024** | 1004 t/s | **48.1** | **80%** | 408 MiB |
+| 128K | 34 | 1024 | — | — | — | **OOM** |
+| 128K | 34 | 512 | — | — | — | 294 MiB (surrenders 3x prefill) |
+| **128K (promoted)** | **35** | **1024** | **989 t/s** | **46.8** | 78% | 468 MiB |
+| 128K | 36 | 1024 | 975 t/s | 43.5 | 71% | 932 MiB |
 
-At ~118K the entry works and retrieves a needle, but **TTFT is 133s** (941 t/s prefill,
-33-36 t/s decode, ~1.2 GB free). That is fine for document analysis and bad for an
-interactive agent, which is the second reason it is not the default. Request it by name and
-pay the ~15-30s swap when a >64K window is actually needed.
+**This confirms the ubatch-before-N rule empirically for the first time.** At 96K the two
+routes were measured head to head: `ubatch 2048 → 1024` cost **zero decode** (48.1 vs 47.1)
+while `N 34 → 35` cost 2.3%. The rule was previously inferred from an N-sweep; it now has a
+direct comparison behind it.
 
-**The dangerous failure mode is the thin config, not the OOM.** At N=34/128K, Q3_K_XL
-*loaded* with 86 MiB free, answered small requests, and then **died mid-prefill on a 118K
-prompt** — same shape as the vision-encoder crash below. A config that loads is not a
-config that works; test it at the size you intend to use.
+**N=36 is far worse than the linear model predicts.** Two layers past 35 cost 3.3 t/s, not
+the ~1.6 the earlier sweep implied, and draft acceptance drops 78% → 71%. Do not assume the
+N penalty is linear.
+
+Validated at full size, not just at load: **118,018-token prompt, needle found, 406 MiB
+still free**, TTFT 157s, decode 36.9 t/s at depth. `tools` 4/4, `quality` 4/4.
+
+**`gemma-4-26b` needed the same treatment and it was not optional.** At 128K/N=30/ub2048 it
+loaded with **22 MiB free** — unusable, and exactly the shape that has crashed this stack
+twice. Dropping to `ubatch 1024` took it to **642 MiB**, and it survives a 1280px image at
+588 MiB.
+
+**Cost of the window: prefill 1322 → 989 t/s (-25%).** Decode is unchanged-to-better. That
+is the right side of the trade for this stack — a window that truncates is a correctness
+problem, a slower prefill is a comfort problem.
 
 ### `qwen3.6-35b` is a hybrid, so context is cheap
 
@@ -652,10 +663,24 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
 Shared between both machines; names only aliases.
 
 - `model.default: local-main`, `delegation.model: local-main`.
-- `custom_providers[0].models.*.context_length` pinned to **65536** for every alias.
-  Without it Hermes reads `*.context_length` from GGUF metadata and advertises the native
-  window (256K), overrunning the actual `--ctx-size` KV allocation. Values are the
-  **minimum across both machines**. When changing a model's `--ctx-size`, update this too.
+- `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
+  `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
+  the actual `--ctx-size` KV allocation.
+
+| alias | pin | why |
+|---|---|---|
+| `local-main` | **131072** | matches the laptop dGPU default |
+| `local-tiny` | **65536** | its laptop target is `gemma-4-e2b` on the **iGPU**, which is 64K. Raising this overruns the iGPU — and that tier takes 485s to ingest 50K anyway, so a bigger window there is useless |
+
+**`local-main: 131072` currently exceeds the desktop (2026-08-06).** The desktop's
+`local-main` is `qwen3.6-27b` at `--ctx-size 65536`, so **Hermes on the desktop will hit
+`exceeds the available context size` on long sessions until `ai/llama-swap-config.yaml` is
+bumped and verified there.** The laptop was deliberately moved first; the desktop was left
+alone because it is fully GPU-resident with `q8_0` KV (2x the laptop's KV cost) and cannot
+be measured from the laptop — a blind bump risked OOM-ing its main model.
+
+The old rule was "values are the **minimum across both machines**". That is still the safe
+rule; this is a deliberate, temporary violation with a known consequence, not an oversight.
 - `auxiliary.<task>.{provider,model,base_url,api_key,timeout}` — `base_url` set explicitly
   on every one so they cannot silently fall back to openrouter.
 
@@ -702,6 +727,32 @@ once. Verify with request counts before concluding a change to it did anything.
 
 **Hermes cannot consume `local-embed`** — no embedding config key exists and nothing calls
 `/embeddings`. It is for the qdrant/n8n stack, `research.yml`, or direct API use.
+
+## Clients must be told the window — they will not discover it
+
+**OpenCode hit `request (72027 tokens) exceeds the available context size (65536)` at step
+12.** Root cause was *not* prompt size; it was that **nothing told the client what the window
+is**, so it never compacted and simply grew until the server refused.
+
+Two fixes, both required:
+
+- **`ai/litellm-config.laptop.yaml` now declares `model_info.max_input_tokens`** on every
+  local entry (131072 dGPU, 65536 iGPU). Before this, `/v1/models` returned no token fields
+  at all and every client was guessing.
+- **`~/.config/opencode/opencode.json` now sets `limit.context` / `limit.output`** per model.
+  Without it OpenCode never summarises. **A bigger window alone does not fix this** — it just
+  moves the failure from step 12 to roughly step 22.
+
+**Fallbacks cannot absorb a context overflow.** The same log shows LiteLLM failing over to
+`gemma-4-26b`, which was also 64K, and failing identically. Every local model shares one
+window by design, so a fallback list is the wrong tool for this failure.
+
+**`context_window_fallbacks` — considered and rejected.** LiteLLM's own error suggests it,
+and it looks ideal: overflow on the small window, auto-retry on a bigger one. It is
+pathological here. Only one dGPU model is resident, so each escalation is a ~15-30s swap,
+and the *next* turn routes back and swaps again — thrashing every message of a long session.
+Worse, the small-window attempt must **load** the model before it can reject the request, so
+each rejection costs a full ~18s load.
 
 ## LiteLLM
 
