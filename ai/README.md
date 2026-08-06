@@ -103,6 +103,10 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
   512 was inherited from the iGPU, where the opposite is true.
 - **`--load-mode none` beats mmap** when experts are CPU-resident — llama.cpp says so on
   every load, and it is right (+decode, +prefill, no cold-start penalty).
+- **`gemma-4-26b` runs MTP too** (+9% decode), and there it *frees* VRAM rather than costing
+  it: offloading the experts to make room releases more than the 462 MB draft head uses, so
+  the MTP config is both faster and has 3x the vision headroom of the one it replaced.
+  Gemma's MTP head is a **separate `--model-draft` file**; Qwen3.6's is bundled.
 - **Decode is two different numbers.** Generation from a short prompt is much faster than
   generation continuing from a large one. Judge an agent tier on the latter — it is what a
   Hermes turn actually does.

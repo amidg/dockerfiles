@@ -92,7 +92,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `qwen3.6-35b` **(default, MTP)** | **1329 t/s** | **47.6 t/s** (42.8 shallow) | 7305 MiB |
 | RTX 5070 | `qwen3.6-35b-128k` *(on demand)* | 1273 t/s | 45.1 t/s @6.5K, 36.4 @118K | ~6533 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
-| RTX 5070 | `gemma-4-26b` | 616 t/s | 17.9 t/s *(pre-`deep`, stale)* | 6903 MiB |
+| RTX 5070 | `gemma-4-26b` *(MTP, vision)* | 1621 t/s | 24.9 t/s (24.1 shallow) | ~6575 MiB |
 | Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
 | Arc iGPU | `embed` | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
@@ -121,7 +121,7 @@ and does nothing on dense models.
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
 | `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **34** |
-| `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GB) | **26** |
+| `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
 
 ### N is nearly free WITHOUT MTP and expensive WITH it — do not confuse the two
 
@@ -228,14 +228,9 @@ projector — which is fine only because vision moved to the iGPU. **Drop to `ub
 before raising `--n-cpu-moe` if headroom is ever needed** — with MTP, N is the expensive
 lever and prefill is the one with margin.
 
-**`gemma-4-26b` carries `ubatch 2048` + `--load-mode none` by propagation, NOT by
-measurement** (2026-08-06, deliberate call). It was verified only to load and answer, at
-378-410 MiB free — and **re-tested with a real image, which still returns `Red`**. That
-check mattered: it sits below the ~600 MiB vision floor recorded below, which turns out to
-have been specific to `qwen3.6-35b`'s larger projector rather than a general limit.
-
-**Do not cite its throughput as measured — there is none.** If anyone does measure it,
-the expectation is that `--load-mode none` helps, since it is also a CPU-offloaded MoE.
+`gemma-4-26b` was later measured properly (see below) and the propagated flags held up:
+**616 → 1621 t/s prefill, 17.9 → 24.9 t/s deep.** The propagation guess was right, but it
+was a guess until measured.
 
 ### `--load-mode none` beats mmap when experts are CPU-resident
 
@@ -254,6 +249,56 @@ The obvious objection — that reading 22.6 GB upfront lengthens every llama-swa
 reload — **was measured and does not hold: cold load + first response is 18.7s**, inside
 the 15-30s swap the tier already pays. `--mlock` remains rejected (it fights TTL); `none`
 does not, because it does not pin.
+
+### Gemma 4 MTP — works on b10257+, and it *frees* VRAM (2026-08-06)
+
+**`gemma4-assistant` loads fine on b10276.** Community reports that Gemma-4 MTP needs
+am17an's branch do not apply to this image.
+
+**Gemma's MTP head is a SEPARATE file, unlike Qwen3.6's.** Unsloth's wording ("an
+additional MTP file inside a separate folder within the GGUF package") means the *repo* has
+an `MTP/` folder — the GGUF itself does not bundle it. Verified by parsing both Gemma GGUFs'
+tensor tables: 658 tensors each, **zero** MTP/draft/assistant tensors. So Gemma needs
+`--model-draft`; Qwen3.6 must not have it.
+
+`mtp-gemma-4-26B-A4B-it-Q8_0.gguf` (462 MB) is `gemma4-assistant`, 4 blocks,
+`embedding_length_out = 2816` — which **must match the target's `n_embd`**, same rule as
+projectors. Check it before assuming a head fits a model.
+
+| config | N | prefill | **deep** | accept s/d | free after 1280px image |
+|---|---|---|---|---|---|
+| Q4_K_M, no MTP | 26 | 1721 t/s | 22.8 | — | 412 MiB |
+| Q4_K_M + MTP | 28 | 1660 t/s | **26.1** | 65%/75% | **104 MiB** — too thin |
+| **Q4_K_M + MTP (promoted)** | **30** | 1621 t/s | **24.9** | 60%/75% | **1172 MiB** |
+
+**MTP nets VRAM here rather than costing it** — the opposite of Qwen, where it had to be
+paid for by dropping vision. Offloading N=26→30 frees ~1.7 GB while the head consumes only
+462 MB, so the promoted config is **both faster and safer** than the non-MTP one it replaced.
+N=28 is faster still (26.1) but leaves 104 MiB after a real image, which is inside the crash
+zone for a model that exists to be a *fallback*.
+
+**The built-in vision test cannot catch this.** `llmbench`'s `t_vision` sends a **1x1 PNG**,
+which barely allocates an encoder buffer — it passed at 104 MiB free. The margin only became
+visible with generated 768px and 1280px images. Treat a `vision: yes` from the harness as
+"the projector is wired up", not "vision is safe at this headroom".
+
+### Quant: Q4_K_M over Q4_K_XL again (2026-08-06)
+
+Same flags, 3 rounds, both without MTP:
+
+| quant | prefill | deep | tools | quality |
+|---|---|---|---|---|
+| **UD-Q4_K_M** | 1722 t/s | 22.8 | 4/4 | **4/4** |
+| UD-Q4_K_XL | 1718 t/s | 22.8 | 4/4 | **3/4** |
+
+**Speed is a dead heat**, so quality decided it: Q4_K_XL reasoned 4296 chars on
+`terse_title` and hit the cap with empty content; Q4_K_M answered cleanly. Same direction as
+the Qwen result (Q4_K_M 31.4 vs Q4_K_XL 30.4). Caveat: that is *one* prompt — the
+speed tie is what makes it a free choice, not the strength of the quality evidence.
+
+**Known quirk:** Gemma wraps `extract_json` output in ``` fences where Qwen returns bare
+JSON. It passes the substring check, but a caller doing `json.loads()` on raw content will
+break. Same behaviour noted for `gemma-4-e2b` in the tiny tier.
 
 ### Page-cache eviction is NOT a bottleneck here — do not re-investigate
 
