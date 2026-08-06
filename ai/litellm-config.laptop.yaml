@@ -23,9 +23,21 @@ model_list:
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
-  - model_name: embed
+  - model_name: qwen3.5-4b
     litellm_params:
-      model: openai/embed
+      model: openai/qwen3.5-4b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-e2b
+    litellm_params:
+      model: openai/gemma-4-e2b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+
+  - model_name: gemma-4-e4b
+    litellm_params:
+      model: openai/gemma-4-e4b
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
 
@@ -57,9 +69,7 @@ model_list:
 router_settings:
   model_group_alias:
     local-main: qwen3.6-35b
-    local-vision: qwen3.6-35b
-    local-tiny: qwen3.5-2b
-    local-embed: embed
+    local-tiny: gemma-4-e2b
 
 litellm_settings:
   drop_params: true
@@ -71,10 +81,8 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   fallbacks:
-    - qwen3.6-35b: ["gemma-4-26b"]
     - local-main: ["gemma-4-26b", "qwen3.5-9b"]
-    - local-vision: ["gemma-4-26b"]
-    - local-tiny: ["qwen3.6-35b"]
+    - local-tiny: ["qwen3.5-2b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
