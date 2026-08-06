@@ -69,6 +69,7 @@ model_list:
 router_settings:
   model_group_alias:
     local-main: qwen3.6-35b
+    local-vision: gemma-4-e2b
     local-tiny: gemma-4-e2b
 
 litellm_settings:
@@ -82,6 +83,7 @@ litellm_settings:
   request_timeout: 600
   fallbacks:
     - local-main: ["gemma-4-26b", "qwen3.5-9b"]
+    - local-vision: ["gemma-4-e4b"]
     - local-tiny: ["qwen3.5-2b"]
 
 general_settings:

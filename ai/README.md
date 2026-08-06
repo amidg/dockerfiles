@@ -58,9 +58,9 @@ The names are identical on both machines — that is what lets one shared
 | alias | laptop | desktop | for |
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `qwen3.6-35b` | `qwen3.6-27b` | images and PDFs |
-| `local-tiny` | `qwen3.5-2b` | `gemma-4-12b` | titles, tags, background chores |
-| `local-embed` | `embed` | *(not available)* | RAG embeddings, 1024-dim |
+| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images and PDFs |
+| `local-tiny` | `gemma-4-e2b` | `gemma-4-12b` | titles, tags, background chores |
+| `local-embed` | *(currently unwired)* | *(not available)* | RAG embeddings, 1024-dim |
 
 ```bash
 curl -s localhost:4000/v1/chat/completions \
@@ -74,7 +74,7 @@ Hardcoding a model name works but breaks on the other machine.
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` | everything the user waits on |
+| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP), `q35-q4km`, `gemma-4-26b`, `qwen3.5-9b` | everything the user waits on |
 | Arc Pro iGPU | 8082 | `qwen3.5-2b`, `embed` | background chores + embeddings |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
@@ -87,7 +87,16 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
 
 - **A 35B runs on an 8GB card** via `--n-cpu-moe`, which keeps Mixture-of-Experts weights
   (~90% of the file) in system RAM while attention and KV stay on the GPU.
-  `qwen3.6-35b` → **411-454 t/s prefill, 31.4 t/s decode, 6947 MiB**.
+  `qwen3.6-35b` → **1323 t/s prefill, 46.9 t/s decode, 7305 MiB**.
+- **MTP is the biggest single win on this box: 1.53x decode at 6.5K, 2.59x at 58K.**
+  Published MoE figures (1.17-1.40x) badly understate it, because they were measured on
+  fully-GPU-resident models that had no batching slack left. With experts on the CPU there
+  is a 14x gap between prefill and batch-1 decode, and MTP collects it. Use
+  `--spec-draft-n-max 2`; **3 is not lossless on this build**.
+- **`--ubatch-size 2048` triples dGPU prefill** (410 → 1323 t/s) at no decode cost. The old
+  512 was inherited from the iGPU, where the opposite is true.
+- **`--load-mode none` beats mmap** when experts are CPU-resident — llama.cpp says so on
+  every load, and it is right (+decode, +prefill, no cold-start penalty).
 - **Decode is two different numbers.** Generation from a short prompt is much faster than
   generation continuing from a large one. Judge an agent tier on the latter — it is what a
   Hermes turn actually does.
@@ -146,8 +155,9 @@ took 4m32s once; the `intel_sycl_cache` volume prevents a repeat).
 **Blank `content` with filled `reasoning_content`.** Thinking model, budget ran out. Raise
 `max_tokens` to 400+.
 
-**Answers text fine but dies on images.** VRAM headroom too low for the vision encoder.
-Raise `--n-cpu-moe` by 1-2 and retest *with an image*.
+**Answers text fine but dies on images.** The dGPU tier runs `--no-mmproj` by design —
+vision lives on the iGPU as `local-vision` → `gemma-4-e2b`. A dGPU model rejecting an image
+is correct behaviour, not a fault.
 
 **Out of VRAM on the dGPU.** Raise `--n-cpu-moe`. For the dense `qwen3.5-9b` instead step
 `--ubatch-size` 512 → 384 → 256.

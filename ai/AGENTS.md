@@ -26,8 +26,8 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default), `gemma-4-26b`, `qwen3.5-9b` |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `embed` |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP), `q35-q4km` (no-MTP control), `gemma-4-26b`, `qwen3.5-9b` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `qwen3.5-4b`, `gemma-4-e2b` (vision), `gemma-4-e4b` |
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
 Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
@@ -55,7 +55,7 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 | alias | laptop | desktop | use |
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `qwen3.6-35b` | `qwen3.6-27b` | images/PDFs — same model as `local-main`, so no swap |
+| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images/PDFs — **no longer the dGPU model** |
 | `local-tiny` | `qwen3.5-2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
 | `local-embed` | `embed` (iGPU) | **missing** | RAG embeddings, 1024-dim |
 
@@ -67,8 +67,13 @@ evicts the loaded model (~15-30s) since only one fits in 8GB.
 - **There is deliberately no `local-support`.** It existed, resolved to the same iGPU
   model as `local-tiny`, and had no consumer. Two names for one thing drift apart.
 - **`local-vision` must never fall back to a model without a projector.** A blind model
-  confidently describing an image is worse than a clean error. Both `qwen3.6-35b` and
-  `gemma-4-26b` carry projectors, so vision degrades between them.
+  confidently describing an image is worse than a clean error. Its fallback is
+  `gemma-4-e4b`, which also carries one.
+- **Vision left the dGPU on 2026-08-06.** `local-vision` now resolves to `gemma-4-e2b` on
+  the Arc iGPU. The dGPU tier runs `--no-mmproj`, which is what freed the headroom MTP and
+  `ubatch 2048` need — at `--n-cpu-moe 31` **the MTP model OOMs outright** with a projector
+  loaded. The dGPU now correctly *rejects* images rather than crashing on them, so the
+  "vision floor" below is no longer a live constraint on this tier.
 
 ## Measured performance (laptop)
 
@@ -77,7 +82,8 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `qwen3.6-35b` **(default)** | 411-454 t/s | **31.4 t/s** (36.6 shallow) | 6947 MiB |
+| RTX 5070 | `qwen3.6-35b` **(default, MTP)** | **1323 t/s** | **46.9 t/s** (42.5 shallow) | 7305 MiB |
+| RTX 5070 | `q35-q4km` *(control, no MTP)* | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` | 616 t/s | 17.9 t/s *(pre-`deep`, stale)* | 6903 MiB |
 | RTX 5070 | `qwen3.5-9b` | 1932 t/s | 48 t/s *(stale)* | 6303 MiB |
 | Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
@@ -107,7 +113,7 @@ and does nothing on dense models.
 
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
-| `qwen3.6-35b` | 40 | 256 / 8 active | UD-Q4_K_M (22.1 GB) | **34** |
+| `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **34** |
 | `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GB) | **26** |
 
 ### N does not buy deep decode — tune it for VRAM headroom
@@ -155,6 +161,48 @@ overhead than they add.
 
 **Prefill is flat (448-455) across every setting** because it is GPU-bound. Never tune
 threads on a prefill number.
+
+### `--ubatch-size 2048` triples prefill on the dGPU (2026-08-06)
+
+The dGPU ran `--batch-size 1024 --ubatch-size 512` for months. It was **inherited, never
+swept** — the documented ubatch sweep further down was on the *Arc iGPU*, where 1024 won
+and 2048 regressed. **That result does not transfer to the dGPU:**
+
+| ubatch (dGPU, MTP, N=34) | prefill | deep |
+|---|---|---|
+| 512 | 334-431 t/s | 44.9 |
+| **2048** | **1011-1324 t/s** | 46.4-46.9 |
+
+~3x prefill for no decode cost. At 50K context the needle prefill dropped **122.9s → 41.7s**.
+Cost is VRAM: the compute buffer grows, leaving **442 MiB free** at N=34 (vs ~1040 at
+ubatch 512). Stable through a full 50K run, but there is no room left for a vision
+projector — which is fine only because vision moved to the iGPU. **Drop to `ubatch 1024`
+before raising `--n-cpu-moe` if headroom is ever needed.**
+
+### `--load-mode none` beats mmap when experts are CPU-resident
+
+llama.cpp emits this on every load with `--n-cpu-moe`: *"tensor overrides to CPU are used
+with mmap enabled - consider using --no-mmap for better performance."* It is right.
+
+| load mode | prefill | deep |
+|---|---|---|
+| mmap (default) | 334 t/s | 44.9 |
+| **`--load-mode none`** | **667 t/s** | **48.6** |
+
+**This is not about memory pressure** — see the negative result below. It is mmap
+indirection on the expert-gather path, which decode hits on every token.
+
+The obvious objection — that reading 22.6 GB upfront lengthens every llama-swap TTL
+reload — **was measured and does not hold: cold load + first response is 18.7s**, inside
+the 15-30s swap the tier already pays. `--mlock` remains rejected (it fights TTL); `none`
+does not, because it does not pin.
+
+### Page-cache eviction is NOT a bottleneck here — do not re-investigate
+
+zram swap sits at 8G of 8G and ~20 GB of experts live in page cache, which looks alarming
+and is not. Sampled through sustained decode: `maj_flt` **7902 → 7904 over a minute**
+(2 faults), `VmSwap=0` throughout, `vmstat so=0`. RSS climbing 10.7 → 16.3 GiB is mmap
+warm-up, not thrash. The full zram is stale allocation, not live pressure.
 
 ### Quant choice for CPU-offloaded MoE
 
@@ -266,17 +314,57 @@ include the config that varies one.
 of experts there drove the host to 529 MiB free with zram swap full, and **the whole
 llama-swap stack was killed**. Tear down test containers before diagnosing a "hang".
 
-## Speculative decoding and MTP
+## MTP — the single biggest win on this tier (2026-08-06)
 
-**No MTP support.** There is no `--mtp` flag; every `--spec-draft-*` option needs a
-separate draft model file. Unsloth's `MTP-GGUF` variants carry weights this build cannot
-activate — a bigger download for identical speed.
+**MTP is supported and is now the default.** The old note here ("no MTP support, no `--mtp`
+flag") was true when written and is wrong now: llama.cpp merged MTP in PR #22673 and
+b10276 exposes `--spec-type draft-mtp`. For Qwen3.6 the MTP head ships **inside the same
+GGUF** (`MTP-UD-Q4_K_M` is 22.66 GB vs 22.13 GB plain, a ~505 MiB head), so **no
+`--model-draft` is needed** — that flag is only for Gemma-style separate heads.
 
-Classic speculative decoding does work, but the draft model's **vocabulary must match the
-target**, and the drafter competes for the ~1.1 GB of dGPU headroom (`--spec-draft-ngl` /
-`--spec-draft-n-cpu-moe` can place it). A real experiment, not a free win. Worth
-revisiting after a llama.cpp upgrade — decode here is memory-bound, the regime where it
-pays most.
+Measured `q35-q4km` (control) vs the promoted config, same session, 3 rounds:
+
+| context | control deep | MTP deep | gain |
+|---|---|---|---|
+| ~6.5K | 29.7-31.2 | **46.9** | **1.53x** |
+| ~58K | 15.6 | **40.4** | **2.59x** |
+
+**The gain grows with context, and deep decode exceeds shallow** (46.9 deep vs 42.5
+shallow) — the reverse of the control's normal 35.3 → 29.7 decay. Draft acceptance rises
+as context establishes: measured **80.1% at n-max 2** (`draft_n` 306, `draft_n_accepted`
+245). MTP is strongest exactly where this stack was weakest.
+
+### Why the published MoE numbers understate this machine badly
+
+Community MoE figures are 1.17x (RTX PRO 6000) to 1.40x (Strix Halo) because a
+fully-GPU-resident A3B reads ~3 GB of experts per token and is already at its
+memory-bandwidth ceiling — no slack for MTP to exploit. **That does not describe this
+box.** With `--n-cpu-moe 34` the same CPU-resident experts sustain ~450 t/s in prefill and
+~31 t/s in batch-1 decode — a 14x gap. The CPU expert path is **not** read-bandwidth
+saturated at batch 1; it is latency/sync-bound (the thread sweep below reaches the same
+conclusion independently). Batch-2 verification therefore costs almost nothing extra, and
+MTP collects the difference.
+
+**The predicted prefill disaster did not happen.** The PR reports prompt processing at
+0.51x from D2H embedding transfers, which on paper made MTP a net loss for prefill-heavy
+agent turns. Measured here: **413 → 403 t/s, within session noise.** The D2H cost is
+roughly fixed per batch; the PR measured it against a 1315 t/s baseline where it dominated.
+Against a 413 t/s baseline already gated by the CPU expert gather, it disappears. **A
+published regression measured in a different bottleneck regime does not transfer.**
+
+### `--spec-draft-n-max 3` is not lossless on this build — use 2
+
+MTP should be mathematically lossless. At `n-max 2` it is: `quality` 4/4 with
+byte-identical answers to the control. At `n-max 3` it **reproducibly** drives
+`terse_title` into a 4172-char reasoning loop and returns empty (`finish: length`), scoring
+3/4 — identical `reasoning_chars` across three runs, so deterministic, not sampling noise.
+Isolated cleanly: `ubatch 2048` and `--load-mode none` both score 4/4; only `n-max 3` fails.
+
+This corroborates upstream issue #23230, where `n-max 3` regressed 10-15% on recent builds
+while `n-max 2` lost ~5%. Two unrelated symptoms on the same parameter: **treat `n-max 3`
+as suspect on b10276.** It bought ~2 t/s, which the other levers supply anyway.
+
+MTP forces `--parallel 1` (already the case). Re-check `n-max 3` after a llama.cpp upgrade.
 
 ## The tiny tier (Arc iGPU)
 
@@ -404,7 +492,15 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
   `-lm, --load-mode {none,mmap,mlock,mmap+mlock,dio}`.
 - Available and used: `--cache-reuse`, `--batch-size`/`--ubatch-size`, `--cache-type-k/v`,
   `--n-cpu-moe`, `-ot/--override-tensor`, `--threads`/`--cpu-range`/`--cpu-strict`,
-  `--reasoning`, `--pooling`, `--embedding`.
+  `--reasoning`, `--pooling`, `--embedding`, `--spec-type`, `--spec-draft-n-max`,
+  `--load-mode`, `--no-mmproj`.
+- **`--fit` is a no-op for this stack — tested, rejected (2026-08-06).** It only adjusts
+  arguments you left *unset*, and every config here sets `--n-gpu-layers`, `--n-cpu-moe`
+  and `--ctx-size` explicitly. The loader says so outright:
+  `failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort`.
+  Making it meaningful would mean unsetting three values a documented sweep already
+  optimised. It is periodically suggested online; the same thread's OP measured 30 t/s with
+  `--fit` against 40 t/s with explicit placement.
 - **Log format changed at b10257**: it now emits `srv llama_server: model loaded` instead
   of the classic `llm_load_tensors` / `buffer size` / `KV self` lines. Greps for the old
   strings make a healthy server look hung.
@@ -546,8 +642,22 @@ real image.
 `llmbench.py --tests perf` prints `prefill`, `decode` and `deep`. **`deep` is the number
 this stack is tuned on** — see [Decode is two numbers](#decode-is-two-numbers-and-mixing-them-wastes-days).
 The `--n-cpu-moe`, thread and quant tables above are all `deep` figures at
-`--perf-lines 320` (~6.5-8.6K prompt). Use `--perf-lines 2800` for ~58K if you need the
-full-context picture.
+`--perf-lines 320` (~6.5-8.6K prompt).
+
+**`--perf-lines 2800` does not give ~58K — it gives 78,275 tokens and overflows a 65536
+window**, failing every round with `request exceeds the available context size`. The real
+rate is **~27.95 tokens/line**, so **use `--perf-lines 2100`** for ~58K.
+
+Two harness bugs were found and fixed on 2026-08-06 (fixes are local in
+`~/Projects/llm-benchmarking`, **not yet pushed upstream**):
+
+- **`longctx` had never run.** Its `TESTS` lambda omitted `a.timeout` while every sibling
+  passed it, so it raised `TypeError` on every invocation. That is why no longctx figure
+  appears anywhere above.
+- **`t_longctx` budgeted `max_tokens=64`**, violating the repo's own rule 4. On a thinking
+  model the budget goes to reasoning and `content` comes back empty, so it reported
+  `found: false` — a **false capability failure**. At 1200 both models retrieve the needle
+  at 60% depth in 49,968 tokens. Now budgets 1200 and reports `empty` separately.
 
 Its own `AGENTS.md` documents the interpretation traps in detail. The three that have
 actually bitten this stack:
