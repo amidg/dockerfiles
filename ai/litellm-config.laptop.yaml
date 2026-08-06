@@ -11,9 +11,9 @@ model_list:
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
 
-  - model_name: qwen3.5-9b
+  - model_name: qwen3.6-35b-128k
     litellm_params:
-      model: openai/qwen3.5-9b
+      model: openai/qwen3.6-35b-128k
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
 
@@ -82,7 +82,7 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   fallbacks:
-    - local-main: ["gemma-4-26b", "qwen3.5-9b"]
+    - local-main: ["gemma-4-26b"]
     - local-vision: ["gemma-4-e4b"]
     - local-tiny: ["qwen3.5-2b"]
 

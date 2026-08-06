@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP), `q35-q4km` (no-MTP control), `gemma-4-26b`, `qwen3.5-9b` |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP), `qwen3.6-35b-128k`, `gemma-4-26b` |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `qwen3.5-4b`, `gemma-4-e2b` (vision), `gemma-4-e4b` |
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
@@ -56,14 +56,21 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
 | `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images/PDFs — **no longer the dGPU model** |
-| `local-tiny` | `qwen3.5-2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **no vision, no reasoning** |
-| `local-embed` | `embed` (iGPU) | **missing** | RAG embeddings, 1024-dim |
+| `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget |
+| `local-embed` | **unwired** | **missing** | RAG embeddings, 1024-dim |
 
-Models with no alias (`gemma-4-26b`, `qwen3.5-9b`) are reachable by name; requesting one
-evicts the loaded model (~15-30s) since only one fits in 8GB.
+Models with no alias (`qwen3.6-35b-128k`, `gemma-4-26b`) are reachable by name; requesting
+one evicts the loaded model (~15-30s) since only one fits in 8GB.
 
-- **`local-embed` is laptop-only.** The desktop has no embedding GGUF. Do not "fix" this
-  by pointing it at a chat model — a chat deployment cannot serve `/v1/embeddings`.
+**`qwen3.6-35b-128k` is the escape hatch for >64K work** — document analysis, whole-repo
+reads. It is deliberately not an alias: it costs 7% of everyday decode and 133s TTFT at
+118K, so it should be a conscious choice, not the default path.
+
+- **`local-embed` is currently unwired on BOTH machines.** `llama-swap-intel.yaml` no longer
+  defines an `embed` model and there is no alias, though `Qwen3-Embedding-0.6B-Q8_0.gguf` is
+  still on disk. Anything calling `/v1/embeddings` (qdrant/n8n, `research.yml`) fails today.
+  Do not "fix" it by pointing the alias at a chat model — a chat deployment cannot serve
+  `/v1/embeddings`.
 - **There is deliberately no `local-support`.** It existed, resolved to the same iGPU
   model as `local-tiny`, and had no consumer. Two names for one thing drift apart.
 - **`local-vision` must never fall back to a model without a projector.** A blind model
@@ -82,10 +89,10 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `qwen3.6-35b` **(default, MTP)** | **1323 t/s** | **46.9 t/s** (42.5 shallow) | 7305 MiB |
-| RTX 5070 | `q35-q4km` *(control, no MTP)* | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
+| RTX 5070 | `qwen3.6-35b` **(default, MTP)** | **1329 t/s** | **47.6 t/s** (42.8 shallow) | 7305 MiB |
+| RTX 5070 | `qwen3.6-35b-128k` *(on demand)* | 1273 t/s | 45.1 t/s @6.5K, 36.4 @118K | ~6533 MiB |
+| RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` | 616 t/s | 17.9 t/s *(pre-`deep`, stale)* | 6903 MiB |
-| RTX 5070 | `qwen3.5-9b` | 1932 t/s | 48 t/s *(stale)* | 6303 MiB |
 | Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
 | Arc iGPU | `embed` | — | — | 0.80 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
@@ -116,9 +123,9 @@ and does nothing on dense models.
 | `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **34** |
 | `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_XL (15.8 GB) | **26** |
 
-### N does not buy deep decode — tune it for VRAM headroom
+### N is nearly free WITHOUT MTP and expensive WITH it — do not confuse the two
 
-Measured on `qwen3.6-35b` UD-Q4_K_M at `--threads 6`, everything else fixed:
+**Without MTP** (`--ubatch-size 512`, mmap, `--threads 6`, everything else fixed):
 
 | N | mmproj | prefill | shallow | **deep** | VRAM |
 |---|---|---|---|---|---|
@@ -126,12 +133,53 @@ Measured on `qwen3.6-35b` UD-Q4_K_M at `--threads 6`, everything else fixed:
 | 33 | yes | 461 t/s | 37.3 | **31.8** | ~7452 MiB |
 | 31 | no | 483 t/s | 38.8 | **31.7** | ~6100 MiB |
 
-Moving **three** expert layers onto the GPU changed deep decode by 0.3 t/s — noise.
-Shallow decode and prefill do respond; the number an agent experiences does not, because
-the shallow→deep gap is attention work at context, which expert placement cannot touch.
+Three expert layers moved deep decode by 0.3 t/s — noise. That produced the old rule,
+*"N does not buy deep decode, tune it for VRAM headroom."*
 
-So prefer the **higher** N that preserves vision headroom. N=34 costs ~0.4 t/s against
-N=33 and buys 470 MiB of margin against the vision crash.
+**With MTP that rule is wrong, by roughly 10x** (2026-08-06, promoted config, ctx held at
+64K so only N varies):
+
+| N | prefill | shallow | **deep** |
+|---|---|---|---|
+| **34** | 1329 t/s | 43.3 | **47.6** |
+| 38 | 1278 t/s | 39.3 | **44.3** |
+
+**Four layers cost 3.3 t/s (-7%)**, where three used to cost 0.3. The likely mechanism:
+MTP verifies 2-3 tokens per step, so each step does several times the expert-gather work
+of a batch-1 decode — which makes *where the experts live* matter far more than it did.
+
+**Consequence: do not nudge N upward for headroom on an MTP config.** Buy headroom by
+dropping `--ubatch-size` first (2048 → 1024 costs prefill, which has 3x of margin, instead
+of decode, which has none). N=34 is the promoted value and should stay unless a load
+actually fails.
+
+### 128K context is free; the VRAM it forces you to buy is not (2026-08-06)
+
+`qwen3.6-35b-128k` exists as a **separate name-addressable entry, deliberately not the
+default.** Measured on the promoted config with only one variable moving at a time:
+
+| arm | N | ctx | prefill | **deep @6.5K** |
+|---|---|---|---|---|
+| `qwen3.6-35b` | 34 | 64K | 1329 t/s | **47.6** |
+| *(isolation)* | 38 | 64K | 1278 t/s | 44.3 |
+| `qwen3.6-35b-128k` | 38 | 128K | 1273 t/s | 45.1 |
+
+**Doubling the window costs nothing** (44.3 → 45.1 at fixed N is noise). The whole 7%
+penalty is `--n-cpu-moe 38`, which 128K needs only because **128K does not fit at N=34** —
+Q4_K_M OOMs at load there.
+
+Without the middle row this reads as "128K costs 8%", which is wrong and would have been
+recorded as fact. Always isolate.
+
+At ~118K the entry works and retrieves a needle, but **TTFT is 133s** (941 t/s prefill,
+33-36 t/s decode, ~1.2 GB free). That is fine for document analysis and bad for an
+interactive agent, which is the second reason it is not the default. Request it by name and
+pay the ~15-30s swap when a >64K window is actually needed.
+
+**The dangerous failure mode is the thin config, not the OOM.** At N=34/128K, Q3_K_XL
+*loaded* with 86 MiB free, answered small requests, and then **died mid-prefill on a 118K
+prompt** — same shape as the vision-encoder crash below. A config that loads is not a
+config that works; test it at the size you intend to use.
 
 ### `qwen3.6-35b` is a hybrid, so context is cheap
 
@@ -177,7 +225,17 @@ and 2048 regressed. **That result does not transfer to the dGPU:**
 Cost is VRAM: the compute buffer grows, leaving **442 MiB free** at N=34 (vs ~1040 at
 ubatch 512). Stable through a full 50K run, but there is no room left for a vision
 projector — which is fine only because vision moved to the iGPU. **Drop to `ubatch 1024`
-before raising `--n-cpu-moe` if headroom is ever needed.**
+before raising `--n-cpu-moe` if headroom is ever needed** — with MTP, N is the expensive
+lever and prefill is the one with margin.
+
+**`gemma-4-26b` carries `ubatch 2048` + `--load-mode none` by propagation, NOT by
+measurement** (2026-08-06, deliberate call). It was verified only to load and answer, at
+378-410 MiB free — and **re-tested with a real image, which still returns `Red`**. That
+check mattered: it sits below the ~600 MiB vision floor recorded below, which turns out to
+have been specific to `qwen3.6-35b`'s larger projector rather than a general limit.
+
+**Do not cite its throughput as measured — there is none.** If anyone does measure it,
+the expectation is that `--load-mode none` helps, since it is also a CPU-offloaded MoE.
 
 ### `--load-mode none` beats mmap when experts are CPU-resident
 
@@ -217,9 +275,36 @@ Small but consistent every round, for 118 MiB less VRAM. Earlier, `UD-IQ4_XS` (1
 lost to `UD-Q4_K_XL` on decode (10.0 → 14.9) while winning prefill (535 → 395): i-quant
 dequantisation is markedly more expensive on the CPU, which is where the experts live, but
 the smaller file fits two more expert layers on the GPU and prefill activates many experts
-per batch. **Prefer K-quants for CPU-offloaded MoE**, and re-tune N *and* re-measure both
-axes after any quant change. IQ4_XS remains the pick only for huge-prompt/terse-output
-work; the file is still on disk.
+per batch. *(That IQ4_XS row is **superseded** — measured pre-`deep`, pre-thread-tuning,
+pre-MTP. It is not comparable to anything current and was not re-run, because a non-MTP
+config can no longer be promoted.)*
+
+### Q4_K_M is the floor — smaller K-quants lose too (2026-08-06)
+
+`UD-Q3_K_XL` is 24% fewer expert bytes than `UD-Q4_K_M` and a K-quant, so it isolates the
+question IQ4_XS confounded: *does a smaller expert footprint buy decode when dequant cost
+is held cheap?* Both MTP builds, every other flag identical, same session:
+
+| quant | prefill | shallow | **deep** | accept s/d | tools | quality |
+|---|---|---|---|---|---|---|
+| **MTP-UD-Q4_K_M** | 1331 t/s | 42.0 | **47.6** | 60%/77% | 4/4 | 4/4 |
+| MTP-UD-Q3_K_XL | 1477 t/s | 37.8 | **43.3** | 58%/78% | 4/4 | 4/4 |
+
+**Answer: no. Q3_K_XL is 9% slower on deep decode despite reading 24% fewer bytes.**
+
+Acceptance is identical (58%/78% vs 60%/77%), which **rules out the obvious explanation** —
+Q3's weaker weights do *not* produce a worse draft head. The cost is dequantisation: Q3_K's
+3-bit packing takes more CPU work per weight to unpack than Q4_K, and on this AVX2-only CPU
+that outweighs the bytes saved. Prefill moves the other way (+11%) because prefill is
+GPU-bound.
+
+**Two independent quant families now lose the same way** (IQ4_XS, Q3_K_XL). The rule for
+this hardware: **Q4_K_M is the floor. Going smaller costs more in dequant than it saves in
+bytes.** Do not re-test this a third time without a new reason — e.g. a llama.cpp release
+with reworked Q3_K/i-quant CPU kernels, or a CPU with AVX-512/AMX.
+
+At 128K, Q4_K_M also stays ahead (36.4 vs 33.7 deep), so Q3_K_XL wins on no axis. Both
+Q3_K_XL files (~34 GB) can be deleted.
 
 **File size alone does not predict VRAM.** Non-expert tensors are always GPU-resident, and
 quant recipes differ in how they treat them. Unsloth's Q4_K_XL and Q4_K_M both keep
@@ -322,17 +407,29 @@ b10276 exposes `--spec-type draft-mtp`. For Qwen3.6 the MTP head ships **inside 
 GGUF** (`MTP-UD-Q4_K_M` is 22.66 GB vs 22.13 GB plain, a ~505 MiB head), so **no
 `--model-draft` is needed** — that flag is only for Gemma-style separate heads.
 
-Measured `q35-q4km` (control) vs the promoted config, same session, 3 rounds:
+Measured against the no-MTP control (same file, no `--spec-type`), same session, 3 rounds:
 
 | context | control deep | MTP deep | gain |
 |---|---|---|---|
 | ~6.5K | 29.7-31.2 | **46.9** | **1.53x** |
 | ~58K | 15.6 | **40.4** | **2.59x** |
 
-**The gain grows with context, and deep decode exceeds shallow** (46.9 deep vs 42.5
-shallow) — the reverse of the control's normal 35.3 → 29.7 decay. Draft acceptance rises
-as context establishes: measured **80.1% at n-max 2** (`draft_n` 306, `draft_n_accepted`
-245). MTP is strongest exactly where this stack was weakest.
+**The gain grows with context, and deep decode exceeds shallow** (47.6 deep vs 42.8
+shallow) — the reverse of the control's normal 35.3 → 29.7 decay.
+
+**The mechanism is measured, not assumed: draft acceptance rises with context.**
+`llmbench` reports it per depth (`acc s/d`), and it is stable across quants and runs:
+
+| depth | acceptance |
+|---|---|
+| shallow (~0 ctx) | **56-65%** |
+| deep (~6.5K ctx) | **77-78%** |
+
+An established context makes continuations more predictable, so more drafted tokens
+survive verification. MTP is therefore strongest exactly where this stack was weakest.
+*(An earlier revision of this file cited "80.1%" as evidence for this — that was a single
+sample from a 27-token prompt, i.e. the shallow case, and could not support a claim about
+depth. The conclusion held; the evidence did not.)*
 
 ### Why the published MoE numbers understate this machine badly
 
@@ -584,8 +681,8 @@ once. Verify with request counts before concluding a change to it did anything.
 - **`localhost` resolves to `::1` first.** llama-server binds IPv4 `0.0.0.0`, so podman's
   IPv6 forward accepts then resets — `Connection reset by peer`, which reads as a dead
   process. Use `127.0.0.1`. This also makes containers report `(unhealthy)` spuriously.
-- **Thinking models return empty `content` on small budgets.** `qwen3.5-9b` asked to "reply
-  with just OK" spent 176 tokens reasoning first, and returned empty at `max_tokens: 16`.
+- **Thinking models return empty `content` on small budgets.** A 9B asked to "reply with
+  just OK" spent 176 tokens reasoning first, and returned empty at `max_tokens: 16`.
   Give local models 400+, and 1200+ if the test must see an answer.
 - **Only one dGPU model is resident.** `groups: swap: false` keeps multiple resident on the
   iGPU but the 8GB card cannot co-locate the large models — switching is an inherent
