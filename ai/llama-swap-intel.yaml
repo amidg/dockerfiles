@@ -43,25 +43,12 @@ models:
         --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
-        --batch-size 2048 --ubatch-size 1024 \
+        --flash-attn on --cache-type-k f16 --cache-type-v f16 \
+        --batch-size 2048 --ubatch-size 2048 \
         --cache-reuse 256 \
         --reasoning off \
         --temp 0.7 --top-k 20 --top-p 0.8 --presence-penalty 0.5
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
-  "gemma-4-e4b":
-    cmd: |
-      /app/llama-server \
-        --model /models/gemma-4-E4B-it-Q4_K_M.gguf \
-        --mmproj /models/gemma-4-e4b-mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
-        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --cache-reuse 256 \
-        --reasoning off \
-        --temp 0.7 --top-k 20 --top-p 0.8 --presence-penalty 0.5
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
+

@@ -44,14 +44,6 @@ model_list:
       max_input_tokens: 65536
       max_output_tokens: 8192
 
-  - model_name: gemma-4-e4b
-    litellm_params:
-      model: openai/gemma-4-e4b
-      api_base: http://llama_swap_intel:8080/v1
-      api_key: sk-no-key-required
-    model_info:
-      max_input_tokens: 65536
-      max_output_tokens: 8192
 
   - model_name: claude-opus-4-8
     litellm_params:
@@ -95,7 +87,7 @@ litellm_settings:
   request_timeout: 600
   fallbacks:
     - local-main: ["gemma-4-26b"]
-    - local-vision: ["gemma-4-e4b"]
+    - local-vision: ["gemma-4-26b"]
     - local-tiny: ["qwen3.5-2b"]
 
 general_settings:

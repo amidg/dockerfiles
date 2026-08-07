@@ -58,7 +58,7 @@ The names are identical on both machines — that is what lets one shared
 | alias | laptop | desktop | for |
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images and PDFs |
+| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images and PDFs — falls back to `gemma-4-26b` |
 | `local-tiny` | `gemma-4-e2b` | `gemma-4-12b` | titles, tags, background chores |
 | `local-embed` | *(currently unwired)* | *(not available)* | RAG embeddings, 1024-dim |
 
@@ -75,7 +75,7 @@ Hardcoding a model name works but breaks on the other machine.
 | device | port | models | role |
 |---|---|---|---|
 | RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
-| Arc Pro iGPU | 8082 | `gemma-4-e2b` (vision), `gemma-4-e4b`, `qwen3.5-2b`, `qwen3.5-4b` | background chores + vision |
+| Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b`, `qwen3.5-4b` | background chores + vision |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
 Only **one** dGPU model is resident at a time. `gemma-4-26b` has no alias — request it by
@@ -118,6 +118,12 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
   does beat the CPU at expert work (+24%), but leaving CUDA for Vulkan costs 67% first.
 - **Text tests will not catch a vision crash.** Always send a real image after retuning.
 - **At the small end, prefer dense over MoE** — expert gathers are inefficient on the Arc.
+- **MTP is a LOSS on the iGPU** (-25% deep on `gemma-4-e2b`) even though it is the biggest
+  win on the dGPU. The dGPU has CPU-offloaded experts with batching slack; the Arc is
+  GPU-resident and bandwidth-bound, so speculative verification costs more than it saves.
+  It also *improves* the shallow number, so judging on `decode` would ship a regression.
+- **iGPU KV is `f16`, not `q8_0`** — taken for precision, not speed: the +4% was inside
+  noise, but f16 is never worse and its 2x cost is system RAM, which is free on that tier.
 
 ## Check it works
 

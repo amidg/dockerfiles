@@ -27,7 +27,7 @@ device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `qwen3.5-2b`, `qwen3.5-4b`, `gemma-4-e2b` (vision), `gemma-4-e4b` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b`, `qwen3.5-4b` |
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
 Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
@@ -56,7 +56,7 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
 | `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images/PDFs — **no longer the dGPU model** |
-| `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget |
+| `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **same model as `local-vision`, so no swap between them** |
 | `local-embed` | **unwired** | **missing** | RAG embeddings, 1024-dim |
 
 `gemma-4-26b` has no alias; requesting it evicts the loaded model (~15-30s) since only one
@@ -71,7 +71,9 @@ fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-cont
   model as `local-tiny`, and had no consumer. Two names for one thing drift apart.
 - **`local-vision` must never fall back to a model without a projector.** A blind model
   confidently describing an image is worse than a clean error. Its fallback is
-  `gemma-4-e4b`, which also carries one.
+  **`gemma-4-26b`** on the dGPU, which carries one. It was `gemma-4-e4b` until that model
+  was removed (2026-08-06) — when deleting a vision model, **re-point this fallback in the
+  same change**, or the invariant breaks silently and only shows up on an image request.
 - **Vision left the dGPU on 2026-08-06.** `local-vision` now resolves to `gemma-4-e2b` on
   the Arc iGPU. The dGPU tier runs `--no-mmproj`, which is what freed the headroom MTP and
   `ubatch 2048` need — at `--n-cpu-moe 31` **the MTP model OOMs outright** with a projector
@@ -88,8 +90,8 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
-| Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale)* | 1.34 GB RAM |
-| Arc iGPU | `embed` | — | — | 0.80 GB RAM |
+| Arc iGPU | `gemma-4-e2b` **(local-tiny + local-vision)** | **713 t/s** | **14.4 t/s** (17.4 shallow) | ~3.5 GB RAM |
+| Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale, pre-2026-08-06)* | 1.34 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
 
 ### Decode is two numbers, and mixing them wastes days
@@ -521,38 +523,113 @@ MTP forces `--parallel 1` (already the case). Re-check `n-max 3` after a llama.c
 
 ## The tiny tier (Arc iGPU)
 
-### Dense beats sparse here
+**`gemma-4-e2b` serves BOTH `local-tiny` and `local-vision`** — Q4_K_M, 64K, `--ubatch-size
+2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier;
+`local-vision` falls back to `gemma-4-26b` on the dGPU.
 
-Same iGPU, 64K ctx, 6524-token prefill, interleaved rounds:
+Validated 2026-08-06: **713 t/s prefill, 17.4 shallow, 14.4 deep**, `tools` 4/4,
+`quality` 4/4, thinking **off** (0 reasoning chars), **approval PASS**, vision `Red`,
+needle found at 53,567 tokens.
 
-| model | file | prefill | decode |
+### MTP is a LOSS here — the exact inverse of the dGPU (2026-08-06)
+
+MTP is the single biggest win on the dGPU. On the iGPU it **must not be enabled**. Both
+Gemma heads load and run correctly on SYCL (`gemma4-assistant` works — that was not
+guaranteed; the upstream PR reported garbage output on Vulkan), so this is a performance
+verdict, not a compatibility one.
+
+Six arms, one session, 2 rounds, `--ubatch-size` as noted:
+
+| arm | prefill | shallow | **deep** | accept s/d |
+|---|---|---|---|---|
+| **`gemma-4-e2b` no MTP, ub2048** | **704 t/s** | 17.1 | **14.3** | — |
+| `gemma-4-e2b` no MTP, ub1024 | 672 t/s | 16.8 | **14.3** | — |
+| `gemma-4-e2b` +MTP, ub2048 | 726 t/s | 18.3 | 12.2 | 37%/41% |
+| `gemma-4-e2b` +MTP, ub1024 | 695 t/s | 18.6 | 11.5 | 39%/**29%** |
+| `gemma-4-e4b` no MTP, ub1024 | 481 t/s | 11.3 | 10.1 | — |
+| `gemma-4-e4b` +MTP, ub1024 | 473 t/s | 13.4 | 9.8 | 39%/38% |
+| `gemma-4-e4b` +MTP, ub2048 | 504 t/s | 13.7 | 8.9 | 38%/38% |
+
+**MTP improves shallow and destroys deep.** E2B: shallow 17.8 → 18.6 (+4%), deep 15.3 →
+11.5 (**-25%**). `decode` is the number every online benchmark quotes; `deep` is what an
+agent turn does. **Judging this on shallow would have shipped a 25% regression.**
+
+**Why it inverts.** The dGPU win comes from CPU-offloaded experts being latency/sync-bound
+with ~14x batching headroom, and from acceptance *rising* with context (56-65% → 77-78%).
+The iGPU is fully GPU-resident and **bandwidth-bound** — there is no batching slack for
+verification to exploit. Acceptance is only ~40%, and on E2B it *falls* with depth
+(39% → 29%), the opposite of the dGPU. Verification costs more than drafting saves.
+
+**Same lever, opposite sign, for a reason already in this file.** Do not "fix" the iGPU by
+copying the dGPU's MTP flags.
+
+*Caveat worth knowing before re-testing:* these heads are `Q4_0` (59 MB) where the 26B's is
+`Q8_0` (462 MB). A higher-precision drafter would raise acceptance. It would have to more
+than double it to overcome a 25% deep deficit, so this was not pursued.
+
+### E2B beats E4B on every axis — E4B was removed (2026-08-06)
+
+**704 vs 481 t/s prefill, 14.3 vs 10.1 deep** — the smaller model wins by ~45% prefill and
+~42% deep. At 53K context the gap widens: **443 vs 322 t/s** (121s vs 166s to ingest).
+Consistent with the older "prefer dense at the small end" note: the E-series MoE expert
+gathers are inefficient on this device, and E4B has more of them.
+
+**`gemma-4-e4b` is no longer in any config.** It was capable — 4/4 tools, 4/4 quality,
+vision, needle at 53K, approval PASS — but strictly slower than E2B on every axis while
+serving no role E2B did not already fill. The GGUF and its projector remain on disk
+(`gemma-4-E4B-it-Q4_K_M.gguf`, `gemma-4-e4b-mmproj-F16.gguf`) if it is ever wanted back;
+its measurements are kept here so it does not get re-evaluated from scratch.
+
+**Now unused on disk:** `mtp-gemma-4-E2B-it-Q4_0.gguf` and `mtp-gemma-4-E4B-it-Q4_0.gguf`
+(59 MB each) — MTP was rejected on this tier, so neither head is referenced by any config.
+
+### `--ubatch-size 2048` is fine now — the old sweep is superseded
+
+The old note here read *"128 → 104 t/s, 512 → 126, **1024 → 146 (best)**, 2048 → 136
+(regresses)"*. **That no longer reproduces.** Re-measured 2026-08-06 without MTP, 3 rounds:
+
+| ubatch | prefill | shallow | **deep** |
 |---|---|---|---|
-| **`qwen3.5-2b` (current)** | **1.28 GiB** | **557.7 t/s** | **23.1 t/s** |
-| `Qwen3.5-4B` (rejected) | 2.71 GiB | 221.0 t/s | 11.9 t/s |
-| `gemma-4-e2b` (replaced) | 3.00 GiB | 176.1 t/s | 16.3 t/s |
-| `gemma-4-e4b` (rejected) | 4.80 GiB | 141.2 t/s | 10.4 t/s |
-| `qwen3.5-9b` (rejected) | 5.60 GiB | 190.9 t/s | 7.4 t/s |
+| 1024 | 672 t/s | 16.8 | **14.3** |
+| **2048** | **704 t/s** | 17.1 | **14.3** |
 
-The gemma E-series are MoE and their expert gathers are inefficient on this device; a
-dense 2B saturates it far better. Even dense `qwen3.5-9b` out-prefilled the 2B-active MoE.
-**At the small end on this hardware, prefer dense.**
+Absolute prefill is ~5x the old sweep (146 → ~700), so the old numbers were measured on a
+build and config that no longer exist. 2048 wins prefill in every round; deep is identical.
+The margin is small and the 1024 arm shows a warm-up trend, so **treat this as a tie that
+2048 wins on a tiebreak**, not a large effect.
 
-Capability was verified equal, not assumed: single call, selection among four schemas,
-tool-result round-trip, and correctly declining. `qwen3.5-2b` also returns clean JSON where
-`gemma-4-e2b` wrapped it in ``` fences. It retrieved a needle at 60% depth in 49,970 tokens.
+### `f16` KV beats `q8_0` — take it for precision, not for speed
 
-### Context scaling — why this tier is not for big prompts
+Prompted by [an Intel Arc benchmark write-up](https://jonathanmann.tech/blog/intel-arc-b70-llama-cpp-benchmarks/)
+claiming f16 KV is right on Arc. Measured on the promoted config, 3 rounds:
 
-| context | prefill | time to ingest |
-|---|---|---|
-| 6.5K | 558 t/s | 12s |
-| 19K | 252 t/s | 75s |
-| 50K | 103 t/s | **485s** |
+| KV | prefill | shallow | **deep** | 53K needle |
+|---|---|---|---|---|
+| `q8_0` | 715 t/s | 17.0 | 14.4 | found, 464 t/s |
+| **`f16`** | 727 t/s | 17.7 | **15.0** | found, 463 t/s |
 
-The dGPU holds ~396 t/s at 19K. **Small prompts → iGPU; large prompts → dGPU**, crossover
-around 10-15K.
+**The speed claim does not survive scrutiny: +4% deep is inside noise.** f16's three deep
+rounds were 15.0 / 15.3 / **13.3** — the last below every q8_0 round. At 53K the two are
+identical.
 
-### No reasoning, no vision — both deliberate
+**It is promoted anyway, on precision.** f16 KV is never worse, is strictly higher precision
+at depth, and its 2x KV cost is *system RAM* on this tier, where 34 GB is free. Free upside
+with a real quality argument beats a speed claim that does not replicate.
+
+### Context scaling — this tier is much better than it used to be
+
+The old table (6.5K → 558 t/s, 19K → 252, 50K → **485s to ingest**) was `qwen3.5-2b` on an
+old build. `gemma-4-e2b` today: **53,567-token needle prefilled at 464 t/s in 115s**, found.
+Still slower than the dGPU, but "485s to ingest 50K" is no longer the right mental model.
+
+### Vision lives HERE now — the old "no vision" note was inverted
+
+This section previously said *"Vision is absent because `local-vision` resolves to the
+dGPU's far better model. The tier correctly rejects images."* **Both halves are now wrong.**
+Since 2026-08-06 the dGPU runs `--no-mmproj` and **`local-vision` → `gemma-4-e2b` on this
+tier**, with `gemma-4-e4b` as its fallback. Both carry projectors.
+
+### Reasoning stays off — unchanged and still load-bearing
 
 | configuration | completion tokens | reasoning leaked into `content`? |
 |---|---|---|
@@ -569,18 +646,16 @@ around 10-15K.
    **silently dropped** by `drop_params: true` (310 tokens, full reasoning, no warning).
    Reasoning must be off at the *server*.
 3. **Unsloth's docs are wrong** about the Qwen3.5 Small series defaulting to reasoning off.
-   Without the flag the 2B emitted ~1388 chars of reasoning and hit the cap with empty
-   content. `--reasoning off` is required.
 4. **`presence_penalty` 1.5-2.0 (Unsloth's recommendation) destabilises short factual
-   output.** At temp 0.7 + pp 1.5 the 2B answered "17 times 4" as **56**; at temp 0, 68.
+   output.** At temp 0.7 + pp 1.5 a 2B answered "17 times 4" as **56**; at temp 0, 68.
    The config uses 0.5.
 
-Caveat: `--reasoning off` removes reasoning waste, not verbosity. A vague prompt still
-rambles to the cap; a well-specified one ("Reply with ONLY the title") answers in ~8
-tokens. Chattiness once blamed on `gemma-4-e2b` was a **prompt** problem.
+**`--reasoning off` is a correctness requirement, not a speed tweak** — `local-tiny` backs
+Hermes' `_smart_approve`, which sends `max_tokens=16` and expects one word. A thinking model
+spends the whole budget reasoning and returns empty.
 
-Vision is absent because `local-vision` resolves to the dGPU's far better model. The tier
-correctly rejects images with `image input is not supported`.
+Caveat: `--reasoning off` removes reasoning waste, not verbosity. A vague prompt still
+rambles to the cap; a well-specified one ("Reply with ONLY the title") answers in ~8 tokens.
 
 ## Embeddings
 
@@ -599,9 +674,9 @@ correctly rejects images with `image input is not supported`.
 
 ## Per-device notes
 
-**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. Runs `qwen3.5-2b` and
-`embed` **both resident** via `groups:` with `swap: false`; RAG and background calls
-interleave constantly, so eviction would add a reload to every switch. ~2.14 GB total.
+**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. `gemma-4-e2b` is
+pinned resident via `groups:` with `swap: false`, because it backs **both** `local-tiny` and
+`local-vision` — a title request and an image request must not evict each other. ~3.5 GB.
 
 - **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
   JIT kernel cache. Without it every recreate recompiles all kernels — measured **4m32s**
@@ -611,10 +686,11 @@ interleave constantly, so eviction would add a reload to every switch. ~2.14 GB 
 - **`--help` crashes without a GPU device** (SYCL init failure). Read flag docs from `:cuda`.
 - **Memory:** reports free memory tracking host `MemFree`, not reclaimable `MemAvailable`.
   Check `free -h` before lowering ubatch.
-- **ubatch sweep** (6524-token prefill): 128 → 104 t/s, 512 → 126, **1024 → 146 (best)**,
-  2048 → 136 (regresses). The ceiling is bandwidth, not batch size — an 8x increase bought
-  ~40%. The old value of 128 was an 8GB-tier concession that buys nothing here, same for
-  `q8_0` KV instead of `q4_0`.
+- **ubatch and KV were re-measured on 2026-08-06** — see the tiny-tier section. The old
+  sweep (peaking at 146 t/s, "2048 regresses") no longer reproduces; prefill is now ~700 t/s
+  and 2048 is fine. KV moved `q8_0` → `f16`.
+- **Bandwidth-bound, and that is why MTP loses here.** The device has no batching slack for
+  speculative verification to exploit — the opposite of the CPU-offloaded dGPU.
 
 **Intel NPU (experimental, not routed)** — `intel_npu_llama_cpp` profile, standalone
 `llama-server` on the OpenVINO backend (no llama-swap integration exists), `Qwen3-1.7B-Q4_0`,
@@ -670,7 +746,7 @@ Shared between both machines; names only aliases.
 | alias | pin | why |
 |---|---|---|
 | `local-main` | **131072** | matches the laptop dGPU default |
-| `local-tiny` | **65536** | its laptop target is `gemma-4-e2b` on the **iGPU**, which is 64K. Raising this overruns the iGPU — and that tier takes 485s to ingest 50K anyway, so a bigger window there is useless |
+| `local-tiny` | **65536** | its laptop target is `gemma-4-e2b` on the **iGPU**, which is 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU, so a bigger window is not worth buying here |
 
 **`local-main: 131072` currently exceeds the desktop (2026-08-06).** The desktop's
 `local-main` is `qwen3.6-27b` at `--ctx-size 65536`, so **Hermes on the desktop will hit
