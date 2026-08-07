@@ -1,0 +1,25 @@
+name: searxng
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng-settings.yaml:/etc/searxng/settings.yml:z,rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-}
+    env_file:
+      - path: ./searxng.env
+        required: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+
