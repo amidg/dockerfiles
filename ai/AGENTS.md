@@ -27,7 +27,7 @@ device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b`, `qwen3.5-4b` |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
 | `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
 
 Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
@@ -574,14 +574,15 @@ than double it to overcome a 25% deep deficit, so this was not pursued.
 Consistent with the older "prefer dense at the small end" note: the E-series MoE expert
 gathers are inefficient on this device, and E4B has more of them.
 
-**`gemma-4-e4b` is no longer in any config.** It was capable — 4/4 tools, 4/4 quality,
-vision, needle at 53K, approval PASS — but strictly slower than E2B on every axis while
-serving no role E2B did not already fill. The GGUF and its projector remain on disk
-(`gemma-4-E4B-it-Q4_K_M.gguf`, `gemma-4-e4b-mmproj-F16.gguf`) if it is ever wanted back;
-its measurements are kept here so it does not get re-evaluated from scratch.
+**`gemma-4-e4b` is gone — config, weights, projector and MTP head all deleted (2026-08-06).**
+It was capable (4/4 tools, 4/4 quality, vision, needle at 53K, approval PASS) but strictly
+slower than E2B on every axis while serving no role E2B did not already fill. **Its numbers
+are kept in the table above precisely so it is not re-evaluated from scratch** — if it is
+ever wanted back, re-download `gemma-4-E4B-it-Q4_K_M.gguf` plus `gemma-4-e4b-mmproj-F16.gguf`.
 
-**Now unused on disk:** `mtp-gemma-4-E2B-it-Q4_0.gguf` and `mtp-gemma-4-E4B-it-Q4_0.gguf`
-(59 MB each) — MTP was rejected on this tier, so neither head is referenced by any config.
+`mtp-gemma-4-E2B-it-Q4_0.gguf` (57 MB) is retained but **unreferenced** — MTP is rejected on
+this tier, so it exists only to make a re-test cheap if a future llama.cpp changes the
+verdict.
 
 ### `--ubatch-size 2048` is fine now — the old sweep is superseded
 

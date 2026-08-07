@@ -26,15 +26,6 @@ model_list:
       max_input_tokens: 65536
       max_output_tokens: 8192
 
-  - model_name: qwen3.5-4b
-    litellm_params:
-      model: openai/qwen3.5-4b
-      api_base: http://llama_swap_intel:8080/v1
-      api_key: sk-no-key-required
-    model_info:
-      max_input_tokens: 65536
-      max_output_tokens: 8192
-
   - model_name: gemma-4-e2b
     litellm_params:
       model: openai/gemma-4-e2b
