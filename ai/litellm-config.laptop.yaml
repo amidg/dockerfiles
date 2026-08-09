@@ -1,0 +1,86 @@
+model_list:
+  - model_name: qwen3.6-35b
+    litellm_params:
+      model: openai/qwen3.6-35b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 8192
+
+  - model_name: gemma-4-26b
+    litellm_params:
+      model: openai/gemma-4-26b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 8192
+
+  - model_name: qwen3.5-2b
+    litellm_params:
+      model: openai/qwen3.5-2b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 65536
+      max_output_tokens: 8192
+
+  - model_name: gemma-4-e2b
+    litellm_params:
+      model: openai/gemma-4-e2b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 65536
+      max_output_tokens: 8192
+
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: gemini/gemini-3.1-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+router_settings:
+  model_group_alias:
+    local-main: qwen3.6-35b
+    local-vision: gemma-4-e2b
+    local-tiny: gemma-4-e2b
+
+litellm_settings:
+  drop_params: true
+  num_retries: 3
+  log_model_api_calls: true
+  log_model_api_calls_to_db: true
+  ui_access_controls:
+    admin_only: true
+  database_type: postgres
+  request_timeout: 600
+  fallbacks:
+    - local-main: ["gemma-4-26b"]
+    - local-vision: ["gemma-4-26b"]
+    - local-tiny: ["qwen3.5-2b"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

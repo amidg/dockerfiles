@@ -1,0 +1,140 @@
+services:
+  firecrawl_redis:
+    image: redis:7-alpine
+    container_name: firecrawl_redis
+    restart: unless-stopped
+    command: redis-server --bind 0.0.0.0
+    networks:
+      - llama-swap-network
+    volumes:
+      - firecrawl_redis:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  firecrawl_playwright:
+    image: ghcr.io/firecrawl/playwright-service:latest
+    container_name: firecrawl_playwright
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=3000
+      - MAX_CONCURRENT_PAGES=${CRAWL_CONCURRENT_REQUESTS:-5}
+      - PROXY_SERVER=${PROXY_SERVER:-}
+      - PROXY_USERNAME=${PROXY_USERNAME:-}
+      - PROXY_PASSWORD=${PROXY_PASSWORD:-}
+      - ALLOW_LOCAL_WEBHOOKS=${ALLOW_LOCAL_WEBHOOKS:-}
+      - BLOCK_MEDIA=${BLOCK_MEDIA:-false}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+  firecrawl_rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: firecrawl_rabbitmq
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+
+  firecrawl_postgres:
+    image: postgres:16-alpine
+    container_name: firecrawl_postgres
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-firecrawl}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme-firecrawl-pg}
+      - POSTGRES_DB=${POSTGRES_DB:-firecrawl}
+    volumes:
+      - firecrawl_postgres:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER:-firecrawl} -d ${POSTGRES_DB:-firecrawl}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  firecrawl_api:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    container_name: firecrawl_api
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: ./firecrawl.env
+        required: true
+    environment:
+      - NUQ_RABBITMQ_URL=amqp://firecrawl_rabbitmq:5672
+      - ENV=local
+      - PORT=${INTERNAL_PORT:-3002}
+      - EXTRACT_WORKER_PORT=${EXTRACT_WORKER_PORT:-3004}
+      - WORKER_PORT=${WORKER_PORT:-3005}
+      - HARNESS_STARTUP_TIMEOUT_MS=${HARNESS_STARTUP_TIMEOUT_MS:-60000}
+    depends_on:
+      firecrawl_redis:
+        condition: service_started
+      firecrawl_playwright:
+        condition: service_started
+      firecrawl_rabbitmq:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+    command: node dist/src/harness.js --start-docker
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+
+volumes:
+  firecrawl_redis:
+    external: true
+  firecrawl_postgres:
+    external: true
+
+networks:
+  llama-swap-network:
+    external: true

@@ -54,6 +54,17 @@ services:
       - "105" # render group
       - "39" # video group
 
+  # base intel npu
+  # exposes /dev/accel (Core Ultra NPU, driver intel_vpu) for OpenVINO-backend workloads
+  base_npu: &base_npu
+    <<: *base_security
+    security_opt:
+      - label=disable
+    devices:
+      - /dev/accel
+    group_add:
+      - "105" # render group
+
   # base nvidia
   # NOTE (Dmitrii): support is limited
   # - only x86 systems (do not use this for jetson)

@@ -1,10 +1,4 @@
-# TODO:
-# - Introduce .env file for configurations
 services:
-  #########################
-  # BASE SERVICES
-  #########################
-  # base ollama server
   base_ollama: &base_ollama
     profiles:
       - null_profile
@@ -15,10 +9,6 @@ services:
     ports:
       - 11434:11434
 
-  #########################
-  # OLLAMA SERVICES
-  #########################
-  # amd ollama server
   amd_ollama:
     <<: [*base_ollama]
     profiles:
@@ -33,7 +23,6 @@ services:
       - no_proxy=localhost,127.0.0.1
       - OLLAMA_HOST=0.0.0.0
 
-  # intel ollama server
   intel_ollama:
     <<: [*base_ollama]
     profiles:
@@ -53,7 +42,6 @@ services:
       - ZES_ENABLE_SYSMAN=1
     command: sh -c 'mkdir -p /llm/ollama && cd /llm/ollama && init-ollama && exec ./ollama serve'
 
-  # intel ollama server
   nvidia_ollama:
     <<: [*base_ollama]
     profiles:
@@ -68,7 +56,6 @@ services:
       - no_proxy=localhost,127.0.0.1
       - OLLAMA_HOST=0.0.0.0
 
-  # open web-ui is the same for all GPUs
   open-webui:
     profiles:
       - webui

@@ -1,0 +1,181 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    hostname: postgres
+    container_name: litellm_postgres
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-litellm}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-litellm}
+      - POSTGRES_DB=${POSTGRES_DB:-litellm}
+    volumes:
+      - litellm_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER:-litellm} -d ${POSTGRES_DB:-litellm}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  base_llama_swap: &base_llama_swap
+    profiles:
+      - null_profile
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+    networks:
+      - llama-swap-network
+    environment:
+      - no_proxy=localhost,127.0.0.1
+    command: /app/llama-swap -config /app/config.yaml -listen 0.0.0.0:8080
+
+  amd_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - amd_llama_cpp
+      - amd_llama_cpp_server
+    extends:
+      file: ../base.yml
+      service: base_amdgpu
+    image: ghcr.io/mostlygeek/llama-swap:rocm
+    container_name: llama_swap_server
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-config.yaml:/app/config.yaml:z,ro
+    ports:
+      - 8080:8080
+    environment:
+      - no_proxy=localhost,127.0.0.1
+
+  nvidia_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - nvidia_llama_cpp
+      - nvidia_llama_cpp_server
+      - laptop
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    image: ghcr.io/mostlygeek/llama-swap:cuda
+    container_name: llama_swap_nvidia
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-nvidia.yaml:/app/config.yaml:z,ro
+    ports:
+      - 8081:8080
+    environment:
+      - no_proxy=localhost,127.0.0.1
+
+  intel_llama_swap:
+    <<: [*base_llama_swap]
+    profiles:
+      - intel_llama_cpp
+      - intel_llama_cpp_server
+      - laptop
+    extends:
+      file: ../base.yml
+      service: base_igpu
+    image: ghcr.io/mostlygeek/llama-swap:intel
+    container_name: llama_swap_intel
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ./llama-swap-intel.yaml:/app/config.yaml:z,ro
+      - intel_sycl_cache:/root/.cache
+    ports:
+      - 8082:8080
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - ZES_ENABLE_SYSMAN=1
+
+  intel_npu_llama_server:
+    profiles:
+      - intel_npu_llama_cpp
+    extends:
+      file: ../base.yml
+      service: base_npu
+    image: localhost/llama-cpp-openvino:server-5d8ccdf
+    container_name: llama_npu_server
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+    networks:
+      - llama-swap-network
+    ports:
+      - 8083:8080
+    environment:
+      - GGML_OPENVINO_DEVICE=NPU
+    command: >
+      --no-warmup -c 1024 --parallel 1
+      -m /models/Qwen3-1.7B-Q4_0.gguf
+      --host 0.0.0.0
+
+  base_litellm: &base_litellm
+    profiles:
+      - null_profile
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm
+    env_file:
+      - path: ./litellm.env
+        required: true
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-litellm}:${POSTGRES_PASSWORD:-litellm}@postgres:5432/${POSTGRES_DB:-litellm}
+    networks:
+      - llama-swap-network
+    ports:
+      - 127.0.0.1:4000:4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+
+  litellm:
+    <<: *base_litellm
+    profiles:
+      - litellm
+      - intel_llama_cpp
+      - nvidia_llama_cpp
+      - intel_npu_llama_cpp
+      - laptop
+    volumes:
+      - ./litellm-config.laptop.yaml:/app/config.yaml:z,ro
+
+  litellm_desktop:
+    <<: *base_litellm
+    profiles:
+      - amd_llama_cpp
+    volumes:
+      - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
+
+  open-webui:
+    profiles:
+      - webui
+      - intel_llama_cpp
+      - amd_llama_cpp
+      - nvidia_llama_cpp
+      - laptop
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    env_file:
+      - path: ./litellm.env
+        required: true
+    environment:
+      - OPENAI_API_BASE_URL=http://litellm:4000/v1
+      - ENABLE_OLLAMA_API=false
+    volumes:
+      - open-webui:/app/backend/data
+    networks:
+      - llama-swap-network
+    ports:
+      - 3001:8080
+
+volumes:
+  open-webui:
+    name: open-webui
+  litellm_postgres:
+    name: litellm_postgres
+  intel_sycl_cache:
+    name: intel_sycl_cache
+
+networks:
+  llama-swap-network:
+    driver: bridge
