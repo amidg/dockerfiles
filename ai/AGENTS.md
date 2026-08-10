@@ -200,6 +200,51 @@ problem, a slower prefill is a comfort problem.
 SSM/Mamba blocks with constant state. KV at 64K with `q4_0` is ~360 MiB. Halving
 `--ctx-size` frees under 200 MiB, so **context reduction is not a VRAM lever here.**
 
+### `-ctk q8_0` is a legitimate hypothesis but is NOT free — analysed, not run (2026-08-09)
+
+The claim doing the rounds: `q4_0` K at long context corrupts tool-call JSON and
+hallucinates file paths, K being more sensitivity-critical than V, so run `-ctk q8_0 -ctv
+q4_0`. Worth testing — **but it is usually pitched as cheap, and on this box it is not.**
+
+Arithmetic from the row above: KV at 64K/`q4_0` ≈ 360 MiB → 128K ≈ 720 MiB, of which K is
+~360 MiB. Promoting K to `q8_0` roughly doubles that half: **~+360 MiB against the 468 MiB
+free** in the promoted 128K config. This stack has crashed twice at ~22 MiB free. So it has
+to be bought — `--ubatch-size 1024 → 512` (surrenders 3x prefill) or a smaller window
+(frees only ~180 MiB, per the hybrid note above). **It is nearly free in a no-MTP parallel
+variant**, which returns ~1.1 GB — see
+[Parallel subagents](#parallel-subagents--analysed-not-measured-2026-08-09).
+
+Gate it on `llmbench.py --tests tools quality` and retry counts, **not on t/s** — the whole
+claim is about correctness. Same 30-step agent task both ways, count retries.
+
+### Prompt cache on a hybrid model — `-cram`/`-ctxcp` are suspect (2026-08-09)
+
+Upstream issue **#24055**, *"Context checkpoints always invalidated on hybrid/recurrent
+models"*: the server logs `forcing full prompt re-processing due to lack of cache data
+(likely due to SWA or hybrid/recurrent memory)` and **`--cache-reuse`, `--ctx-checkpoints`
+and `--cache-ram` are all rendered ineffective.** Introduced at commit `e98cb51`, **still
+open**. `qwen3.6-35b` is exactly the affected shape.
+
+**Do not conclude prompt caching is broken here — it is not.** Live `/slots` on this build,
+2026-08-09, mid-request: `n_prompt_tokens: 48360`, `n_prompt_tokens_cache: **42839**`. The
+**in-slot contiguous prefix** path works fine. It is **checkpoint restore** (resuming from
+the middle of a diverged context) and **idle-slot save** that are suspect. Keep the two
+apart when reading any future measurement.
+
+**`-cram 32768` does not fit this box.** The suggestion to crank `--cache-ram` because
+"you have 64GB" ignores where the RAM already went:
+
+| | measured 2026-08-09 |
+|---|---|
+| llama-server RSS (`--load-mode none`, no mmap) | **19.4 GB** |
+| stated ceiling for llama-server | 30 GB |
+| system | 48/62 GB used, **swap 7/7 GB consumed** |
+
+Ceiling for `-cram` is therefore ~**10240**, not 32768. And it is likely unnecessary at any
+size: a full 128K slot state at `q4_0` is ~720 MiB, so the **8192 default already holds ~11
+of them**. `--cache-idle-slots` additionally *requires unified KV*, so it is downstream of
+the parallel-slots decision entirely.
+
 ### CPU thread count: fewer, faster threads win
 
 `--n-cpu-moe` puts ~92% of weights on the CPU, so decode is gated by CPU expert
@@ -519,7 +564,106 @@ This corroborates upstream issue #23230, where `n-max 3` regressed 10-15% on rec
 while `n-max 2` lost ~5%. Two unrelated symptoms on the same parameter: **treat `n-max 3`
 as suspect on b10276.** It bought ~2 t/s, which the other levers supply anyway.
 
-MTP forces `--parallel 1` (already the case). Re-check `n-max 3` after a llama.cpp upgrade.
+MTP forces `--parallel 1` (already the case) — see
+[Parallel subagents](#parallel-subagents--analysed-not-measured-2026-08-09) for what that
+costs. Re-check `n-max 3` after a llama.cpp upgrade.
+
+## Parallel subagents — analysed, not measured (2026-08-09)
+
+**Nothing in this section was benchmarked.** It exists so the question can be picked up
+later without re-deriving it. Every t/s figure here is *cited from tables above*, not
+re-measured. Treat the conclusion as a designed experiment, not a result.
+
+The motivating want: Hermes runs subagents, `~/.hermes/config.yaml` sets
+`delegation.max_concurrent_children: 3`, so `--parallel 3` looks obviously right.
+
+### It is blocked: MTP and multi-slot are mutually exclusive
+
+`--spec-type draft-mtp` **hard-errors** on multi-slot —
+`MTP currently supports only n_parallel=1; got 4` (llama.cpp PR #22673). llama-swap
+surfaces this as `upstream command exited prematurely`, which reads like an OOM and is not.
+
+The maintainer on the same PR: *batching with MTP enabled using a recurrent model (i.e.
+Qwen3.x) is currently not optimized, so you won't benefit from parallel processing on a
+single machine in that case.* **So the non-MTP multi-slot path is unproven on this
+architecture too** — dropping MTP is necessary but may not be sufficient.
+
+### What is actually being traded
+
+| | MTP + `--parallel 1` (current) | no-MTP + `--parallel 3 --kv-unified` |
+|---|---|---|
+| deep decode @6.5K | **46.8-47.6 t/s** | ~29.7-31.2 t/s |
+| deep decode @58K | **40.4 t/s** | ~15.6 t/s |
+| concurrency | 1 — children serialize | 3 |
+| VRAM | 7275 MiB | ~6100 MiB (**~1.1 GB freed**) |
+
+A 3-child fan-out costs `3 × T` serially; in parallel each child runs at ~0.4-0.6x but all
+three overlap. **Whether that nets out is empirical and nothing here answers it.** Note the
+loss is worst exactly where agent turns live — deep context — because that is where MTP's
+draft acceptance is highest (77-78%).
+
+### Two constraints any future attempt must respect
+
+1. **`--ctx-size` is split across slots unless `-kvu` is set.** `131072` with `--parallel 3`
+   and no `--kv-unified` gives ~43K per slot, and Hermes pins `local-main` at `131072`
+   (see [Hermes wiring](#hermes-wiring-hermesconfigyaml)) — it would overrun immediately.
+   **`--kv-unified` is mandatory in the parallel variant, not optional.** The default is
+   *"enabled if number of slots is auto"*, so setting `--parallel N` explicitly silently
+   turns it off. This trap is real and the suggestion that surfaced it was correct.
+2. **Per-sequence recurrent state ×3, cost unknown.** 30 of 40 layers are SSM/GDN blocks
+   whose state is allocated per sequence, and this has never been measured on this box. The
+   ~1.1 GB freed by dropping MTP is what has to pay for it. **If a parallel variant fails to
+   load at 128K, that is the finding** — record it, do not just lower `--ctx-size` and
+   move on.
+
+### `--kv-unified` does not buy shared prefixes on this model
+
+Cross-slot prefix adoption (metadata-only `llama_memory_seq_cp`, one slot's cached prefix
+adopted by another) is **gated off automatically on hybrid-GDN models**, which `qwen3.6-35b`
+is (`full_attention_interval: 4`). Unified KV here gives a shared *pool* the slots draw from
+dynamically — genuinely the right shape for bursty subagents — but **not** shared *prefixes*.
+Do not budget for the second effect. `-sps/--slot-prompt-similarity` (default 0.10) is
+likewise meaningless at one slot and only worth tuning inside a parallel variant.
+
+### The experiment, if it is ever run
+
+`~/Projects/llm-benchmarking/concurrent.py` already does exactly this — `--conc-levels`,
+per-level throughput and p99 TTFT, and a `longctx` test that builds a ~15K shared prompt.
+Free the GPU first (`curl -s -X POST 127.0.0.1:8081/api/models/unload`), then three
+temporary llama-swap entries with `--n-cpu-moe 35 --ubatch-size 1024` pinned so only the
+intended variable moves:
+
+| entry | change from today |
+|---|---|
+| `q35-mtp-serial` | none — the control |
+| `q35-par3` | drop `--spec-type draft-mtp --spec-draft-n-max 2`; add `--parallel 3 --kv-unified` |
+| `q35-par3-tuned` | `q35-par3` + `-sps 0.5 -cram 10240 --cache-idle-slots` |
+
+```bash
+cd ~/Projects/llm-benchmarking
+./concurrent.py --models q35-mtp-serial q35-par3 q35-par3-tuned \
+  --endpoint http://localhost:8081/v1 \
+  --tests longctx tools --conc-levels 1 3 --requests 12 --json ~/bench-par3.json
+```
+
+Record per variant: aggregate t/s at conc=3, p99 TTFT, VRAM at load, peak RSS, and whether
+it loads at all.
+
+**Decision rule:** a parallel variant wins only if conc=3 wall-clock beats the serial
+control **and** single-request deep decode has not made the interactive orchestrator turn
+visibly worse. Both conditions, not either.
+
+**Harness caveat — fix before trusting the number.** `concurrent.py::_longctx_prompt()`
+sends a **byte-identical** prompt to all concurrent requests, which flatters any
+prefix-sharing path. Give each request a distinct suffix first. Same class of trap as
+[repeated identical prompts hitting the prompt cache](#reading-its-output-against-this-stack).
+
+### If serial wins
+
+Lower `delegation.max_concurrent_children` to 1 and stop pretending. Routing children to a
+second tier is then separate work — and note the *measured* result that delegation on
+`local-main` beats the iGPU **33.6s vs 2m05.8s**, because subagent cost is prefill-dominated
+and that is where the iGPU is weakest. A second tier is not an obvious win either.
 
 ## The tiny tier (Arc iGPU)
 
@@ -658,6 +802,21 @@ spends the whole budget reasoning and returns empty.
 Caveat: `--reasoning off` removes reasoning waste, not verbosity. A vague prompt still
 rambles to the cap; a well-specified one ("Reply with ONLY the title") answers in ~8 tokens.
 
+**Re-proposed for the dGPU on 2026-08-09 and rejected on the evidence above.** The pitch:
+subagent work (grep, read a file, decide yes/no) does not need a reasoning trace, so run a
+second llama-swap entry at `--reasoning-budget 0`, or have Hermes pass it per-request.
+Both halves are already disproven here — **point 1** (budget 0 measured *worse* than
+thinking on) and **point 2** (per-request reasoning params silently dropped by LiteLLM's
+`drop_params: true`). The underlying goal is sound; that mechanism is not.
+
+The untested alternative is **`--chat-template-kwargs '{"enable_thinking":false}'`**, which
+is a genuinely different mechanism — it stops the template opening a think block at all
+rather than suppressing tag *parsing*. Live `/slots` confirms the current template
+force-opens one: `"generation_prompt": "<|im_start|>assistant\n<think>\n"`. **Its cost is
+the problem:** a second llama-swap entry means a full **22.66 GB no-mmap reload** on every
+orchestrator↔subagent switch, almost certainly dearer than the thinking tokens it saves.
+Only viable if children route to a different *tier*, not a different entry on the same one.
+
 ## Embeddings
 
 `embed` = `Qwen3-Embedding-0.6B-Q8_0.gguf`, 1024-dim, 28 layers, native ctx 32768.
@@ -724,6 +883,20 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
   `--n-cpu-moe`, `-ot/--override-tensor`, `--threads`/`--cpu-range`/`--cpu-strict`,
   `--reasoning`, `--pooling`, `--embedding`, `--spec-type`, `--spec-draft-n-max`,
   `--load-mode`, `--no-mmproj`.
+- **Available, not used, verified present on `:cuda` 2026-08-09** (`podman exec
+  llama_swap_nvidia /app/llama-server --help`): `-kvu/--kv-unified`, `-cram/--cache-ram`
+  (default **8192** MiB), `--cache-idle-slots` (default enabled, **requires cache-ram**),
+  `-ctxcp/--ctx-checkpoints`, `-cms/--checkpoint-min-step`, `-sps/--slot-prompt-similarity`
+  (default 0.10), `-lcs`/`-lcd` lookup caches, `--reasoning-budget`,
+  `--chat-template-kwargs`. `--spec-type` takes a **comma-separated list** and offers
+  `ngram-simple`, `ngram-map-k`, `ngram-map-k4v`, `ngram-mod`, `ngram-cache` alongside
+  `draft-mtp` — stacking n-gram lookup onto MTP is untested here and plausible for agentic
+  traffic, but MTP already accepts 77-78% at depth, so the headroom is small and this build
+  has form for spec-decode settings that are not lossless in practice (see `n-max 3`).
+- **Two flag facts that circulating advice gets wrong.** `-ctxcp/--ctx-checkpoints`
+  **already defaults to 32** on this build — "raise it above the default of 8" is stale.
+  And **`-cms` is `--checkpoint-min-step` (default 8192 tokens), not `--cache-reuse`**; the
+  configs' `--cache-reuse 256` is an unrelated setting. The two get conflated constantly.
 - **`--fit` is a no-op for this stack — tested, rejected (2026-08-06).** It only adjusts
   arguments you left *unset*, and every config here sets `--n-gpu-layers`, `--n-cpu-moe`
   and `--ctx-size` explicitly. The loader says so outright:
@@ -758,6 +931,13 @@ be measured from the laptop — a blind bump risked OOM-ing its main model.
 
 The old rule was "values are the **minimum across both machines**". That is still the safe
 rule; this is a deliberate, temporary violation with a known consequence, not an oversight.
+
+**`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
+llama-server here is `--parallel 1`, and on `local-main` that is forced by MTP, so children
+serialize regardless of what this value says. It is not harmful — Hermes queues — but do
+not read it as evidence that three children run concurrently. See
+[Parallel subagents](#parallel-subagents--analysed-not-measured-2026-08-09) for what it
+would cost to make it true.
 - `auxiliary.<task>.{provider,model,base_url,api_key,timeout}` — `base_url` set explicitly
   on every one so they cannot silently fall back to openrouter.
 
@@ -861,6 +1041,12 @@ each rejection costs a full ~18s load.
   iGPU but the 8GB card cannot co-locate the large models — switching is an inherent
   ~15-30s swap.
 - **Deliberately not used:** `--mlock` (fights llama-swap's TTL load/unload).
+- **`healthCheckTimeout: 60` is too low — recommended, not yet landed (2026-08-09).** With
+  `--load-mode none` the 22.66 GB GGUF is read from disk with **no mmap on every load**, and
+  60s is not a safe budget for that on this laptop. If llama-swap kills a load mid-flight it
+  looks like a mystery failure under agentic churn. **300** is the safe value, for both
+  `llama-swap-nvidia.yaml` and `llama-swap-config.yaml`. Raise it before running any
+  benchmark sweep — it is a confound in every cold-load measurement.
 
 ## Benchmarking
 
