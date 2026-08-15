@@ -148,7 +148,7 @@ export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 | `llama-cpp.yml` | compose: llama-swap instances, LiteLLM, Open WebUI, postgres |
 | `llama-swap-nvidia.yaml` | laptop primary GPU |
 | `llama-swap-intel.yaml` | laptop secondary GPU (iGPU) |
-| `llama-swap-config.yaml` | desktop 7900 XTX |
+| `llama-swap-server.yml` | desktop 7900 XTX |
 | `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
 | `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
 | `litellm.env` | secrets (gitignored) |

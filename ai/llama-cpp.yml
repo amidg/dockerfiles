@@ -41,7 +41,7 @@ services:
     container_name: llama_swap_server
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - ./llama-swap-config.yaml:/app/config.yaml:z,ro
+      - ./llama-swap-server.yml:/app/config.yaml:z,ro
     ports:
       - 8080:8080
     environment:

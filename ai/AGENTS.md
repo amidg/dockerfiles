@@ -28,7 +28,7 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
-| `llama-swap-config.yaml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.6-27b`, `gemma-4-12b`, `gemma-4-26b`, `qwen3.6-35b`, `qwen3-coder-30b` |
+| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (parallel 2×128K), `qwen3.8-27b-mtp` (MTP, 256K) |
 
 Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
 llama-swap is on **8080** and Open WebUI on **3000**. Both machines run
@@ -923,8 +923,8 @@ Shared between both machines; names only aliases.
 | `local-tiny` | **65536** | its laptop target is `gemma-4-e2b` on the **iGPU**, which is 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU, so a bigger window is not worth buying here |
 
 **`local-main: 131072` currently exceeds the desktop (2026-08-06).** The desktop's
-`local-main` is `qwen3.6-27b` at `--ctx-size 65536`, so **Hermes on the desktop will hit
-`exceeds the available context size` on long sessions until `ai/llama-swap-config.yaml` is
+`local-main` is `qwen3.8-27b` at `--ctx-size 131072`, so **Hermes on the desktop will hit
+`exceeds the available context size` on long sessions until `ai/llama-swap-server.yml` is
 bumped and verified there.** The laptop was deliberately moved first; the desktop was left
 alone because it is fully GPU-resident with `q8_0` KV (2x the laptop's KV cost) and cannot
 be measured from the laptop — a blind bump risked OOM-ing its main model.
@@ -1045,7 +1045,7 @@ each rejection costs a full ~18s load.
   `--load-mode none` the 22.66 GB GGUF is read from disk with **no mmap on every load**, and
   60s is not a safe budget for that on this laptop. If llama-swap kills a load mid-flight it
   looks like a mystery failure under agentic churn. **300** is the safe value, for both
-  `llama-swap-nvidia.yaml` and `llama-swap-config.yaml`. Raise it before running any
+  `llama-swap-nvidia.yaml` and `llama-swap-server.yml`. Raise it before running any
   benchmark sweep — it is a confound in every cold-load measurement.
 
 ## Benchmarking
