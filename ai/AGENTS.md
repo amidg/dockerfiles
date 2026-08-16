@@ -34,7 +34,11 @@ device can run.
 
 Two entries: MTP 128K as default (`qwen3.8-27b`) for single-user depth, parallel 2×64K as
 alternative (`qwen3.8-27b-2users-64Kctx`) for concurrent two-user workloads.
-Quant: IQ4_XS. KV quant: `q4_0`. Harness uses `chat_template_kwargs: {"reasoning_effort": "low"}`.
+Quant: IQ4_XS. KV quant: `q4_0`. Harness uses `chat_template_kwargs: {"reasoning_effort": "low"}`. Reasoning efforts can be set per request and should be embedded into the agentic harnesses. Available levels are:
+- xhigh (default): for complex tasks demanding thorough analysis
+- medium: balancing accuracy and speed
+- low: efficient reasoning optimizing for speed and cost
+- none
 
 | model | prefill | decode | deep (6.5K) | deep (58K) | acc s/d | tools | quality |
 |---|---|---|---|---|---|---|---|
@@ -52,6 +56,8 @@ overflow mid-session (~12 turns on 64K vs ~24+ on 128K), which is the real UX bo
 **Thinking:** ON (368-482 reasoning chars). Approval FAIL at max_tokens=16 — reasoning
 consumes the budget. Harness workaround: `chat_template_kwargs: {"reasoning_effort": "low"}`
 reduces reasoning to ~83 chars for tool/quality tests.
+
+**Qwen 3.8 27B Settings**: Use the following link: https://unsloth.ai/docs/models/qwen3.8#qwen3.8-27b-settings. By default use thinking mode settings
 
 **Harness fixes (2026-08-15):** `parallel.py` read `completion_tokens` from `timings` but
 llama.cpp puts it in `usage`. Fixed `timings()` to merge `usage` fields. Replaced
