@@ -1,22 +1,7 @@
 healthCheckTimeout: 300
 
 models:
-  "qwen3.8-27b-iq4xs-par2-64k":
-    cmd: |
-      /app/llama-server \
-        --model /models/Qwen3.8-27B-IQ4_XS.gguf \
-        --mmproj /models/mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 65536 --parallel 2 --kv-unified \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --cache-reuse 256 \
-        --load-mode none \
-        --temp 0.7 --top-k 20 --top-p 0.80 --min-p 0.0 --presence-penalty 1.5
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 0
-
-  "qwen3.8-27b-iq4xs-mtp-128k":
+  "qwen3.8-27b":
     cmd: |
       /app/llama-server \
         --model /models/Qwen3.8-27B-IQ4_XS.gguf \
@@ -32,10 +17,10 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 0
 
-  "qwen3.8-27b-q4km-par2-64k":
+  "qwen3.8-27b-2users-64Kctx":
     cmd: |
       /app/llama-server \
-        --model /models/Qwen3.8-27B-Q4_K_M.gguf \
+        --model /models/Qwen3.8-27B-IQ4_XS.gguf \
         --mmproj /models/mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 2 --kv-unified \
@@ -43,22 +28,6 @@ models:
         --batch-size 2048 --ubatch-size 1024 \
         --cache-reuse 256 \
         --load-mode none \
-        --temp 0.7 --top-k 20 --top-p 0.80 --min-p 0.0 --presence-penalty 1.5
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 0
-
-  "qwen3.8-27b-q4km-mtp-128k":
-    cmd: |
-      /app/llama-server \
-        --model /models/Qwen3.8-27B-Q4_K_M.gguf \
-        --mmproj /models/mmproj-F16.gguf \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --cache-reuse 256 \
-        --load-mode none \
-        --spec-type draft-mtp --spec-draft-n-max 2 \
         --temp 0.7 --top-k 20 --top-p 0.80 --min-p 0.0 --presence-penalty 1.5
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 0
