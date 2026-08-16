@@ -1,5 +1,11 @@
 healthCheckTimeout: 300
 
+groups:
+  main:
+    models:
+      - qwen3.8-27b
+    swap: false
+
 models:
   "qwen3.8-27b":
     cmd: |
