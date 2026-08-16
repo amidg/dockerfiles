@@ -46,7 +46,7 @@ models:
         --mmproj /models/mmproj-F16.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
-        --flash-attn on --cache-type-k q6_0 --cache-type-v q5_0 \
+        --flash-attn on --cache-type-k q6_0 --cache-type-v q8_0 \
         --batch-size 2048 --ubatch-size 2048 \
         --cache-reuse 256 \
         --load-mode none \
