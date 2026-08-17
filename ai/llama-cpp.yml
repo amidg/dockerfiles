@@ -52,6 +52,7 @@ services:
     profiles:
       - vulkan_llama_cpp
       - vulkan_llama_cpp_server
+      - server
     extends:
       file: ../base.yml
       service: base_mesa_gpu
@@ -156,6 +157,14 @@ services:
       - laptop
     volumes:
       - ./litellm-config.laptop.yaml:/app/config.yaml:z,ro
+
+  litellm_server:
+    <<: *base_litellm
+    container_name: litellm_server
+    profiles:
+      - server
+    volumes:
+      - ./litellm-config.server.yaml:/app/config.yaml:z,ro
 
   #litellm_desktop:
   #  <<: *base_litellm

@@ -28,30 +28,41 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
-| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (MTP, 128K, **default**), `qwen3.8-27b-2users-64Kctx` (parallel 2×64K) |
+| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (MTP, 128K, **default**, Vulkan) |
 
 ### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
 
-Two entries: MTP 128K as default (`qwen3.8-27b`) for single-user depth, parallel 2×64K as
-alternative (`qwen3.8-27b-2users-64Kctx`) for concurrent two-user workloads.
-Quant: IQ4_XS. KV quant: `q4_0`. Harness uses `chat_template_kwargs: {"reasoning_effort": "low"}`. Reasoning efforts can be set per request and should be embedded into the agentic harnesses. Available levels are:
+MTP 128K, Vulkan backend on AMD RDNA3. Quant: IQ4_XS. KV quant: `q5_0`/`q4_1`. Harness
+uses `chat_template_kwargs: {"reasoning_effort": "low"}`. Reasoning efforts can be set per
+request and should be embedded into the agentic harnesses. Available levels are:
 - xhigh (default): for complex tasks demanding thorough analysis
 - medium: balancing accuracy and speed
 - low: efficient reasoning optimizing for speed and cost
 - none
 
-| model | prefill | decode | deep (6.5K) | deep (58K) | acc s/d | tools | quality |
-|---|---|---|---|---|---|---|---|
-| **MTP 128K** | 856 t/s | 56.1 t/s | 64.9 t/s | 48.8 t/s | 59%/84% | 4/4 | 4/4 |
-| **par2 64K** | 901 t/s | 36.7 t/s | 32.2 t/s | 19.5 t/s | — | — | — |
+| model | prefill | decode | deep | acc s/d | tools | quality |
+|---|---|---|---|---|---|---|
+| **qwen3.8-27b** (q5_0/q4_1, ub2048) | **743 t/s** | **52.0 t/s** | **63.9 t/s** | 51%/82% | 4/4 | 4/4 |
+| qwen3.8-27b (q5_0/q4_1, ub1024) | 731 t/s | 52.2 t/s | 62.8 t/s | 52%/80% | 4/4 | 4/4 |
+| qwen3.8-27b (q4_0/q4_0, ub1024) | 735 t/s | 52.3 t/s | 60.4 t/s | 51%/73% | 4/4 | 4/4 |
+| qwen3.8-27b (q4_0/q4_0, ub512) | 721 t/s | 51.0 t/s | 61.4 t/s | 48%/76% | 4/4 | 4/4 |
 
-Single-user: MTP wins on per-request throughput (2.02× deep, 2.50× @58K).
-Concurrent (conc=2 short): MTP 25.4 t/s, par2 27.5 t/s — nearly tied.
-Longctx (50K): MTP 612 t/s, par2 644 t/s — identical prefill at depth.
+**Decision: q5_0/q4_1 KV at ubatch 2048 as default.** Highest deep decode (63.9 t/s),
+highest acceptance at depth (82%), identical correctness to all variants. Longctx 50K at
+526 t/s / 95.1s (within noise of q4/q4).
 
-**Decision: MTP 128K as default.** Per-request speed is 2×, context window is 2×,
-and concurrent throughput is within 8% of parallel. The 128K window prevents context
-overflow mid-session (~12 turns on 64K vs ~24+ on 128K), which is the real UX bottleneck.
+**Decision: Vulkan backend for AMD RDNA3.** Benchmarked ROCm vs Vulkan on identical
+hardware (7900 XTX). ROCm wins prefill by ~16% (856 → 735 t/s) and longctx by ~12%, but
+Vulkan beats ROCm on deep decode (63.9 vs 61.7 t/s at ub512, 60.4 at ub1024), on
+acceptance at depth (82% vs 76-78%), and avoids the GTT fallback that killed `q8_0`/`q8_0`
+and `q4-ub2048` on ROCm. Deep decode is what an agent turn does — Vulkan is the right
+choice. ROCm ub512 remains the best ROCm config (no GTT fallback, stable) but Vulkan wins
+on the metric that matters for agentic workloads.
+
+**Decision: q8_0/q8_0 KV rejected.** Best deep at 65.8 t/s, highest acceptance at 86%,
+but prefill collapses to 23 t/s on rounds 2-3 (model reload between rounds). Likely a
+llama-server bug with q8_0 cache persistence across restarts. All correctness passes
+but the instability disqualifies it.
 
 **Thinking:** ON (368-482 reasoning chars). Approval FAIL at max_tokens=16 — reasoning
 consumes the budget. Harness workaround: `chat_template_kwargs: {"reasoning_effort": "low"}`
@@ -88,7 +99,7 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 | alias | laptop | desktop | use |
 |---|---|---|---|
 | `local-main` | `qwen3.6-35b` | `qwen3.8-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.8-27b` | images/PDFs — **no longer the dGPU model** |
+| `local-vision` | `gemma-4-e2b` (iGPU) | **same as laptop** | images/PDFs — **never the dGPU model** |
 | `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **same model as `local-vision`, so no swap between them** |
 | `local-embed` | **unwired** | **missing** | RAG embeddings, 1024-dim |
 
