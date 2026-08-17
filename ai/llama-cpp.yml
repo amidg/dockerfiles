@@ -57,7 +57,7 @@ services:
       file: ../base.yml
       service: base_mesa_gpu
     image: ghcr.io/mostlygeek/llama-swap:vulkan
-    container_name: llama_swap_vulkan
+    container_name: llama_swap_server
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
       - ./llama-swap-server.yml:/app/config.yaml:z,ro
