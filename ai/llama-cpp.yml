@@ -165,6 +165,8 @@ services:
       - server
     volumes:
       - ./litellm-config.server.yaml:/app/config.yaml:z,ro
+    ports:
+      - 4000:4000
 
   #litellm_desktop:
   #  <<: *base_litellm
