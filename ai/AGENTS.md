@@ -28,7 +28,7 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
-| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (MTP, 128K, **default**, Vulkan) |
+| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default**, MTP, 128K, Vulkan), `qwen3.8-27b-xhigh` (same config, **xhigh**) |
 
 ### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
 
@@ -39,6 +39,16 @@ request and should be embedded into the agentic harnesses. Available levels are:
 - medium: balancing accuracy and speed
 - low: efficient reasoning optimizing for speed and cost
 - none
+
+**Decision: two llama-swap instances — `qwen3.8-27b` at medium default and a sibling
+`qwen3.8-27b-xhigh` (2026-08-17).** Per-request `reasoning_effort` does not survive the
+gateway (`drop_params: true` drops it silently — see *Reasoning stays off* in the tiny-tier
+section), so the effort is embedded per instance via `--chat-template-kwargs`; a direct
+per-request `chat_template_kwargs` still overrides the baked default. One 24GB card cannot
+co-locate two ~16GB instances, so the old `groups: swap: false` pin was removed — pinned
+members are never evicted, which would have made the second instance unloadable (OOM). Both
+entries are `ttl: 0`: no idle unload, each stays resident until VRAM pressure forces a swap
+to the other variant (cost: one cold load, ~the usual swap time).
 
 | model | prefill | decode | deep | acc s/d | tools | quality |
 |---|---|---|---|---|---|---|
@@ -98,8 +108,8 @@ side differs. This is what lets one shared `~/.hermes/config.yaml` drive either 
 
 | alias | laptop | desktop | use |
 |---|---|---|---|
-| `local-main` | `qwen3.6-35b` | `qwen3.8-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `gemma-4-e2b` (iGPU) | **same as laptop** | images/PDFs — **never the dGPU model** |
+| `local-main` | `server-qwen38-27b` (remote, medium) | `qwen3.8-27b` | main agent, delegation, anything user-facing |
+| `local-vision` | `server-qwen38-27b` (remote) | **same as laptop** | images/PDFs — **projector model only** |
 | `local-tiny` | `gemma-4-e2b` (iGPU) | `gemma-4-12b` | background/fire-and-forget; **same model as `local-vision`, so no swap between them** |
 | `local-embed` | **unwired** | **missing** | RAG embeddings, 1024-dim |
 
@@ -114,15 +124,19 @@ fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-cont
 - **There is deliberately no `local-support`.** It existed, resolved to the same iGPU
   model as `local-tiny`, and had no consumer. Two names for one thing drift apart.
 - **`local-vision` must never fall back to a model without a projector.** A blind model
-  confidently describing an image is worse than a clean error. Its fallback is
-  **`gemma-4-26b`** on the dGPU, which carries one. It was `gemma-4-e4b` until that model
-  was removed (2026-08-06) — when deleting a vision model, **re-point this fallback in the
-  same change**, or the invariant breaks silently and only shows up on an image request.
+  confidently describing an image is worse than a clean error. Since 2026-08-17 the laptop
+  alias resolves to the remote `server-qwen38-27b` (projector) and its **only** fallback is
+  `gemma-4-e2b` (iGPU, resident, projector, `--reasoning off`) — operator decision; before
+  that the fallback was dGPU `gemma-4-26b`, and before that `gemma-4-e4b` until it was
+  removed (2026-08-06). When deleting a vision model, **re-point this fallback in the same
+  change**, or the invariant breaks silently and only shows up on an image request.
 - **Vision left the dGPU on 2026-08-06.** `local-vision` now resolves to `gemma-4-e2b` on
   the Arc iGPU. The dGPU tier runs `--no-mmproj`, which is what freed the headroom MTP and
   `ubatch 2048` need — at `--n-cpu-moe 31` **the MTP model OOMs outright** with a projector
   loaded. The dGPU now correctly *rejects* images rather than crashing on them, so the
-  "vision floor" below is no longer a live constraint on this tier.
+  "vision floor" below is no longer a live constraint on this tier. Since 2026-08-17 it
+  resolves to the remote `server-qwen38-27b` instead (see the invariant above) — the iGPU
+  model remains its fallback.
 
 ## Measured performance (laptop)
 
@@ -713,7 +727,8 @@ and that is where the iGPU is weakest. A second tier is not an obvious win eithe
 
 **`gemma-4-e2b` serves BOTH `local-tiny` and `local-vision`** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier;
-`local-vision` falls back to `gemma-4-26b` on the dGPU.
+since 2026-08-17 it is also the sole `local-vision` fallback (the alias itself resolves to
+the remote `server-qwen38-27b`; before that the fallback was `gemma-4-26b` on the dGPU).
 
 Validated 2026-08-06: **713 t/s prefill, 17.4 shallow, 14.4 deep**, `tools` 4/4,
 `quality` 4/4, thinking **off** (0 reasoning chars), **approval PASS**, vision `Red`,
@@ -964,6 +979,7 @@ Shared between both machines; names only aliases.
 | alias | pin | why |
 |---|---|---|
 | `local-main` | **131072** | matches the laptop dGPU default |
+| `local-vision` | **131072** | since 2026-08-17 its laptop target is the remote `server-qwen38-27b` (128K ctx). Its iGPU fallback `gemma-4-e2b` only has 64K — an overflow there is a clean rejection, not a blind description |
 | `local-tiny` | **65536** | its laptop target is `gemma-4-e2b` on the **iGPU**, which is 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU, so a bigger window is not worth buying here |
 
 **`local-main: 131072` matches the desktop (2026-08-15).** The desktop's `local-main` is
@@ -987,9 +1003,13 @@ Auxiliary tasks split on **critical path vs background**, not prompt size:
 
 | tier | tasks |
 |---|---|
-| `local-main` | `compression`, `mcp`, `skills_hub`, `triage_specifier`, `kanban_decomposer`, `goal_judge` |
+| `local-main` | `compression`, `web_extract`, `mcp`, `skills_hub`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge`, `approval`* |
 | `local-vision` | `vision` |
-| `local-tiny` | `title_generation`, `curator`, `profile_describer`, `monitor`, `tts_audio_tags`, `web_extract`, `approval`, `memory_query_rewrite` |
+| `local-tiny` | `title_generation`, `tts_audio_tags` |
+
+\*`approval` on `local-main` is a temporary operator override (2026-08-17, "until further
+notice") — see the note below. The rest of this table matches the live config exactly; an
+older revision had drifted.
 
 Anything the user waits on goes to `local-main` — it is faster *and* reuses the loaded
 model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
@@ -1010,8 +1030,11 @@ word. On a thinking model the whole budget goes to reasoning:
 | `local-main` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
 | `local-tiny` (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
 
-Smart approval was silently broken while it pointed at `local-main`. Do not move it back
-without raising `max_tokens` in upstream code. Caveat: `_smart_approve` would not fire from
+Smart approval was silently broken while it pointed at `local-main`, and **it is there again
+by operator decision (2026-08-17, "until further notice")** — a deliberate, documented
+regression: on the medium-effort thinking model, `max_tokens=16` can go entirely to
+reasoning and return empty content. Do not move it without raising `max_tokens` in upstream
+code (or an explicit operator reversal). Caveat: `_smart_approve` would not fire from
 a `hermes -z` one-shot even with a flagged command — verify interactively, watching
 `podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"`.
 
@@ -1042,6 +1065,11 @@ Two fixes, both required:
   Without it OpenCode never summarises. **A bigger window alone does not fix this** — it just
   moves the failure from step 12 to roughly step 22.
 
+**Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in
+`litellm-config.laptop.yaml` and `limit.output` in `opencode.json` are **32K (32768) for
+models with a 128K window, 16K (16384) for models with a 64K window**. Apply it to any new
+entry. The per-request cap Hermes sends is separate and currently unpinned.
+
 **Fallbacks cannot absorb a context overflow.** The same log shows LiteLLM failing over to
 `gemma-4-26b`, which was also 64K, and failing identically. Every local model shares one
 window by design, so a fallback list is the wrong tool for this failure.
@@ -1066,6 +1094,11 @@ each rejection costs a full ~18s load.
   desktop's entries pointing at an unreachable host; once the laptop gained its own
   `gemma-4-26b` that became a duplicate `model_name` and LiteLLM would have load-balanced
   across a live and a dead endpoint.
+- **`qwen3.8-27b-xhigh` reaches the gateway only once the deployed desktop LiteLLM exposes
+  it (2026-08-17).** The repo's `litellm-config.desktop.yaml` is deliberately untouched —
+  the deployed desktop config is managed out-of-band and already drifts from this file.
+  Until that entry exists, a request for `server-qwen38-27b-xhigh` from the laptop fails over
+  to its declared chain; nothing routes there by default.
 
 ## Operational gotchas
 

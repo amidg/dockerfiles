@@ -1,4 +1,22 @@
 model_list:
+  - model_name: server-qwen38-27b
+    litellm_params:
+      model: openai/server-qwen38-27b
+      api_base: https://chat.gusev.tech/v1
+      api_key: os.environ/SERVER_API_KEY
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
+  - model_name: server-qwen38-27b-xhigh
+    litellm_params:
+      model: openai/qwen3.8-27b-xhigh
+      api_base: https://chat.gusev.tech/v1
+      api_key: os.environ/SERVER_API_KEY
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
   - model_name: qwen3.6-35b
     litellm_params:
       model: openai/qwen3.6-35b
@@ -6,7 +24,7 @@ model_list:
       api_key: sk-no-key-required
     model_info:
       max_input_tokens: 131072
-      max_output_tokens: 8192
+      max_output_tokens: 32768
 
   - model_name: gemma-4-26b
     litellm_params:
@@ -15,7 +33,7 @@ model_list:
       api_key: sk-no-key-required
     model_info:
       max_input_tokens: 131072
-      max_output_tokens: 8192
+      max_output_tokens: 32768
 
   - model_name: qwen3.5-2b
     litellm_params:
@@ -24,7 +42,7 @@ model_list:
       api_key: sk-no-key-required
     model_info:
       max_input_tokens: 65536
-      max_output_tokens: 8192
+      max_output_tokens: 16384
 
   - model_name: gemma-4-e2b
     litellm_params:
@@ -33,12 +51,12 @@ model_list:
       api_key: sk-no-key-required
     model_info:
       max_input_tokens: 65536
-      max_output_tokens: 8192
+      max_output_tokens: 16384
 
 router_settings:
   model_group_alias:
-    local-main: qwen3.6-35b
-    local-vision: gemma-4-e2b
+    local-main: server-qwen38-27b
+    local-vision: server-qwen38-27b
     local-tiny: gemma-4-e2b
 
 litellm_settings:
@@ -51,9 +69,10 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   fallbacks:
-    - local-main: ["gemma-4-26b"]
-    - local-vision: ["gemma-4-26b"]
+    - local-main: ["qwen3.6-35b", "gemma-4-26b"]
+    - local-vision: ["gemma-4-e2b"]
     - local-tiny: ["qwen3.5-2b"]
+    - server-qwen38-27b-xhigh: ["qwen3.6-35b", "gemma-4-26b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
