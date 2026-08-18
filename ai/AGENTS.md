@@ -1065,10 +1065,11 @@ Two fixes, both required:
   Without it OpenCode never summarises. **A bigger window alone does not fix this** — it just
   moves the failure from step 12 to roughly step 22.
 
-**Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in
-`litellm-config.laptop.yaml` and `limit.output` in `opencode.json` are **32K (32768) for
-models with a 128K window, 16K (16384) for models with a 64K window**. Apply it to any new
-entry. The per-request cap Hermes sends is separate and currently unpinned.
+**Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
+LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
+`limit.output` in `opencode.json` are **32K (32768) for models with a 128K window, 16K
+(16384) for models with a 64K window**. Apply it to any new entry. The per-request cap
+Hermes sends is separate and currently unpinned.
 
 **Fallbacks cannot absorb a context overflow.** The same log shows LiteLLM failing over to
 `gemma-4-26b`, which was also 64K, and failing identically. Every local model shares one
@@ -1094,11 +1095,13 @@ each rejection costs a full ~18s load.
   desktop's entries pointing at an unreachable host; once the laptop gained its own
   `gemma-4-26b` that became a duplicate `model_name` and LiteLLM would have load-balanced
   across a live and a dead endpoint.
-- **`qwen3.8-27b-xhigh` reaches the gateway only once the deployed desktop LiteLLM exposes
-  it (2026-08-17).** The repo's `litellm-config.desktop.yaml` is deliberately untouched —
-  the deployed desktop config is managed out-of-band and already drifts from this file.
-  Until that entry exists, a request for `server-qwen38-27b-xhigh` from the laptop fails over
-  to its declared chain; nothing routes there by default.
+- **The server-side LiteLLM is in-repo and live — edit it here (2026-08-17).**
+  `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
+  chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server` and
+  exposes both qwen3.8 variants (`qwen3.8-27b` / `qwen3.8-27b-xhigh`) plus the aliases
+  `server-qwen38-27b` / `-xhigh`, which is what the laptop's remote entries resolve through.
+  `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out in
+  `llama-cpp.yml`; do not edit it.
 
 ## Operational gotchas
 

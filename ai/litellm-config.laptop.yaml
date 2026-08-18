@@ -10,7 +10,7 @@ model_list:
 
   - model_name: server-qwen38-27b-xhigh
     litellm_params:
-      model: openai/qwen3.8-27b-xhigh
+      model: openai/server-qwen38-27b-xhigh
       api_base: https://chat.gusev.tech/v1
       api_key: os.environ/SERVER_API_KEY
     model_info:
