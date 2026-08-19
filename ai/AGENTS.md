@@ -48,7 +48,7 @@ per-request `chat_template_kwargs` still overrides the baked default. One 24GB c
 co-locate two ~16GB instances, so the old `groups: swap: false` pin was removed — pinned
 members are never evicted, which would have made the second instance unloadable (OOM). Both
 entries are `ttl: 0`: no idle unload, each stays resident until VRAM pressure forces a swap
-to the other variant (cost: one cold load, ~the usual swap time). A `qwen3.6-35b` (MTP + vision, `--n-cpu-moe 15`) entry joined this same box on 2026-08-18; with three ~16GB Qwen plus a 22.66GB MoE sharing one 24GB card, at most one model is resident at a time, so any cross-model switch costs a full cold load.
+to the other variant (cost: one cold load, ~the usual swap time). A `qwen3.6-35b` (MTP + vision, **no `--n-cpu-moe`**) entry joined this same box on 2026-08-18; with three ~16GB Qwen plus a 22.66GB MoE sharing one 24GB card, at most one model is resident at a time, so any cross-model switch costs a full cold load. It shipped at `--n-cpu-moe 15`, then 5 — see the section below for why both were wrong.
 
 | model | prefill | decode | deep | acc s/d | tools | quality |
 |---|---|---|---|---|---|---|
@@ -99,6 +99,88 @@ port via the `base_llama_swap` anchor, which made them mutually exclusive. `cont
 Request flow: agents → LiteLLM (`:4000`) → llama-swap (`:8081`/`:8082`) → a `llama-server`
 subprocess per model. GGUFs live in `${LLAMA_MODELS_DIR:-~/.llama/models}`, mounted at
 `/models` (this laptop: `/mnt/data/llama/models`).
+
+### Qwen3.6-35B-A3B on 7900 XTX 24GB — promoted config (2026-08-18)
+
+**Decision: no `--n-cpu-moe` at all, `--ubatch-size 1024`, and the Qwen3.6 sampler.**
+`53.0 → 177.6 t/s deep, a 3.35x gain`, from two independent flag mistakes that were both
+inherited rather than measured on this box.
+
+| config | prefill | shallow | **deep** | acc s/d |
+|---|---|---|---|---|
+| as-shipped (`-ncmoe 5`, ub2048, 3.8-27B sampler) | 2265 t/s | 43.4 | **53.0** | 57%/75% |
+| `-ncmoe 5`, ub1024 | 1989 t/s | 44.2 | **54.1** | 53%/76% |
+| `-ncmoe 3`, ub1024 | 2177 t/s | 59.6 | **66.7** | 59%/75% |
+| `-ncmoe 1`, ub1024 | 2488 t/s | 82.1 | **89.4** | 53%/72% |
+| **no `-ncmoe`**, ub1024 | 2094 t/s | 142.7 | **150.4** | 60%/73% |
+| **promoted: no `-ncmoe`, ub1024, `--temp 0.7`, no penalties** | **2078 t/s** | **157.3** | **177.6** | **58%/80%** |
+
+**`--n-cpu-moe` is catastrophic on this box, and the laptop's rule inverts.** The laptop
+tier buys VRAM headroom with N because there N is nearly free; here **every single expert
+layer left on the CPU costs ~2.4-4.5 ms per token**, against a 6.65 ms total token budget
+when all 40 are on the card. One layer costs ~40%. Even `N=1` gives up 41% of decode.
+
+The cost is **per layer, not per byte** — `--ubatch-size 2048 → 1024` at fixed `N=5`
+changed nothing (53.0 → 54.1), so this is not the compute buffer and not bandwidth. It is
+the GPU→CPU→GPU round trip that every CPU-resident expert layer forces on every token,
+multiplied by MTP verifying 2-3 tokens per step. Diagnosis before the sweep: **3.33 GiB of
+VRAM sat free while 2.14 GiB of experts sat in GTT** (`mem_info_gtt_used`) — the card had
+room for all of them and was not being given them.
+
+**Why the laptop's tuning does not transfer.** The desktop is a Ryzen 7 5800X on
+dual-channel DDR4 (~45-50 GB/s); the laptop is LPDDR5x at roughly twice that. A
+CPU-resident expert layer is therefore ~2x more expensive here — and the card is 24GB, so
+unlike the 8GB laptop it never had to pay. `--n-cpu-moe` on this box is a pure loss with
+no compensating benefit. **Do not copy N between tiers.**
+
+**The sampler is the second lever, worth +18%, and the numbers below are still being
+attributed.** Changing `--temp 1.0` + `--presence-penalty 1.5` to `--temp 0.7` with no
+penalties moved **deep acceptance 73% → 80% and deep decode 150.4 → 177.6**. That variant
+changed *two* things at once, so the split between temperature and penalty is unresolved —
+a dedicated sweep is running.
+
+**The Unsloth Qwen3.6 recommendation** (https://unsloth.ai/docs/models/qwen3.6), which is
+the authority here and was **not** what either the shipped or the first promoted config
+used:
+
+| mode | temp | top_p | top_k | min_p | presence | repeat |
+|---|---|---|---|---|---|---|
+| thinking, general | **1.0** | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
+| thinking, precise coding | **0.6** | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
+| instruct (non-thinking) | 0.7 | **0.8** | 20 | 0.0 | **1.5** | 1.0 |
+
+The shipped entry was the *thinking* row with the *instruct* row's `presence_penalty 1.5`
+spliced in — the rows are not mix-and-match. The `--temp 0.7 --top-p 0.95` pair that
+replaced it matches neither row (0.7 is the instruct temperature, 0.95 the thinking
+top_p); it was inherited from `llama-swap-nvidia.yaml`, not from any Qwen3.6 source.
+**On an MTP config the sampler is a speed setting, not only a quality one**, so it has to
+be both correct *and* measured — take the value from the model's own page, then verify
+acceptance.
+
+**Rejected, measured:** `--threads 8` (150.8 vs 150.7 — with no CPU expert work, threads
+are irrelevant on this tier; the laptop's thread sweep does not apply either) and
+`q8_0/q8_0` KV (150.2, acceptance 72% — buys nothing and costs VRAM; KV is already cheap
+on this hybrid).
+
+**MTP still earns its place, but for a different reason than on the laptop.** Control with
+`--spec-type` removed: **113.5 deep vs 150.7, a 1.33x gain** — squarely in the 1.17-1.40x
+band the community reports for a *fully GPU-resident* A3B, versus 1.53x when the experts
+were CPU-bound. The prefill trade the upstream PR predicted also finally appears here:
+**no-MTP prefill is 2890 t/s vs 2080** (-28%), because the baseline is no longer gated by
+the CPU expert gather. Both numbers move exactly as *Why the published MoE numbers
+understate this machine badly* predicts — that section describes the laptop's regime, and
+this box is now in the other one.
+
+**Gate:** `tools` 4/4, `quality` 3/4 (identical to the incumbent — the known `terse_title`
+budget case), `vision` yes. Vision was additionally checked with a **real 1280x1280 image**,
+not just `llmbench`'s 1x1 PNG: 1623 prompt tokens, reads the word, `finish: stop`. The 1x1
+PNG proves the projector loads and almost nothing about the encoder's compute buffer — at
+`N=0` this config has less headroom than the one the vision floor was measured on.
+
+**Not yet measured:** `--load-mode none` was promoted on the laptop because *experts were
+CPU-resident* and mmap indirection sat on the expert-gather path. No expert is CPU-resident
+here, so that rationale no longer applies and plain mmap may cost nothing while making
+llama-swap's cold loads cheaper. Untested — do not assume either way.
 
 ## The alias contract
 

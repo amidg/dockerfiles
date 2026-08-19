@@ -14,8 +14,8 @@ export LLAMA_MODELS_DIR=/mnt/data/llama/models     # where the GGUFs live
 # laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
 
-# desktop: 7900 XTX
-podman-compose -f ai/llama-cpp.yml --profile amd_llama_cpp up -d
+# desktop: 7900 XTX (Vulkan + its own LiteLLM)
+podman-compose -f ai/llama-cpp.yml --profile server up -d
 ```
 
 LiteLLM needs ~30-60s. Poll before sending traffic:
@@ -175,6 +175,16 @@ took 4m32s once; the `intel_sycl_cache` volume prevents a repeat).
 **Answers text fine but dies on images.** The dGPU tier runs `--no-mmproj` by design —
 vision lives on the iGPU as `local-vision` → `gemma-4-e2b`. A dGPU model rejecting an image
 is correct behaviour, not a fault.
+
+**A single-model `llmbench` run reports nonsense prefill on rounds 2+.** The prompt is
+byte-identical every round, so it hits the server-side prompt cache, `prompt_n` collapses
+to ~4 tokens and `prefill_tps` becomes noise (round 1 is the only valid one). Always pass
+**two or more** `--models` — alternating flushes the cache. This has looked like a
+performance regression twice.
+
+**Never copy `--n-cpu-moe` between the laptop and the desktop.** On the 8GB laptop it is
+nearly free; on the 24GB desktop *every* CPU-resident expert layer costs ~40% of decode.
+The desktop runs no `--n-cpu-moe` at all — see `AGENTS.md`.
 
 **Out of VRAM on the dGPU.** Drop `--ubatch-size` (2048 → 1024) *before* raising
 `--n-cpu-moe`. With MTP, N costs ~7% of decode per 4 layers while prefill has 3x of margin.
