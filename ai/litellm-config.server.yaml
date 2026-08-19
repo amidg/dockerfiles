@@ -17,10 +17,30 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
+  - model_name: qwen3.8-27b-low
+    litellm_params:
+      model: openai/qwen3.8-27b-low
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
+  - model_name: qwen3.6-35b
+    litellm_params:
+      model: openai/qwen3.6-35b
+      api_base: http://llama_swap_server:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
 router_settings:
   model_group_alias:
     server-qwen38-27b: qwen3.8-27b
     server-qwen38-27b-xhigh: qwen3.8-27b-xhigh
+    server-qwen38-27b-low: qwen3.8-27b-low
+    server-qwen36-35b: qwen3.6-35b
 
 litellm_settings:
   drop_params: true

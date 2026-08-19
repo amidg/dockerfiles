@@ -28,7 +28,7 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
-| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default**, MTP, 128K, Vulkan), `qwen3.8-27b-xhigh` (same config, **xhigh**) |
+| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default**, MTP, 128K, Vulkan), `qwen3.8-27b-xhigh` / `qwen3.8-27b-low` (same config, that effort), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
 ### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
 
@@ -40,15 +40,15 @@ request and should be embedded into the agentic harnesses. Available levels are:
 - low: efficient reasoning optimizing for speed and cost
 - none
 
-**Decision: two llama-swap instances — `qwen3.8-27b` at medium default and a sibling
-`qwen3.8-27b-xhigh` (2026-08-17).** Per-request `reasoning_effort` does not survive the
+**Decision: three llama-swap siblings — `qwen3.8-27b` (medium default), `qwen3.8-27b-xhigh`, and
+`qwen3.8-27b-low` (identical config, only the baked `reasoning_effort` differs; 2026-08-18).** Per-request `reasoning_effort` does not survive the
 gateway (`drop_params: true` drops it silently — see *Reasoning stays off* in the tiny-tier
 section), so the effort is embedded per instance via `--chat-template-kwargs`; a direct
 per-request `chat_template_kwargs` still overrides the baked default. One 24GB card cannot
 co-locate two ~16GB instances, so the old `groups: swap: false` pin was removed — pinned
 members are never evicted, which would have made the second instance unloadable (OOM). Both
 entries are `ttl: 0`: no idle unload, each stays resident until VRAM pressure forces a swap
-to the other variant (cost: one cold load, ~the usual swap time).
+to the other variant (cost: one cold load, ~the usual swap time). A `qwen3.6-35b` (MTP + vision, `--n-cpu-moe 15`) entry joined this same box on 2026-08-18; with three ~16GB Qwen plus a 22.66GB MoE sharing one 24GB card, at most one model is resident at a time, so any cross-model switch costs a full cold load.
 
 | model | prefill | decode | deep | acc s/d | tools | quality |
 |---|---|---|---|---|---|---|
@@ -1098,8 +1098,9 @@ each rejection costs a full ~18s load.
 - **The server-side LiteLLM is in-repo and live — edit it here (2026-08-17).**
   `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
   chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server` and
-  exposes both qwen3.8 variants (`qwen3.8-27b` / `qwen3.8-27b-xhigh`) plus the aliases
-  `server-qwen38-27b` / `-xhigh`, which is what the laptop's remote entries resolve through.
+   exposes all three qwen3.8 effort variants (`qwen3.8-27b` / `-xhigh` / `-low`) plus
+   `qwen3.6-35b`, and the aliases `server-qwen38-27b` / `-xhigh` / `-low` /
+   `server-qwen36-35b`, which is what the laptop's remote entries resolve through.
   `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out in
   `llama-cpp.yml`; do not edit it.
 
