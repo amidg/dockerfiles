@@ -102,18 +102,21 @@ subprocess per model. GGUFs live in `${LLAMA_MODELS_DIR:-~/.llama/models}`, moun
 
 ### Qwen3.6-35B-A3B on 7900 XTX 24GB — promoted config (2026-08-18)
 
-**Decision: no `--n-cpu-moe` at all, `--ubatch-size 1024`, and the Qwen3.6 sampler.**
-`53.0 → 177.6 t/s deep, a 3.35x gain`, from two independent flag mistakes that were both
-inherited rather than measured on this box.
+**Decision: no `--n-cpu-moe` at all, `--ubatch-size 1024`, and the Qwen3.6 thinking-mode
+*precise-coding* sampler — `--temp 0.6`, no presence penalty.** `53.0 → 177.6 t/s deep, a
+3.35x gain`. Three changes, and **only two of them were performance fixes**: dropping
+`--n-cpu-moe` (2.84x) and dropping `--presence-penalty 1.5` (1.18x). The temperature move
+`1.0 → 0.6` is a **quality** decision for this box's coding workload and costs nothing
+measurable — do not cite it as a speed change.
 
 | config | prefill | shallow | **deep** | acc s/d |
 |---|---|---|---|---|
-| as-shipped (`-ncmoe 5`, ub2048, 3.8-27B sampler) | 2265 t/s | 43.4 | **53.0** | 57%/75% |
+| as-shipped (`-ncmoe 5`, ub2048, `-presence-penalty 1.5`) | 2265 t/s | 43.4 | **53.0** | 57%/75% |
 | `-ncmoe 5`, ub1024 | 1989 t/s | 44.2 | **54.1** | 53%/76% |
 | `-ncmoe 3`, ub1024 | 2177 t/s | 59.6 | **66.7** | 59%/75% |
 | `-ncmoe 1`, ub1024 | 2488 t/s | 82.1 | **89.4** | 53%/72% |
 | **no `-ncmoe`**, ub1024 | 2094 t/s | 142.7 | **150.4** | 60%/73% |
-| **promoted: no `-ncmoe`, ub1024, `--temp 0.7`, no penalties** | **2078 t/s** | **157.3** | **177.6** | **58%/80%** |
+| **promoted: no `-ncmoe`, ub1024, `--temp 0.6`, no penalties** | **2115 t/s** | **163.2** | **177.6** | **63%/80%** |
 
 **`--n-cpu-moe` is catastrophic on this box, and the laptop's rule inverts.** The laptop
 tier buys VRAM headroom with N because there N is nearly free; here **every single expert
@@ -133,29 +136,64 @@ CPU-resident expert layer is therefore ~2x more expensive here — and the card 
 unlike the 8GB laptop it never had to pay. `--n-cpu-moe` on this box is a pure loss with
 no compensating benefit. **Do not copy N between tiers.**
 
-**The sampler is the second lever, worth +18%, and the numbers below are still being
-attributed.** Changing `--temp 1.0` + `--presence-penalty 1.5` to `--temp 0.7` with no
-penalties moved **deep acceptance 73% → 80% and deep decode 150.4 → 177.6**. That variant
-changed *two* things at once, so the split between temperature and penalty is unresolved —
-a dedicated sweep is running.
+**`--presence-penalty 1.5` costs 15% of deep decode. Temperature is free.** The shipped
+entry carried the *instruct* row's presence penalty inside an otherwise *thinking*-row
+sampler. Isolated at `N=0`/ub1024, one axis at a time:
 
-**The Unsloth Qwen3.6 recommendation** (https://unsloth.ai/docs/models/qwen3.6), which is
-the authority here and was **not** what either the shipped or the first promoted config
-used:
+| sampler | deep | accept s/d |
+|---|---|---|
+| `--temp 1.0 --presence-penalty 1.5` (as shipped) | 150.4 | 57%/**73%** |
+| `--temp 1.0 --presence-penalty 0.0` | 177.7 | 61%/**80%** |
+| `--temp 0.7 --presence-penalty 0.0` | 177.6 | 63%/80% |
+| **`--temp 0.6 --presence-penalty 0.0`** (promoted) | **177.6** | 63%/**80%** |
+
+**The whole gain is the penalty; temperature does nothing at all** — 177.6/177.7/177.6 and
+a flat 80% acceptance across 1.0, 0.7 and 0.6. The mechanism is specific to speculative
+decoding: a presence penalty is a context-dependent, position-varying shift on logits the
+MTP draft head does not model, so its proposals get rejected (**80% → 73%**). Temperature
+scales logits monotonically and leaves the verification ordering intact. An earlier
+revision of this section blamed temperature as well — that was wrong, and it was wrong
+because the first sweep moved temperature and the penalty together.
+
+**Consequence: on an MTP config a penalty is a speed setting; temperature is not.** Pick
+temperature on quality grounds alone, and note that `llmbench` cannot help — `t_quality`
+and `t_longctx` pass `temperature=0` explicitly (`llmbench.py:347,365`), overriding the
+server sampler, so this harness measures the sampler's effect on speed and acceptance and
+**never on quality**.
+
+**The Unsloth Qwen3.6 recommendation** (https://unsloth.ai/docs/models/qwen3.6) is the
+authority, and neither the shipped config nor the first promoted attempt matched it:
 
 | mode | temp | top_p | top_k | min_p | presence | repeat |
 |---|---|---|---|---|---|---|
-| thinking, general | **1.0** | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
-| thinking, precise coding | **0.6** | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
+| thinking, general | 1.0 | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
+| **thinking, precise coding (promoted)** | **0.6** | 0.95 | 20 | 0.0 | **0.0** | 1.0 |
 | instruct (non-thinking) | 0.7 | **0.8** | 20 | 0.0 | **1.5** | 1.0 |
 
-The shipped entry was the *thinking* row with the *instruct* row's `presence_penalty 1.5`
-spliced in — the rows are not mix-and-match. The `--temp 0.7 --top-p 0.95` pair that
-replaced it matches neither row (0.7 is the instruct temperature, 0.95 the thinking
-top_p); it was inherited from `llama-swap-nvidia.yaml`, not from any Qwen3.6 source.
-**On an MTP config the sampler is a speed setting, not only a quality one**, so it has to
-be both correct *and* measured — take the value from the model's own page, then verify
-acceptance.
+**The rows are not mix-and-match** — that splice is exactly what cost 15%. A first attempt
+promoted `--temp 0.7 --top-p 0.95`, which matches neither row (0.7 is the instruct
+temperature, 0.95 the thinking top_p); it came from `llama-swap-nvidia.yaml`, not from any
+Qwen3.6 source. `--presence-penalty 0.0 --repeat-penalty 1.0` are written explicitly even
+though they are llama.cpp defaults: in a comment-free config that is the only record that
+their absence is deliberate.
+
+**The precise-coding row is the promoted default** because this box serves coding agents,
+and the choice is free: 0.6, 0.7 and 1.0 all measure 177.6-177.7 deep at 80% acceptance.
+Moving to the general row is a **temperature-only edit** with no throughput consequence, so
+decide it on output quality, not on this table. Note that `llmbench` cannot settle that
+either — see the `temperature=0` caveat above.
+
+**The penalty finding is corroborated independently in this file.** The tiny tier already
+records *"`presence_penalty` 1.5-2.0 (Unsloth's recommendation) destabilises short factual
+output"* — a 2B answered "17 times 4" as 56 at pp 1.5, and 68 at pp 0. That was a
+correctness observation on a different tier; this is the same parameter costing **15% of
+throughput and 7 points of draft acceptance** on an MTP config. `presence_penalty 1.5`
+has now hurt this stack twice, on two axes, on two tiers.
+
+**Unchecked, same shape:** all three `qwen3.8-27b` entries carry `--temp 1.0 ...
+--presence-penalty 1.5`. If the Qwen3.8 page splits thinking/instruct the same way, they
+have the same splice and the same ~15% on the table. Not verified — that is a different
+model with a different page, and it needs its own sweep before anyone touches it.
 
 **Rejected, measured:** `--threads 8` (150.8 vs 150.7 — with no CPU expert work, threads
 are irrelevant on this tier; the laptop's thread sweep does not apply either) and
@@ -166,13 +204,14 @@ on this hybrid).
 `--spec-type` removed: **113.5 deep vs 150.7, a 1.33x gain** — squarely in the 1.17-1.40x
 band the community reports for a *fully GPU-resident* A3B, versus 1.53x when the experts
 were CPU-bound. The prefill trade the upstream PR predicted also finally appears here:
-**no-MTP prefill is 2890 t/s vs 2080** (-28%), because the baseline is no longer gated by
-the CPU expert gather. Both numbers move exactly as *Why the published MoE numbers
+**MTP now costs 28% of prefill** (2890 t/s without it, 2080 with), because the baseline is
+no longer gated by the CPU expert gather. Both numbers move exactly as *Why the published MoE numbers
 understate this machine badly* predicts — that section describes the laptop's regime, and
 this box is now in the other one.
 
-**Gate:** `tools` 4/4, `quality` 3/4 (identical to the incumbent — the known `terse_title`
-budget case), `vision` yes. Vision was additionally checked with a **real 1280x1280 image**,
+**Gate** (run on the exact promoted flag set, alternating against `qwen3.8-27b`):
+`tools` 4/4, `quality` 3/4 (identical to the incumbent — the known `terse_title` budget
+case), `vision` yes. Vision was additionally checked with a **real 1280x1280 image**,
 not just `llmbench`'s 1x1 PNG: 1623 prompt tokens, reads the word, `finish: stop`. The 1x1
 PNG proves the projector loads and almost nothing about the encoder's compute buffer — at
 `N=0` this config has less headroom than the one the vision floor was measured on.
@@ -259,6 +298,10 @@ and does nothing on dense models.
 |---|---|---|---|---|
 | `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **35** |
 | `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
+
+**The `N` column is the 8GB laptop's value and belongs to this section only.** On the
+24GB desktop the same model runs **no `--n-cpu-moe` at all** — every layer left on the CPU
+there costs ~40% of decode. See *Qwen3.6-35B-A3B on 7900 XTX 24GB*.
 
 ### N is nearly free WITHOUT MTP and expensive WITH it — do not confuse the two
 
@@ -1242,8 +1285,8 @@ LiteLLM is on 4000 on both machines, and going through aliases is the better tes
 ./smoke.py --quick            # just show what is loaded where (no generation)
 
 ./llmbench.py --models qwen3.6-35b gemma-4-26b --tests perf --rounds 3
-./llmbench.py --models qwen3.6-35b --tests all          # before promoting a config
-./llmbench.py --models local-main --fail-on-regression  # CI gate
+./llmbench.py --models qwen3.6-35b qwen3.8-27b --tests all   # before promoting a config
+./llmbench.py --models local-main --fail-on-regression       # CI gate
 ```
 
 `smoke.py` is the gate after any change to this repo. It replays the exact `max_tokens=16`
