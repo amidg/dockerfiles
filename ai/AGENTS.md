@@ -67,6 +67,28 @@ Two consequences worth knowing:
 The old `groups: swap: false` pin stays removed (pinned members are never evicted, which
 would have made a second instance unloadable). The entry remains `ttl: 0`.
 
+**Measured through both LiteLLM hops (2026-08-24, n=3 per level, one hard reasoning
+prompt, `max_tokens=4096`).** Model runs at `--temp 1.0`, so single samples are noise —
+these are means:
+
+| effort | reasoning chars | completion tokens |
+|---|---|---|
+| `none` | **0** | answers directly in `content` |
+| `low` | 1535 | 860 |
+| `medium` | 1615 | 1165 |
+| `xhigh` | **12226** | 3551 (2 of 3 hit the 4096 cap) |
+
+**The ladder is not linear — it is flat-ish then a cliff.** `low`→`medium` is ~5%
+reasoning; `medium`→`xhigh` is ~7.6x. Budget for `xhigh` accordingly: it will hit a
+4096-token cap on a hard prompt. On an *easy* prompt all three of `low`/`medium`/`xhigh`
+collapse to ~310-380 reasoning chars — effort is a ceiling, not a floor, so do not
+benchmark it on trivial questions (an earlier run did exactly that and looked like the
+param was being ignored).
+
+`chat_template_kwargs: {"reasoning_effort": ...}` measures the same as the top-level field
+(`low`: 1680 vs 1535 chars, within noise) — both land on the same template variable, as the
+precedence code above implies. Prefer the top-level field: Hermes can only send that one.
+
 A `qwen3.6-35b` (MTP + vision, **no `--n-cpu-moe`**) entry joined this same box on
 2026-08-18. One ~16GB Qwen3.8 plus a 22.66GB MoE still exceeds one 24GB card, so at most
 one model is resident and a **cross-model** switch costs a full cold load — that cost is
@@ -1267,14 +1289,60 @@ Two fixes, both required:
   Without it OpenCode never summarises. **A bigger window alone does not fix this** — it just
   moves the failure from step 12 to roughly step 22.
 
-**OpenCode sets reasoning effort via model/agent `options` (2026-08-24).**
-`provider.custom.models.<id>.options` is passed as `providerOptions["custom"]`, and
-`@ai-sdk/openai-compatible` spreads keys it doesn't recognise straight into the request
-body — so `"options": {"reasoning_effort": "xhigh"}` lands as a top-level field.
-`agent.<name>.options` overrides it per agent, which is what replaced the old
-`-xhigh`/`-low` model entries. The provider id must not contain a dot: the SDK derives its
-providerOptions key with `provider.split(".")[0]`, so a dotted id silently drops every
-option (anomalyco/opencode#23622). `custom` is fine.
+**OpenCode sets reasoning effort via model/agent `options` — the key is
+`reasoningEffort`, camelCase (2026-08-24).** `provider.custom.models.<id>.options` and
+`agent.<name>.options` both work; the AI SDK translates `reasoningEffort` into the
+top-level `reasoning_effort` body field.
+
+**Snake_case is silently dropped.** `"options": {"reasoning_effort": "medium"}` produces
+a request with no effort field at all — no error, no warning, and the model just runs at
+the server default. Verified on 1.18.21 by proxying opencode through a logging forwarder:
+`reasoning_effort` → absent, `reasoningEffort` → `"reasoning_effort":"medium"` on the wire.
+Neither `models.<id>.request.body` nor a provider-level `options.extraBody` reaches the
+body either — `options.reasoningEffort` is the only shape that works.
+
+Agent-level overrides the model-level default, which is what replaced the old
+`-xhigh`/`-low` model entries: `agent.plan.options.reasoningEffort: xhigh`,
+`agent.build.options.reasoningEffort: medium`, model default `medium`. A `plan` turn
+sends two requests — `xhigh` for the turn itself and `medium` for the secondary
+title/summary call, which uses the model-level value. That is expected, not a bug.
+
+The provider id must not contain a dot: the SDK derives its providerOptions key with
+`provider.split(".")[0]`, so a dotted id silently drops every option
+(anomalyco/opencode#23622). `custom` is fine.
+
+**Ctrl-T cycles effort through model `variants` (2026-08-24).** `variant_cycle` is bound to
+`ctrl+t` ("Cycle model variants") by default. `server-qwen38-27b` defines three:
+
+```json
+"variants": {
+  "low":    { "reasoningEffort": "low"    },
+  "medium": { "reasoningEffort": "medium" },
+  "xhigh":  { "reasoningEffort": "xhigh"  }
+}
+```
+
+A variant object **is** an options bag, and it is merged **last**:
+`base → model.options → agent.options → variants[selected]`. So a variant always wins over
+both the model default and the agent override — no need to strip the agent settings.
+
+Cycle order is `Object.keys(variants)` then back to unset: **unset → low → medium → xhigh →
+unset**. Unset is not "no effort" — it falls through to `model.options.reasoningEffort`
+(`medium`), so `medium` appears twice in the cycle. Harmless; renaming or dropping the
+`medium` variant removes the duplicate if it annoys. A variant named `default` is treated
+specially by the picker (filtered from labels) — don't use that name.
+
+Variants also appear in the model picker as `custom/server-qwen38-27b/<variant>`, but
+**`opencode run -m` does not accept that suffix** — it fails with `UnknownError` /
+`err_db0207f2`. Variant selection is TUI-only; for headless runs use `--agent` (or an agent
+with both `model` and `variant` set, though that combination hung in testing and is not
+recommended).
+
+**Small models are deliberately absent from `opencode.json` (2026-08-24).** `gemma-4-e2b`
+and `qwen3.5-2b` were removed from the opencode picker only — they remain live in
+`llama-swap-intel.yaml`, in `litellm-config.laptop.yaml`, and behind `local-tiny` for
+Hermes' `title_generation` / `tts_audio_tags`. Do not "tidy up" the iGPU tier to match
+opencode; the two are intentionally different.
 
 **Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
 LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
@@ -1326,6 +1394,15 @@ each rejection costs a full ~18s load.
   every request, so the drop there is load-bearing.
 
 ## Operational gotchas
+
+- **Intermittent `400 Invalid model name passed in model=<name>\x00\x00...` (2026-08-24).**
+  Twice in ~20 requests, an otherwise-valid call to `server-qwen38-27b` came back from the
+  desktop with the model name null-padded. Retrying the identical request succeeds
+  immediately. Looks like an unterminated buffer upstream (llama.cpp `b10603-c060ca974` or
+  llama-swap), not a config fault — the same name works on either side of the failure. It
+  is not effort-related: it hit a plain `reasoning_effort: none` call and a
+  `chat_template_kwargs` call. **Clients must retry**; LiteLLM's `num_retries: 3` does not
+  cover it because a 400 is not a retryable status. Watch whether it grows.
 
 - **Editing a bind-mounted file replaces its inode**, so the container keeps serving the
   old one. `podman-compose up -d` is a no-op (nothing in the compose file changed) and
