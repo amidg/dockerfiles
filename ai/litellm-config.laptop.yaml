@@ -4,24 +4,7 @@ model_list:
       model: openai/server-qwen38-27b
       api_base: https://chat.gusev.tech/v1
       api_key: os.environ/SERVER_API_KEY
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
-  - model_name: server-qwen38-27b-xhigh
-    litellm_params:
-      model: openai/server-qwen38-27b-xhigh
-      api_base: https://chat.gusev.tech/v1
-      api_key: os.environ/SERVER_API_KEY
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
-  - model_name: server-qwen38-27b-low
-    litellm_params:
-      model: openai/server-qwen38-27b-low
-      api_base: https://chat.gusev.tech/v1
-      api_key: os.environ/SERVER_API_KEY
+      allowed_openai_params: ["reasoning_effort"]
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
@@ -31,6 +14,7 @@ model_list:
       model: openai/server-qwen36-35b
       api_base: https://chat.gusev.tech/v1
       api_key: os.environ/SERVER_API_KEY
+      allowed_openai_params: ["reasoning_effort"]
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
@@ -40,6 +24,7 @@ model_list:
       model: openai/qwen3.6-35b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
+      allowed_openai_params: ["reasoning_effort"]
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
@@ -90,7 +75,6 @@ litellm_settings:
     - local-main: ["qwen3.6-35b", "gemma-4-26b"]
     - local-vision: ["gemma-4-e2b"]
     - local-tiny: ["qwen3.5-2b"]
-    - server-qwen38-27b-xhigh: ["qwen3.6-35b", "gemma-4-26b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

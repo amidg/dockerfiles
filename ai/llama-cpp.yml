@@ -182,6 +182,7 @@ services:
       #- amd_llama_cpp
       - nvidia_llama_cpp
       - laptop
+      - server
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     env_file:

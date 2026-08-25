@@ -28,7 +28,7 @@ device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (`local-tiny` fallback) |
-| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default**, MTP, 128K, Vulkan), `qwen3.8-27b-xhigh` / `qwen3.8-27b-low` (same config, that effort), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
+| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
 ### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
 
@@ -40,15 +40,39 @@ request and should be embedded into the agentic harnesses. Available levels are:
 - low: efficient reasoning optimizing for speed and cost
 - none
 
-**Decision: three llama-swap siblings — `qwen3.8-27b` (medium default), `qwen3.8-27b-xhigh`, and
-`qwen3.8-27b-low` (identical config, only the baked `reasoning_effort` differs; 2026-08-18).** Per-request `reasoning_effort` does not survive the
-gateway (`drop_params: true` drops it silently — see *Reasoning stays off* in the tiny-tier
-section), so the effort is embedded per instance via `--chat-template-kwargs`; a direct
-per-request `chat_template_kwargs` still overrides the baked default. One 24GB card cannot
-co-locate two ~16GB instances, so the old `groups: swap: false` pin was removed — pinned
-members are never evicted, which would have made the second instance unloadable (OOM). Both
-entries are `ttl: 0`: no idle unload, each stays resident until VRAM pressure forces a swap
-to the other variant (cost: one cold load, ~the usual swap time). A `qwen3.6-35b` (MTP + vision, **no `--n-cpu-moe`**) entry joined this same box on 2026-08-18; with three ~16GB Qwen plus a 22.66GB MoE sharing one 24GB card, at most one model is resident at a time, so any cross-model switch costs a full cold load. It shipped at `--n-cpu-moe 15`, then 5 — see the section below for why both were wrong.
+**Decision: one llama-swap entry, effort chosen per request (2026-08-24).** Supersedes the
+three-sibling layout (`qwen3.8-27b` / `-xhigh` / `-low`, 2026-08-18), which existed only
+because per-request `reasoning_effort` was being dropped by the gateway. It wasn't a
+LiteLLM limitation — it was a missing `allowed_openai_params` (see [LiteLLM](#litellm)).
+With the param flowing, three identical instances buy nothing and cost a lot: one 24GB card
+cannot co-locate two ~16GB instances, so **every effort switch was a full cold load**. Now
+it is a request field.
+
+`--chat-template-kwargs '{"reasoning_effort":"medium"}'` **stays** on the single entry — it
+is the Unsloth-documented way to set Qwen3.8's effort and is the correct *default* for
+clients that send nothing (Open WebUI). llama.cpp resolves effort in a fixed order
+(`tools/server/server-common.cpp`): server `--chat-template-kwargs` → request
+`chat_template_kwargs` → **request top-level `reasoning_effort`, applied last and winning
+over both**. So the baked default and per-request override are complementary, not rivals.
+
+Two consequences worth knowing:
+- **`reasoning_effort: "none"` sets `enable_thinking = false`** outright and erases the
+  kwarg — a genuine per-request off switch, and specifically *not* the
+  `--reasoning-budget 0` failure mode documented below.
+- **Stay inside `xhigh | medium | low | none`.** llama.cpp's CLI also accepts
+  `minimal`/`high`/`max`, but Qwen3.8's template defines only the three levels; anything
+  else is off-vocabulary. Hermes' ladder (`VALID_REASONING_EFFORTS`) is wider than this —
+  don't use the extra levels here.
+
+The old `groups: swap: false` pin stays removed (pinned members are never evicted, which
+would have made a second instance unloadable). The entry remains `ttl: 0`.
+
+A `qwen3.6-35b` (MTP + vision, **no `--n-cpu-moe`**) entry joined this same box on
+2026-08-18. One ~16GB Qwen3.8 plus a 22.66GB MoE still exceeds one 24GB card, so at most
+one model is resident and a **cross-model** switch costs a full cold load — that cost is
+unavoidable and is exactly what collapsing the effort siblings removed from the
+*within*-model case. It shipped at `--n-cpu-moe 15`, then 5 — see the section below for
+why both were wrong.
 
 | model | prefill | decode | deep | acc s/d | tools | quality |
 |---|---|---|---|---|---|---|
@@ -258,6 +282,31 @@ fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-cont
   "vision floor" below is no longer a live constraint on this tier. Since 2026-08-17 it
   resolves to the remote `server-qwen38-27b` instead (see the invariant above) — the iGPU
   model remains its fallback.
+
+## Bifrost — evaluated and rejected (2026-08-24)
+
+Migrated the gateway to Bifrost (`maximhq/bifrost`), ran it on `:4000` for a day, then
+reverted. The motivation was per-request `reasoning_effort`, which LiteLLM was dropping
+(see [LiteLLM](#litellm)). **Bifrost cannot carry that param for these models**, which
+removed the only reason to switch:
+
+- `reasoning_effort` is a *known* field: Bifrost parses it into
+  `ChatParameters.Reasoning.Effort` and rewrites it in `normalizeOpenAIReasoningEffort()`
+  (`core/providers/openai/utils.go`). `xhigh` is honoured **only for GPT-5.x** and
+  downgraded to `high` for everything else (maximhq/bifrost#4460). Qwen3.8's template
+  defines `xhigh`/`medium`/`low` and **not** `high`, so the downgrade lands off-vocabulary.
+- `x-bf-passthrough-extra-params: true` does **not** rescue it. Passthrough applies to
+  unknown extra params; a known field is normalized regardless. Routing the effort through
+  `chat_template_kwargs` instead does survive, but only opencode can send that shape —
+  Hermes' main turn emits the top-level field and has no `extra_body` hook (only
+  auxiliary tasks do), so half the fleet would still be broken.
+
+Secondary deltas, all survivable, none worth the above: no config-level cross-tier
+`fallbacks:` (only per-request `"fallbacks": [...]`), no per-key spend tracking, and
+`/v1/models` may not advertise token limits.
+
+**Do not re-attempt without first checking whether `normalizeOpenAIReasoningEffort()`
+still rewrites non-GPT-5 efforts.** That single function is the whole blocker.
 
 ## Measured performance (laptop)
 
@@ -970,10 +1019,13 @@ tier**, with `gemma-4-e4b` as its fallback. Both carry projectors.
    only — the model still reasons and the trace lands in `content`, so titles come back as
    `"Thinking Process:\n\n1. **Analyze the conversation**..."`. It measured *worse* than
    leaving thinking on.
-2. **Per-request `reasoning_effort` does not survive LiteLLM.** Sent straight to
-   llama-server it works (108 tokens, zero reasoning); through the gateway it is
-   **silently dropped** by `drop_params: true` (310 tokens, full reasoning, no warning).
-   Reasoning must be off at the *server*.
+2. **Per-request `reasoning_effort` was being dropped by LiteLLM — fixed 2026-08-24.**
+   Sent straight to llama-server it works (108 tokens, zero reasoning); through the
+   gateway it was **silently dropped** by `drop_params: true` (310 tokens, full reasoning,
+   no warning). The cause was a missing `allowed_openai_params: ["reasoning_effort"]`, not
+   a LiteLLM limitation — see [LiteLLM](#litellm). On *this* tier reasoning is still off at
+   the server and the allowlist is deliberately **not** applied (see that section for why),
+   so the conclusion below is unchanged for `local-tiny`.
 3. **Unsloth's docs are wrong** about the Qwen3.5 Small series defaulting to reasoning off.
 4. **`presence_penalty` 1.5-2.0 (Unsloth's recommendation) destabilises short factual
    output.** At temp 0.7 + pp 1.5 a 2B answered "17 times 4" as **56**; at temp 0, 68.
@@ -986,20 +1038,25 @@ spends the whole budget reasoning and returns empty.
 Caveat: `--reasoning off` removes reasoning waste, not verbosity. A vague prompt still
 rambles to the cap; a well-specified one ("Reply with ONLY the title") answers in ~8 tokens.
 
-**Re-proposed for the dGPU on 2026-08-09 and rejected on the evidence above.** The pitch:
-subagent work (grep, read a file, decide yes/no) does not need a reasoning trace, so run a
-second llama-swap entry at `--reasoning-budget 0`, or have Hermes pass it per-request.
-Both halves are already disproven here — **point 1** (budget 0 measured *worse* than
-thinking on) and **point 2** (per-request reasoning params silently dropped by LiteLLM's
-`drop_params: true`). The underlying goal is sound; that mechanism is not.
+**Re-proposed for the dGPU on 2026-08-09, rejected then, and now viable (2026-08-24).**
+The pitch: subagent work (grep, read a file, decide yes/no) does not need a reasoning
+trace, so let the child run without one. Both original mechanisms were bad — a second
+llama-swap entry at `--reasoning-budget 0` (**point 1**: measured *worse* than thinking
+on, trace leaks into `content`), or per-request params (**point 2**: silently dropped by
+LiteLLM). Point 2 is now fixed by `allowed_openai_params` (see [LiteLLM](#litellm)), and
+the right mechanism turns out to be neither of those: **top-level `reasoning_effort:
+"none"`**, which llama.cpp handles by setting `enable_thinking = false` and erasing the
+template kwarg (`tools/server/server-common.cpp`) — a real off switch with none of
+`--reasoning-budget 0`'s leakage.
 
-The untested alternative is **`--chat-template-kwargs '{"enable_thinking":false}'`**, which
-is a genuinely different mechanism — it stops the template opening a think block at all
-rather than suppressing tag *parsing*. Live `/slots` confirms the current template
-force-opens one: `"generation_prompt": "<|im_start|>assistant\n<think>\n"`. **Its cost is
-the problem:** a second llama-swap entry means a full **22.66 GB no-mmap reload** on every
-orchestrator↔subagent switch, almost certainly dearer than the thinking tokens it saves.
-Only viable if children route to a different *tier*, not a different entry on the same one.
+Crucially it costs **nothing**: same model, same instance, no swap. The old blocker was
+that any "different reasoning config" meant a second llama-swap entry and a full
+**22.66 GB no-mmap reload** on every orchestrator↔subagent switch. A request field has no
+such cost. This is what `auxiliary.approval.reasoning_effort: none` now exploits — see
+[Hermes wiring](#hermes-wiring-hermesconfigyaml).
+
+`--chat-template-kwargs '{"enable_thinking":false}'` remains an untested alternative and
+is no longer worth testing: it needs a second entry, and the request field does not.
 
 ## Embeddings
 
@@ -1124,6 +1181,24 @@ would cost to make it true.
 - `auxiliary.<task>.{provider,model,base_url,api_key,timeout}` — `base_url` set explicitly
   on every one so they cannot silently fall back to openrouter.
 
+**Reasoning effort is a Hermes-side knob (2026-08-24).** Hermes' bundled `custom` provider
+profile (`plugins/model-providers/custom/__init__.py`) emits **top-level
+`reasoning_effort`** on every request to a `provider: custom` endpoint — it always has, and
+the gateway was dropping it. Now that it lands, the live settings are:
+
+| key | value | why |
+|---|---|---|
+| `agent.reasoning_effort` | `medium` | floor for anything without an override |
+| `agent.reasoning_overrides.local-main` | `xhigh` | main turn gets the deep tier |
+| `auxiliary.approval.reasoning_effort` | `none` | `max_tokens=16` must not go to reasoning |
+| `auxiliary.title_generation.reasoning_effort` | `none` | one-line output, no trace needed |
+| `auxiliary.compression.reasoning_effort` | `low` | on the critical path, mid-turn |
+
+`agent.reasoning_effort` is documented upstream as "OpenRouter and Nous Portal" — that
+comment is stale for `provider: custom`, which routes through the profile above instead.
+Levels are limited to `xhigh`/`medium`/`low`/`none` by Qwen3.8's template even though
+Hermes' `VALID_REASONING_EFFORTS` accepts `minimal`/`high`/`max`/`ultra` too.
+
 Auxiliary tasks split on **critical path vs background**, not prompt size:
 
 | tier | tasks |
@@ -1132,9 +1207,9 @@ Auxiliary tasks split on **critical path vs background**, not prompt size:
 | `local-vision` | `vision` |
 | `local-tiny` | `title_generation`, `tts_audio_tags` |
 
-\*`approval` on `local-main` is a temporary operator override (2026-08-17, "until further
-notice") — see the note below. The rest of this table matches the live config exactly; an
-older revision had drifted.
+\*`approval` on `local-main` is now permanent (2026-08-24) — it is pinned to
+`reasoning_effort: none` per request, which is what made it safe. See the note below. The
+rest of this table matches the live config exactly; an older revision had drifted.
 
 Anything the user waits on goes to `local-main` — it is faster *and* reuses the loaded
 model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
@@ -1155,12 +1230,14 @@ word. On a thinking model the whole budget goes to reasoning:
 | `local-main` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
 | `local-tiny` (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
 
-Smart approval was silently broken while it pointed at `local-main`, and **it is there again
-by operator decision (2026-08-17, "until further notice")** — a deliberate, documented
-regression: on the medium-effort thinking model, `max_tokens=16` can go entirely to
-reasoning and return empty content. Do not move it without raising `max_tokens` in upstream
-code (or an explicit operator reversal). Caveat: `_smart_approve` would not fire from
-a `hermes -z` one-shot even with a flagged command — verify interactively, watching
+Smart approval was silently broken while it pointed at `local-main`, then kept there by
+operator decision (2026-08-17). **Resolved 2026-08-24 without moving the task:**
+`auxiliary.approval.reasoning_effort: none` makes the request itself non-thinking
+(`enable_thinking = false` at llama-server), so `max_tokens=16` is spent on the answer.
+`local-main` may now stay as the approval tier. The old rule — *never point `approval` at
+a thinking model* — is superseded by *never point it at a thinking **request***; the
+tier no longer matters, the effort does. Caveat unchanged: `_smart_approve` would not fire
+from a `hermes -z` one-shot even with a flagged command — verify interactively, watching
 `podman logs llama_swap_intel | grep -c "POST /v1/chat/completions"`.
 
 **`memory_query_rewrite` almost certainly never fires** — only external memory providers
@@ -1189,6 +1266,15 @@ Two fixes, both required:
 - **`~/.config/opencode/opencode.json` now sets `limit.context` / `limit.output`** per model.
   Without it OpenCode never summarises. **A bigger window alone does not fix this** — it just
   moves the failure from step 12 to roughly step 22.
+
+**OpenCode sets reasoning effort via model/agent `options` (2026-08-24).**
+`provider.custom.models.<id>.options` is passed as `providerOptions["custom"]`, and
+`@ai-sdk/openai-compatible` spreads keys it doesn't recognise straight into the request
+body — so `"options": {"reasoning_effort": "xhigh"}` lands as a top-level field.
+`agent.<name>.options` overrides it per agent, which is what replaced the old
+`-xhigh`/`-low` model entries. The provider id must not contain a dot: the SDK derives its
+providerOptions key with `provider.split(".")[0]`, so a dotted id silently drops every
+option (anomalyco/opencode#23622). `custom` is fine.
 
 **Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
 LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
@@ -1222,12 +1308,22 @@ each rejection costs a full ~18s load.
   across a live and a dead endpoint.
 - **The server-side LiteLLM is in-repo and live — edit it here (2026-08-17).**
   `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
-  chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server` and
-   exposes all three qwen3.8 effort variants (`qwen3.8-27b` / `-xhigh` / `-low`) plus
-   `qwen3.6-35b`, and the aliases `server-qwen38-27b` / `-xhigh` / `-low` /
-   `server-qwen36-35b`, which is what the laptop's remote entries resolve through.
-  `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out in
-  `llama-cpp.yml`; do not edit it.
+  chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server`
+  and exposes `qwen3.8-27b` and `qwen3.6-35b` plus the aliases `server-qwen38-27b` /
+  `server-qwen36-35b`, which is what the laptop's remote entries resolve through.
+  `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out
+  in `llama-cpp.yml`; do not edit it.
+- **`reasoning_effort` needs `allowed_openai_params` — `drop_params: true` eats it
+  otherwise (2026-08-24).** For an unrecognised `openai/*` model LiteLLM raises
+  `UnsupportedParamsError`, and `drop_params: true` converts that into a **silent** drop:
+  no warning, no log line, just a full-reasoning response. Adding
+  `allowed_openai_params: ["reasoning_effort"]` to a model's `litellm_params` forwards it
+  verbatim — LiteLLM does no normalization on the value, so `xhigh` survives (unlike
+  Bifrost). **Both hops must allowlist it**: a laptop request to `server-qwen38-27b`
+  crosses the laptop's LiteLLM *and* the desktop's, and either one dropping it loses the
+  param. Deliberately **not** applied to `gemma-4-e2b`/`qwen3.5-2b` — those run
+  `--reasoning off` as a correctness requirement, and Hermes sends `reasoning_effort` on
+  every request, so the drop there is load-bearing.
 
 ## Operational gotchas
 
