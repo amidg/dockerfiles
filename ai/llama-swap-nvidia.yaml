@@ -1,4 +1,4 @@
-healthCheckTimeout: 60
+healthCheckTimeout: 300
 
 models:
   "qwen3.6-35b":
@@ -31,6 +31,22 @@ models:
         --cache-reuse 256 \
         --spec-type draft-mtp --spec-draft-n-max 2 \
         --load-mode none \
+        --temp 1.0 --top-k 64 --top-p 0.95
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
+
+  "gemma-4-e4b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \
+        --mmproj /models/gemma-4-e4b-qat-mmproj-F16.gguf \
+        --model-draft /models/mtp-gemma-4-E4B-it.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
+        --batch-size 2048 --ubatch-size 2048 \
+        --cache-reuse 256 \
+        --spec-type draft-mtp --spec-draft-n-max 2 \
         --temp 1.0 --top-k 64 --top-p 0.95
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600

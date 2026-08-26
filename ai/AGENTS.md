@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `qwen3.5-2b` (fallback) |
 | `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
@@ -275,10 +275,18 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 |---|---|---|
 | `server-qwen38-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
 | `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 128K) | fallback, local-only work |
+| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV) | small model, vision, background |
 | `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
 
 - **`gemma-4-26b` has no alias; requesting it evicts the loaded model (~15-30s)** since only one
   fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-context entry.
+- **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
+  projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
+  MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
+  Smaller KV cache types (q5_1) caused memory spill to system RAM and halved decode speed.
+  Full benchmark pending.
+- **`gemma-4-e4b` MTP head** is `mtp-gemma-4-E4B-it.gguf` (95 MB) — separate file like the
+  26B, not bundled in the GGUF. `embedding_length_out` must match the target's `n_embd`.
 - **`server-qwen38-27b` is the only vision model on the main tier.** It carries a projector.
   `gemma-4-e2b` is its fallback — also has a projector. A blind model confidently
   describing an image is worse than a clean error. When deleting a vision model,
@@ -324,6 +332,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
+| RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3275 t/s** | **110-112 t/s** | ~7432 MiB |
 | Arc iGPU | `gemma-4-e2b` | **713 t/s** | **14.4 t/s** (17.4 shallow) | ~3.5 GB RAM |
 | Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale, pre-2026-08-06)* | 1.34 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
@@ -340,6 +349,20 @@ re-measured on the *unchanged* config it was 29.3 deep / 33.5 shallow. The old n
 a hand-measured deep figure from before `bench/` existed and was never comparable to
 anything since — it triggered an entire optimisation effort against a problem that did not
 exist. Rows marked *stale* above may have the same defect.
+
+### Gemma 4 E4B QAT — fastest decode on 8GB (2026-08-25)
+
+The QAT variant (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`, 4.0 GB) with its own projector
+(`gemma-4-e4b-qat-mmproj-F16.gguf`) and `q8_0` KV cache: **7432 MiB total VRAM**, MTP
+51%/70% acceptance at **110-112 t/s decode**, **3275 t/s prefill**. Nearly 2x qwen3.6-35b
+decode despite being ~1/80th the size — dense model, no CPU expert gather penalty, and
+the RTX 5070's bandwidth is fully utilized. Smaller KV cache types (q5_1) caused memory
+spill to system RAM and halved decode speed; `q8_0` stays entirely in VRAM. Full
+`llmbench.py --tests all` benchmark pending.
+
+**Benchmark note:** when testing a single model, `llmbench.py` rounds 2-3 report ~100 t/s
+prefill — this is a prompt cache hit artifact, not real prefill. Always test with ≥2
+models so the alternation flushes the cache and every round measures cold prefill.
 
 ## Running 26B/35B models on an 8GB card
 
@@ -675,6 +698,7 @@ llama-swap spawns the subprocess on demand.
 | qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` |
 | gemma-4-26b | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
 | gemma-4-12b | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
+| gemma-4-e4b | — | `gemma-4-e4b-qat-mmproj-F16.gguf` (qat), `gemma-4-e4b-mmproj-F16.gguf` (non-qat) |
 
 Adding one: read the GGUF `*.embedding_length`, then fetch `mmproj-F16.gguf` from *that
 exact model's* Unsloth repo. Never reuse another size's projector.
