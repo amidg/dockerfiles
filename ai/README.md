@@ -74,7 +74,7 @@ Hardcoding a model name works but breaks on the other machine.
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
+| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `qwen3.5-9b` (MTP, 64K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (fallback) | background chores + vision |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
@@ -88,6 +88,9 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
 - **A 35B runs on an 8GB card** via `--n-cpu-moe`, which keeps Mixture-of-Experts weights
   (~90% of the file) in system RAM while attention and KV stay on the GPU.
   `qwen3.6-35b` → **991 t/s prefill, 46.3 t/s decode, 128K context, ~7275 MiB**.
+- **A dense 9B runs MTP at 64K** — `qwen3.5-9b` → **1936 t/s prefill, 57.3 t/s decode,
+  66.8 t/s deep, 7580 MiB**, 84% draft acceptance at depth. 64K context fits with MTP;
+  128K does not (VRAM ceiling). 52% faster deep than qwen3.6-35b, 4/4 tools, 4/4 quality.
 - **128K is the default**, validated on a real 118,018-token prompt. Buy context headroom by
   lowering `--ubatch-size`, never by raising `--n-cpu-moe`: at 96K the two routes were
   measured head to head and ubatch cost **zero** decode while N cost 2.3%.

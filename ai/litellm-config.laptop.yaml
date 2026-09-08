@@ -39,6 +39,16 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
+  - model_name: qwen3.5-9b
+    litellm_params:
+      model: openai/qwen3.5-9b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+      allowed_openai_params: ["reasoning_effort"]
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
   - model_name: gemma-4-26b
     litellm_params:
       model: openai/gemma-4-26b
@@ -92,7 +102,8 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   fallbacks:
-    - server-qwen38-27b: ["qwen3.6-35b", "gemma-4-26b"]
+    - server-qwen38-27b: ["qwen3.6-35b", "qwen3.5-9b", "gemma-4-e4b"]
+    - qwen3.6-35b: ["qwen3.5-9b", "gemma-4-e4b"]
     - gemma-4-e2b: ["qwen3.5-2b"]
 
 general_settings:
