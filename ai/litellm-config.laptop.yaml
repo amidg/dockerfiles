@@ -101,10 +101,10 @@ litellm_settings:
     admin_only: true
   database_type: postgres
   request_timeout: 600
-  fallbacks:
-    - server-qwen38-27b: ["qwen3.6-35b", "qwen3.5-9b", "gemma-4-e4b"]
-    - qwen3.6-35b: ["qwen3.5-9b", "gemma-4-e4b"]
-    - gemma-4-e2b: ["qwen3.5-2b"]
+  #fallbacks:
+  #  - server-qwen38-27b: ["qwen3.6-35b", "qwen3.5-9b", "gemma-4-e4b"]
+  #  - qwen3.6-35b: ["qwen3.5-9b", "gemma-4-e4b"]
+  #  - gemma-4-e2b: ["qwen3.5-2b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
