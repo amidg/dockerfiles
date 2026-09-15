@@ -4,3 +4,6 @@
 
 # keys
 *.env
+
+# tools
+.opencode
