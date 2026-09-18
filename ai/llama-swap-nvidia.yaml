@@ -1,7 +1,7 @@
 healthCheckTimeout: 300
 
 models:
-  "qwen36-35b":
+  "qwen3.6-35b":
     cmd: |
       /app/llama-server \
         --model /models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf \
@@ -18,7 +18,7 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
-  "qwen35-9b":
+  "qwen3.5-9b":
     cmd: |
       /app/llama-server \
         --model /models/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-MTP-IQ4_XS.gguf \

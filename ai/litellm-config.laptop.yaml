@@ -1,7 +1,7 @@
 model_list:
-  - model_name: server-qwen38-27b
+  - model_name: server-qwen3.8-27b
     litellm_params:
-      model: openai/qwen38-27b
+      model: openai/qwen3.8-27b
       api_base: https://api.gusev.tech/v1
       api_key: os.environ/SERVER_API_KEY
       allowed_openai_params: ["reasoning_effort"]
@@ -14,9 +14,9 @@ model_list:
       allowed_fails_policy:
         TimeoutErrorAllowedFails: 0
 
-  - model_name: server-qwen36-35b
+  - model_name: server-qwen3.6-35b
     litellm_params:
-      model: openai/qwen36-35b
+      model: openai/qwen3.6-35b
       api_base: https://api.gusev.tech/v1
       api_key: os.environ/SERVER_API_KEY
       allowed_openai_params: ["reasoning_effort"]
@@ -29,9 +29,9 @@ model_list:
       allowed_fails_policy:
         TimeoutErrorAllowedFails: 0
 
-  - model_name: qwen36-35b
+  - model_name: qwen3.6-35b
     litellm_params:
-      model: openai/qwen36-35b
+      model: openai/qwen3.6-35b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]
@@ -39,9 +39,9 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
-  - model_name: qwen35-9b
+  - model_name: qwen3.5-9b
     litellm_params:
-      model: openai/qwen35-9b
+      model: openai/qwen3.5-9b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]
@@ -67,9 +67,9 @@ model_list:
   #    max_input_tokens: 131072
   #    max_output_tokens: 32768
 
-  - model_name: gemma4-e2b
+  - model_name: gemma-4-e2b
     litellm_params:
-      model: openai/gemma4-e2b
+      model: openai/gemma-4-e2b
       api_base: http://llama_swap_intel:8080/v1
       api_key: sk-no-key-required
     model_info:
