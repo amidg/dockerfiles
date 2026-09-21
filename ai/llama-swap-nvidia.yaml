@@ -1,6 +1,7 @@
 healthCheckTimeout: 300
 
 models:
+  # no vision
   "qwen3.6-35b":
     cmd: |
       /app/llama-server \
@@ -18,52 +19,34 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
-  "qwen3.5-9b":
+  "ornith-1.5-9b":
     cmd: |
       /app/llama-server \
-        --model /models/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-MTP-IQ4_XS.gguf \
-        --no-mmproj \
+        --model /models/Ornith-1.5-9B-MTP-NVFP4.gguf \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --ctx-size 65536 --parallel 1 \
         --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 1024 --ubatch-size 1024 \
+        --batch-size 2048 --ubatch-size 2048 \
         --cache-reuse 256 \
         --spec-type draft-mtp --spec-draft-n-max 2 \
         --load-mode none \
-        --threads 6 --cpu-range 0-5 --cpu-strict 1 \
-        --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
+        --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 1.5
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
-  #"gemma-4-26b":
-  #  cmd: |
-  #    /app/llama-server \
-  #      --model /models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
-  #      --mmproj /models/gemma-4-26b-mmproj-F16.gguf \
-  #      --model-draft /models/mtp-gemma-4-26B-A4B-it-Q8_0.gguf \
-  #      --host 127.0.0.1 --port ${PORT} \
-  #      --n-gpu-layers 99 --n-cpu-moe 30 --ctx-size 131072 --parallel 1 \
-  #      --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-  #      --batch-size 2048 --ubatch-size 1024 \
-  #      --cache-reuse 256 \
-  #      --spec-type draft-mtp --spec-draft-n-max 2 \
-  #      --load-mode none \
-  #      --temp 1.0 --top-k 64 --top-p 0.95
-  #  proxy: "http://127.0.0.1:${PORT}"
-  #  ttl: 600
-
-  #"gemma-4-e4b":
-  #  cmd: |
-  #    /app/llama-server \
-  #      --model /models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \
-  #      --mmproj /models/gemma-4-e4b-qat-mmproj-F16.gguf \
-  #      --model-draft /models/mtp-gemma-4-E4B-it.gguf \
-  #      --host 127.0.0.1 --port ${PORT} \
-  #      --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
-  #      --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
-  #      --batch-size 2048 --ubatch-size 2048 \
-  #      --cache-reuse 256 \
-  #      --spec-type draft-mtp --spec-draft-n-max 2 \
-  #      --temp 1.0 --top-k 64 --top-p 0.95
-  #  proxy: "http://127.0.0.1:${PORT}"
-  #  ttl: 600
+  # vision enabled here
+  "gemma-4-e4b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \
+        --mmproj /models/gemma-4-e4b-qat-mmproj-F16.gguf \
+        --model-draft /models/mtp-gemma-4-E4B-it.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 131072 --parallel 1 \
+        --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
+        --batch-size 2048 --ubatch-size 2048 \
+        --cache-reuse 256 \
+        --spec-type draft-mtp --spec-draft-n-max 2 \
+        --temp 1.0 --top-k 64 --top-p 0.95
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
