@@ -75,7 +75,7 @@ Hardcoding a model name works but breaks on the other machine.
 | device | port | models | role |
 |---|---|---|---|
 | RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `qwen3.5-9b` (MTP, 64K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
-| Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `qwen3.5-2b` (fallback) | background chores + vision |
+| Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `embeddinggemma-2` (embeddings) | background chores + vision + embeddings |
 | Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
 
 Only **one** dGPU model is resident at a time. `gemma-4-26b` has no alias — request it by

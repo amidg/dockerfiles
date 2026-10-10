@@ -27,7 +27,7 @@ device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `qwen3.5-2b` (fallback) |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
 | `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
 ### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
@@ -277,6 +277,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 128K) | fallback, local-only work |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV) | small model, vision, background |
 | `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
+| `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 
 - **`gemma-4-26b` has no alias; requesting it evicts the loaded model (~15-30s)** since only one
   fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-context entry.
@@ -291,11 +292,11 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   `gemma-4-e2b` is its fallback — also has a projector. A blind model confidently
   describing an image is worse than a clean error. When deleting a vision model,
   **re-point the fallback in the same change**.
-- **`local-embed` is currently unwired on BOTH machines.** `llama-swap-intel.yaml` no longer
-  defines an `embed` model and there is no entry, though `Qwen3-Embedding-0.6B-Q8_0.gguf` is
-  still on disk. Anything calling `/v1/embeddings` (qdrant/n8n, `research.yml`) fails today.
-  Do not "fix" it by pointing an entry at a chat model — a chat deployment cannot serve
-  `/v1/embeddings`.
+- **`embeddinggemma-2` is now wired on the laptop.** `llama-swap-intel.yaml` defines it
+  in the `igpu` group with `--pooling mean --ctx-size 8192`, and `litellm-config.laptop.yaml`
+  exposes it as `embeddinggemma-2`. Anything calling `/v1/embeddings` on the laptop should
+  route through it. Do not "fix" it by pointing an entry at a chat model — a chat
+  deployment cannot serve `/v1/embeddings`.
 
 ## Bifrost — evaluated and rejected (2026-08-24)
 
@@ -334,7 +335,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `gemma-4-26b` *(MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
 | RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3275 t/s** | **110-112 t/s** | ~7432 MiB |
 | Arc iGPU | `gemma-4-e2b` | **713 t/s** | **14.4 t/s** (17.4 shallow) | ~3.5 GB RAM |
-| Arc iGPU | `qwen3.5-2b` | 558 t/s | 23.1 t/s *(stale, pre-2026-08-06)* | 1.34 GB RAM |
+| Arc iGPU | `embeddinggemma-2` | embeddings only | — | ~3.5 GB RAM |
 | Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
 
 ### Decode is two numbers, and mixing them wastes days
@@ -1090,25 +1091,20 @@ is no longer worth testing: it needs a second entry, and the request field does 
 
 ## Embeddings
 
-`embed` = `Qwen3-Embedding-0.6B-Q8_0.gguf`, 1024-dim, 28 layers, native ctx 32768.
+`embeddinggemma-2` = `embeddinggemma-2-Q8_0.gguf`, embedded Gemma 2 architecture, `--pooling mean`, ctx 8192.
 
-- **`--pooling last`, NOT `mean`.** The GGUF declares `pooling_type: 3` (LAST) —
-  Qwen3-Embedding derives the sentence vector from the final token. `mean` produces
-  degraded embeddings that still look plausible: unit-norm, no error, worse retrieval.
-  Sanity check after any change — related pairs must separate from unrelated
-  (`cat~kitten` 0.673, `db~sql` 0.809, `cat~db` 0.308, `kitten~sql` 0.204).
+- **`--pooling mean`.** The embeddinggemma-2 model uses mean pooling over token embeddings.
 - **`--ubatch-size` must be ≥ the longest input.** With pooling the whole sequence must fit
-  one ubatch, so it is pinned to `--ctx-size` (8192) — covers any realistic RAG chunk
-  without sizing the compute buffer for the full 32768 window.
+  one ubatch, so it is pinned to `--ctx-size` (8192).
 
 **Embeddings only** — this server cannot serve `/v1/chat/completions`.
 
 ## Per-device notes
 
-**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. `gemma-4-e2b` is
-pinned resident via `groups:` with `swap: false`, because it backs **both** background tasks
-and `server-qwen38-27b` vision fallback — a title request and an image request must not
-evict each other. ~3.5 GB.
+**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. `gemma-4-e2b` and
+`embeddinggemma-2` are pinned resident via `groups:` with `swap: false`, because they back
+**both** background tasks and `server-qwen38-27b` vision fallback — a title request and an
+image request must not evict each other. ~3.5 GB each.
 
 - **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
   JIT kernel cache. Without it every recreate recompiles all kernels — measured **4m32s**
@@ -1272,9 +1268,6 @@ tool (`tools/web_tools.py` makes no LLM call — it truncates at 15000 chars). I
 by `tools/browser_tool.py` for browser *snapshots*, gated on
 `len(snapshot_text) > 15000 and user_task`. In three realistic attempts it never fired
 once. Verify with request counts before concluding a change to it did anything.
-
-**Hermes cannot consume `local-embed`** — no embedding config key exists and nothing calls
-`/embeddings`. It is for the qdrant/n8n stack, `research.yml`, or direct API use.
 
 ## Clients must be told the window — they will not discover it
 
