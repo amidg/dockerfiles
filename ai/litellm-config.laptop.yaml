@@ -67,6 +67,14 @@ model_list:
       max_input_tokens: 65536
       max_output_tokens: 16384
 
+  - model_name: embeddinggemma-2
+    litellm_params:
+      model: openai/embeddinggemma-2
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 8192
+
 router_settings:
   model_group_retry_policy:
     server-qwen38-27b:

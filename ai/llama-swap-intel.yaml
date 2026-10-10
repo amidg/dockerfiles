@@ -6,6 +6,7 @@ groups:
     exclusive: false
     members:
       - gemma-4-e2b
+      - embeddinggemma-2
 
 models:
   "gemma-4-e2b":
@@ -23,4 +24,14 @@ models:
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
 
+  "embeddinggemma-2":
+    cmd: |
+      /app/llama-server \
+        --model /mnt/data/llama/models/embeddinggemma-2-Q8_0.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 8192 --parallel 1 \
+        --embeddings --pooling mean \
+        --batch-size 8192 --ubatch-size 8192
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 600
 
