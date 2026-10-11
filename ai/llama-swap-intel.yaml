@@ -1,4 +1,4 @@
-healthCheckTimeout: 60
+healthCheckTimeout: 300
 
 groups:
   igpu:
@@ -33,5 +33,5 @@ models:
         --embeddings --pooling mean \
         --batch-size 8192 --ubatch-size 8192
     proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
+    ttl: 0
 
