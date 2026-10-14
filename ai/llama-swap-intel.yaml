@@ -22,7 +22,7 @@ models:
         --reasoning off \
         --temp 0.7 --top-k 20 --top-p 0.8 --presence-penalty 0.5
     proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
+    ttl: 0
 
   "embeddinggemma-2":
     cmd: |
