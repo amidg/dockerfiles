@@ -129,27 +129,6 @@ services:
     ports:
       - 8084:9000
 
-  intel_npu_llama_server:
-    profiles:
-      - intel_npu_llama_cpp
-    extends:
-      file: ../base.yml
-      service: base_npu
-    image: localhost/llama-cpp-openvino:server-5d8ccdf
-    container_name: llama_npu_server
-    volumes:
-      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-    networks:
-      - llama-swap-network
-    ports:
-      - 8083:8080
-    environment:
-      - GGML_OPENVINO_DEVICE=NPU
-    command: >
-      --no-warmup -c 1024 --parallel 1
-      -m /models/Qwen3-1.7B-Q4_0.gguf
-      --host 0.0.0.0
-
   base_litellm: &base_litellm
     profiles:
       - null_profile

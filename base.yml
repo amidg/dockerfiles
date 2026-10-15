@@ -59,6 +59,7 @@ services:
   base_npu: &base_npu
     <<: [*base_igpu]
     devices:
+      - /dev/dri
       - /dev/accel
 
   # base nvidia
