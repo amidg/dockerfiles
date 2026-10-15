@@ -34,9 +34,17 @@ services:
       - null_profile
     image: docker.io/ventura8/whisper-pro-asr:intel
     container_name: whisper_server
+    restart: unless-stopped
     environment:
       - no_proxy=localhost,127.0.0.1
       - ASR_ENGINE=INTEL-WHISPER
+      - ASR_DEVICE=NPU
+      - VERIFY_RUNTIME=false
+      - MODEL_IDLE_TIMEOUT=0
+      - ENABLE_VOCAL_SEPARATION=false
+      - ENABLE_LD_PREPROCESSING=false
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}/whisper-small-int4-ov:/models/whisper-openvino:ro
     ports:
       - 9000:9000
 
@@ -127,7 +135,7 @@ services:
       file: ../base.yml
       service: base_npu
     ports:
-      - 8084:9000
+      - 8083:9000
 
   base_litellm: &base_litellm
     profiles:

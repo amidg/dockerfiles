@@ -75,11 +75,19 @@ model_list:
     model_info:
       max_input_tokens: 8192
 
+  - model_name: whisper
+    litellm_params:
+      model: openai/whisper-large-v3
+      api_base: http://whisper_server:9000/v1
+      api_key: sk-no-key-required
+    model_info:
+      mode: audio_transcription
+
 router_settings:
   model_group_retry_policy:
-    server-qwen38-27b:
+    server-qwen3.8-27b:
       TimeoutErrorRetries: 0
-    server-qwen36-35b:
+    server-qwen3.6-35b:
       TimeoutErrorRetries: 0
 
 litellm_settings:

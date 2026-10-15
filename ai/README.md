@@ -31,61 +31,102 @@ curl -s localhost:4000/health/liveliness
 | `localhost:3000` | Open WebUI |
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
-| `localhost:8083` | Intel NPU (experimental, nothing routes here) |
+| `localhost:8083` | whisper-pro ASR (Intel NPU) — STT |
 | `localhost:8080` | desktop llama-swap (7900 XTX), direct |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
-## Whisper ASR (Intel iGPU + NPU)
+## Whisper ASR (Intel NPU)
 
-Local speech-to-text on `ventura8/whisper-pro-asr:intel` (whisper-large-v3 via OpenVINO).
-Runs as a separate podman-compose stack alongside llama-cpp.
+Local speech-to-text on `ventura8/whisper-pro-asr:intel`, running **whisper-small-int4** on
+the **Intel NPU**. Runs **inside** `llama-cpp.yml` as the `intel_npu_whisper` service
+(profiles `laptop` + `whisper`) — not a separate stack. Host `:8083` → container `:9000`.
 
 ```bash
-# iGPU inference + NPU preprocessing (default)
-podman-compose -f ai/whisper.yml --profile null_profile up -d whisper
+# already up under the laptop profile:
+podman-compose -f ai/llama-cpp.yml --profile laptop up -d
 
-# NPU-only (experimental)
-podman-compose -f ai/whisper.yml --profile null_profile up -d whisper_npu
-
-# CPU-only (no acceleration)
-podman-compose -f ai/whisper.yml --profile null_profile up -d whisper_cpu
+# whisper only:
+podman-compose -f ai/llama-cpp.yml --profile laptop --profile whisper up -d intel_npu_whisper
 ```
 
-First start downloads whisper-large-v3 from HuggingFace (~3 GB); subsequent starts
-reuse the container's local cache.
+Weights are not downloaded by the container — they are bind-mounted read-only from
+`$LLAMA_MODELS_DIR/whisper-small-int4-ov` to `/models/whisper-openvino`, which whisper-pro
+loads when present (otherwise it fetches its own default, large-v3). Fetch them with:
+
+```bash
+hf download anubhav200/openai-whisper-small-openvino-int4 \
+  --local-dir /mnt/data/llama/models/whisper-small-int4-ov
+```
 
 | endpoint | what |
 |---|---|
-| `localhost:9000` | whisper-pro ASR server |
+| `localhost:8083` | whisper-pro ASR server (direct, no auth) |
+| `localhost:4000/v1`, model `whisper` | via LiteLLM — **what Hermes STT uses** |
 
-OpenAI-compatible API:
+Direct (no auth, `response_format` = `json` / `srt` / `segments`):
 
 ```bash
-# Transcribe a file (audio/video — ffmpeg handles extraction)
-curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
-  -F "file=@/path/to/audio.mp3" \
-  -F "model=whisper-large-v3" \
-  -F "response_format=json"
-
-# Get SRT subtitles
-curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
-  -F "file=@/path/to/video.webm" \
-  -F "model=whisper-large-v3" \
-  -F "response_format=srt"
-
-# Get segment JSON with timestamps
-curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
-  -F "file=@/path/to/audio.wav" \
-  -F "model=whisper-large-v3" \
-  -F "response_format=segments"
-
-# List available endpoints
-curl -s http://localhost:9000/openapi.json | jq '.paths | keys'
+curl -s http://localhost:8083/v1/audio/transcriptions \
+  -F "file=@/path/to/audio.mp3" -F "model=whisper-large-v3" -F "response_format=json"
 ```
 
-Hardware: the iGPU runs the whisper-large-v3 inference; the NPU handles preprocessing
-(VAD, audio normalization). A 3:53 video transcribed in ~51 s (74 segments).
+LiteLLM maps alias `whisper` → `http://whisper_server:9000/v1`
+(`model_info: mode: audio_transcription`, container-internal port — **not** the host
+`:8083`). Hermes is wired to it via `stt.provider: openai`,
+`stt.openai.base_url: http://localhost:4000/v1`, `stt.openai.model: whisper`.
+
+**UVR is the trap.** UVR = **Ultimate Vocal Remover** — a source-separation model
+(MDX-NET) that strips background music/noise and keeps only the vocals *before*
+transcription. whisper-pro runs it on the iGPU, and by default it ran **twice** per
+request (once in the main pipeline, once inside language-detection preprocessing),
+adding ~25 s each. That, not the NPU, was the slowness — the whisper inference itself
+is ~1 s. For clean voice input UVR buys nothing, so both passes are off:
+
+| env | default | here | controls |
+|---|---|---|---|
+| `ENABLE_VOCAL_SEPARATION` | `true` | `false` | the main UVR pass |
+| `ENABLE_LD_PREPROCESSING` | `true` | `false` | the LD UVR pass (the sneaky second one) |
+
+Re-enable both only for music-heavy source material.
+
+### Model, and why the NPU (research)
+
+**whisper-small-int4 on the Intel NPU.** whisper-pro-asr ships a conservative gate: before
+using the NPU it reads the OpenVINO IR and refuses it if any input is dynamically shaped.
+Every optimum-produced Whisper export is dynamic, so the gate forces ASR onto the CPU — but
+**OpenVINO 2026.3.1 executes those IRs on the NPU fine**, so the gate is set aside with
+`VERIFY_RUNTIME=false` (which only skips that probe, the engine's NPU warm-up, and a startup
+ONNX-diagnostics log). `ASR_DEVICE=NPU` then pins the device.
+
+Measured on a 60 s clip (laptop; iGPU shared with `gemma-4-e2b`):
+
+| model | device | build | inference (60 s) |
+|---|---|---|---|
+| **small-int4** | **NPU** | 21.5 s | **4.8 s** |
+| small-int4 | iGPU | 6.5 s | 7.0 s |
+| small-int4 | CPU | 0.7 s | 6.7 s |
+| large-v3-turbo-fp16 | NPU | 179 s | 8.2 s |
+| large-v3-turbo-fp16 | iGPU | 6.2 s | 4.4 s |
+| large-v3-turbo-fp16 | CPU | 0.6 s | 26.8 s |
+
+End-to-end through the service (warm): **~5.1 s per 60 s clip** on the NPU (inference
+~4.2 s) and **54 s for the full 10-minute video**; the first request after a container
+recreate adds the ~21 s NPU compile. small-int4 is the faster of the two on the NPU (turbo
+pays a ~179 s compile and is still slower per clip). It is a **small int4** model, so it is
+less accurate than large-v3-turbo — put turbo back on the iGPU if accuracy matters more
+than the NPU.
+
+### Residency and cold starts
+
+By default the model is unloaded **300 s after the last request** (`MODEL_IDLE_TIMEOUT=300`),
+and the NPU **recompiles on every (re)load** — the compiled blob is never cached to disk
+(the ASR pipeline is built with no `cache_dir`; the banner's "Binary Cache Status" is a
+false positive that just sees the `temp/` subdir). So the service sets
+**`MODEL_IDLE_TIMEOUT=0`**, which makes the model permanently resident in NPU memory for the
+container's lifetime, plus **`restart: unless-stopped`** so a reboot/crash does not need a
+manual `up`. Only an actual container recreate (config edit, image update) pays the compile
+again: **~21 s for small-int4**, ~179 s for large-v3-turbo.
 
 ## Architecture
 
@@ -127,7 +168,7 @@ Hardcoding a model name works but breaks on the other machine.
 |---|---|---|---|
 | RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `qwen3.5-9b` (MTP, 64K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `embeddinggemma-2` (embeddings) | background chores + vision + embeddings |
-| Intel NPU | 8083 | `Qwen3-1.7B` | experiment only, no traffic |
+| Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
 Only **one** dGPU model is resident at a time. `gemma-4-26b` has no alias — request it by
 name, at the cost of a ~15-30s swap.
@@ -206,11 +247,10 @@ export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 | `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
 | `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
 | `litellm.env` | secrets (gitignored) |
-| `whisper.yml` | compose: whisper-pro ASR (Intel iGPU + NPU) |
 | `AGENTS.md` | **rules, rationale, learnings — read before editing any config** |
 
 Configs deliberately carry **no comments**; all rationale lives in `AGENTS.md`.
-`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml`, `whisper.yml` are separate stacks.
+`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml` are separate stacks.
 
 ## Troubleshooting
 
