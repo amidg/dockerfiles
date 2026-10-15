@@ -36,6 +36,57 @@ curl -s localhost:4000/health/liveliness
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
+## Whisper ASR (Intel iGPU + NPU)
+
+Local speech-to-text on `ventura8/whisper-pro-asr:intel` (whisper-large-v3 via OpenVINO).
+Runs as a separate podman-compose stack alongside llama-cpp.
+
+```bash
+# iGPU inference + NPU preprocessing (default)
+podman-compose -f ai/whisper.yml --profile null_profile up -d whisper
+
+# NPU-only (experimental)
+podman-compose -f ai/whisper.yml --profile null_profile up -d whisper_npu
+
+# CPU-only (no acceleration)
+podman-compose -f ai/whisper.yml --profile null_profile up -d whisper_cpu
+```
+
+First start downloads whisper-large-v3 from HuggingFace (~3 GB); subsequent starts
+reuse the container's local cache.
+
+| endpoint | what |
+|---|---|
+| `localhost:9000` | whisper-pro ASR server |
+
+OpenAI-compatible API:
+
+```bash
+# Transcribe a file (audio/video — ffmpeg handles extraction)
+curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
+  -F "file=@/path/to/audio.mp3" \
+  -F "model=whisper-large-v3" \
+  -F "response_format=json"
+
+# Get SRT subtitles
+curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
+  -F "file=@/path/to/video.webm" \
+  -F "model=whisper-large-v3" \
+  -F "response_format=srt"
+
+# Get segment JSON with timestamps
+curl -s -X POST http://localhost:9000/v1/audio/transcriptions \
+  -F "file=@/path/to/audio.wav" \
+  -F "model=whisper-large-v3" \
+  -F "response_format=segments"
+
+# List available endpoints
+curl -s http://localhost:9000/openapi.json | jq '.paths | keys'
+```
+
+Hardware: the iGPU runs the whisper-large-v3 inference; the NPU handles preprocessing
+(VAD, audio normalization). A 3:53 video transcribed in ~51 s (74 segments).
+
 ## Architecture
 
 ```
@@ -155,10 +206,11 @@ export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 | `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
 | `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
 | `litellm.env` | secrets (gitignored) |
+| `whisper.yml` | compose: whisper-pro ASR (Intel iGPU + NPU) |
 | `AGENTS.md` | **rules, rationale, learnings — read before editing any config** |
 
 Configs deliberately carry **no comments**; all rationale lives in `AGENTS.md`.
-`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml` are separate stacks.
+`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml`, `whisper.yml` are separate stacks.
 
 ## Troubleshooting
 

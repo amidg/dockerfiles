@@ -46,7 +46,7 @@ services:
       - /dev/dri
 
   # base intel gpu
-  base_igpu:
+  base_igpu: &base_igpu
     <<: *base_mesa_gpu
     security_opt:
       - label=disable
@@ -55,15 +55,11 @@ services:
       - "39" # video group
 
   # base intel npu
-  # exposes /dev/accel (Core Ultra NPU, driver intel_vpu) for OpenVINO-backend workloads
+  # Core Ultra NPU via driver intel_vpu for OpenVINO-backend workloads
   base_npu: &base_npu
-    <<: *base_security
-    security_opt:
-      - label=disable
+    <<: [*base_igpu]
     devices:
       - /dev/accel
-    group_add:
-      - "105" # render group
 
   # base nvidia
   # NOTE (Dmitrii): support is limited

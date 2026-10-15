@@ -29,6 +29,17 @@ services:
       - no_proxy=localhost,127.0.0.1
     command: /app/llama-swap -config /app/config.yaml -listen 0.0.0.0:8080
 
+  base_whisper: &base_whisper
+    profiles:
+      - null_profile
+    image: docker.io/ventura8/whisper-pro-asr:intel
+    container_name: whisper_server
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - ASR_ENGINE=INTEL-WHISPER
+    ports:
+      - 9000:9000
+
   amd_llama_swap:
     <<: [*base_llama_swap]
     profiles:
@@ -105,6 +116,18 @@ services:
     environment:
       - no_proxy=localhost,127.0.0.1
       - ZES_ENABLE_SYSMAN=1
+
+  # replaced intel npu llama with whisper
+  intel_npu_whisper:
+    <<: [*base_whisper]
+    profiles:
+      - laptop
+      - whisper
+    extends:
+      file: ../base.yml
+      service: base_npu
+    ports:
+      - 8084:9000
 
   intel_npu_llama_server:
     profiles:
