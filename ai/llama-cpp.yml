@@ -125,7 +125,6 @@ services:
       - no_proxy=localhost,127.0.0.1
       - ZES_ENABLE_SYSMAN=1
 
-  # replaced intel npu llama with whisper
   intel_npu_whisper:
     <<: [*base_whisper]
     profiles:
@@ -178,18 +177,10 @@ services:
     ports:
       - 4000:4000
 
-  #litellm_desktop:
-  #  <<: *base_litellm
-  #  profiles:
-  #    - amd_llama_cpp
-  #  volumes:
-  #    - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
-
   open-webui:
     profiles:
       - webui
       - intel_llama_cpp
-      #- amd_llama_cpp
       - nvidia_llama_cpp
       - laptop
       - server

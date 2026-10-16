@@ -1,7 +1,6 @@
 healthCheckTimeout: 300
 
 models:
-  # no vision
   "qwen3.6-35b":
     cmd: |
       /app/llama-server \
@@ -18,6 +17,7 @@ models:
         --temp 0.7 --top-k 20 --top-p 0.95 --min-p 0.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
+    disableKeepAlives: true
 
   "ornith-1.5-9b":
     cmd: |
@@ -33,8 +33,8 @@ models:
         --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 1.5
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
+    disableKeepAlives: true
 
-  # vision enabled here
   "gemma-4-e4b":
     cmd: |
       /app/llama-server \
@@ -50,3 +50,4 @@ models:
         --temp 1.0 --top-k 64 --top-p 0.95
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 600
+    disableKeepAlives: true

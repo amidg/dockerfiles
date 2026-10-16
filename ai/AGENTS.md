@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `gemma-4-26b` (MTP, vision, 128K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `ornith-1.5-9b` (MTP, 64K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
 | `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
@@ -130,8 +130,8 @@ reduces reasoning to ~83 chars for tool/quality tests.
 llama.cpp puts it in `usage`. Fixed `timings()` to merge `usage` fields. Replaced
 anti-thinking system messages with `chat_template_kwargs` for `reasoning_effort: "low"`.
 
-Host ports: **8081 primary GPU, 8082 secondary, 8083 NPU** on the laptop; the desktop's
-llama-swap is on **8080** and Open WebUI on **3000**. Both machines run
+Host ports: **8081 primary GPU, 8082 secondary, 8083 whisper (Intel NPU)** on the laptop;
+the desktop's llama-swap is on **8080** and Open WebUI on **3000**. Both machines run
 `container_name: litellm` on 4000 — they are separate hosts, so there is no conflict.
 
 Container-internal ports are always 8080, which is why `litellm-config.*.yaml` points at
@@ -273,14 +273,23 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 
 | resolved name | source | use |
 |---|---|---|
-| `server-qwen38-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
+| `server-qwen3.8-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
 | `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 128K) | fallback, local-only work |
+| `ornith-1.5-9b` | laptop dGPU (RTX 5070, MTP, 64K, NVFP4) | small-ish local model |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV) | small model, vision, background |
 | `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 
-- **`gemma-4-26b` has no alias; requesting it evicts the loaded model (~15-30s)** since only one
-  fits in 8GB. **Both dGPU models now run 128K**, so there is no separate big-context entry.
+- **Two spellings of the server names exist.** The laptop (`litellm-config.laptop.yaml`,
+  Hermes, opencode) uses the dotted `server-qwen3.8-27b` / `server-qwen3.6-35b`; the
+  desktop's `litellm-config.server.yaml` keeps the non-dotted `server-qwen38-27b` /
+  `server-qwen36-35b` as `model_group_alias` entries. The laptop does not go through the
+  desktop alias — it forwards `openai/qwen3.8-27b` directly. **The dotted form is canonical
+  for the laptop.**
+- **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
+  `qwen3.6-35b`, `ornith-1.5-9b` and `gemma-4-e4b`; requesting a different one evicts the
+  loaded model. `qwen3.6-35b` and `gemma-4-e4b` run 128K, so there is no separate
+  big-context entry; `ornith-1.5-9b` is 64K.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
   MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
@@ -288,7 +297,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   Full benchmark pending.
 - **`gemma-4-e4b` MTP head** is `mtp-gemma-4-E4B-it.gguf` (95 MB) — separate file like the
   26B, not bundled in the GGUF. `embedding_length_out` must match the target's `n_embd`.
-- **`server-qwen38-27b` is the only vision model on the main tier.** It carries a projector.
+- **`server-qwen3.8-27b` is the only vision model on the main tier.** It carries a projector.
   `gemma-4-e2b` is its fallback — also has a projector. A blind model confidently
   describing an image is worse than a clean error. When deleting a vision model,
   **re-point the fallback in the same change**.
@@ -332,11 +341,11 @@ the same session.** Ratios have been stable across every repetition.
 |---|---|---|---|---|
 | RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
-| RTX 5070 | `gemma-4-26b` *(MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
+| RTX 5070 | `gemma-4-26b` *(retired; MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
 | RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3275 t/s** | **110-112 t/s** | ~7432 MiB |
 | Arc iGPU | `gemma-4-e2b` | **713 t/s** | **14.4 t/s** (17.4 shallow) | ~3.5 GB RAM |
 | Arc iGPU | `embeddinggemma-2` | embeddings only | — | ~3.5 GB RAM |
-| Intel NPU | `Qwen3-1.7B` | 33 t/s | 0.61 t/s | RAM |
+| Intel NPU | `whisper-small-int4` (ASR, not an LLM) | — | ~4.2 s / 60 s clip | RAM |
 
 ### Decode is two numbers, and mixing them wastes days
 
@@ -376,7 +385,7 @@ and does nothing on dense models.
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
 | `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **35** |
-| `gemma-4-26b` | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
+| `gemma-4-26b` *(retired)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
 
 **The `N` column is the 8GB laptop's value and belongs to this section only.** On the
 24GB desktop the same model runs **no `--n-cpu-moe` at all** — every layer left on the CPU
@@ -447,7 +456,7 @@ N penalty is linear.
 Validated at full size, not just at load: **118,018-token prompt, needle found, 406 MiB
 still free**, TTFT 157s, decode 36.9 t/s at depth. `tools` 4/4, `quality` 4/4.
 
-**`gemma-4-26b` needed the same treatment and it was not optional.** At 128K/N=30/ub2048 it
+**`gemma-4-26b` (now retired) needed the same treatment and it was not optional.** At 128K/N=30/ub2048 it
 loaded with **22 MiB free** — unusable, and exactly the shape that has crashed this stack
 twice. Dropping to `ubatch 1024` took it to **642 MiB**, and it survives a 1280px image at
 588 MiB.
@@ -548,7 +557,7 @@ projector — which is fine only because vision moved to the iGPU. **Drop to `ub
 before raising `--n-cpu-moe` if headroom is ever needed** — with MTP, N is the expensive
 lever and prefill is the one with margin.
 
-`gemma-4-26b` was later measured properly (see below) and the propagated flags held up:
+`gemma-4-26b` (retired) was later measured properly (see below) and the propagated flags held up:
 **616 → 1621 t/s prefill, 17.9 → 24.9 t/s deep.** The propagation guess was right, but it
 was a guess until measured.
 
@@ -697,8 +706,8 @@ llama-swap spawns the subprocess on demand.
 | model | n_embd | projector |
 |---|---|---|
 | qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` |
-| gemma-4-26b | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
-| gemma-4-12b | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
+| gemma-4-26b *(retired)* | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
+| gemma-4-12b *(retired)* | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
 | gemma-4-e4b | — | `gemma-4-e4b-qat-mmproj-F16.gguf` (qat), `gemma-4-e4b-mmproj-F16.gguf` (non-qat) |
 
 Adding one: read the GGUF `*.embedding_length`, then fetch `mmproj-F16.gguf` from *that
@@ -868,7 +877,7 @@ draft acceptance is highest (77-78%).
 ### Two constraints any future attempt must respect
 
 1. **`--ctx-size` is split across slots unless `-kvu` is set.** `131072` with `--parallel 3`
-   and no `--kv-unified` gives ~43K per slot, and Hermes pins `server-qwen38-27b` at `131072`
+   and no `--kv-unified` gives ~43K per slot, and Hermes pins `server-qwen3.8-27b` at `131072`
    (see [Hermes wiring](#hermes-wiring-hermesconfigyaml)) — it would overrun immediately.
    **`--kv-unified` is mandatory in the parallel variant, not optional.** The default is
    *"enabled if number of slots is auto"*, so setting `--parallel N` explicitly silently
@@ -925,14 +934,14 @@ prefix-sharing path. Give each request a distinct suffix first. Same class of tr
 
 Lower `delegation.max_concurrent_children` to 1 and stop pretending. Routing children to a
 second tier is then separate work — and note the *measured* result that delegation on
-`server-qwen38-27b` beats the iGPU **33.6s vs 2m05.8s**, because subagent cost is prefill-dominated
+`server-qwen3.8-27b` beats the iGPU **33.6s vs 2m05.8s**, because subagent cost is prefill-dominated
 and that is where the iGPU is weakest. A second tier is not an obvious win either.
 
 ## The tiny tier (Arc iGPU)
 
 **`gemma-4-e2b` serves background tasks** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier
-and the fallback for `server-qwen38-27b` vision requests.
+and the fallback for `server-qwen3.8-27b` vision requests.
 
 Validated 2026-08-06: **713 t/s prefill, 17.4 shallow, 14.4 deep**, `tools` 4/4,
 `quality` 4/4, thinking **off** (0 reasoning chars), **approval PASS**, vision `Red`,
@@ -1026,7 +1035,7 @@ with a real quality argument beats a speed claim that does not replicate.
 
 ### Context scaling — this tier is much better than it used to be
 
-The old table (6.5K → 558 t/s, 19K → 252, 50K → **485s to ingest**) was `qwen3.5-2b` on an
+The old table (6.5K → 558 t/s, 19K → 252, 50K → **485s to ingest**) was `qwen3.5-2b` (retired) on an
 old build. `gemma-4-e2b` today: **53,567-token needle prefilled at 464 t/s in 115s**, found.
 Still slower than the dGPU, but "485s to ingest 50K" is no longer the right mental model.
 
@@ -1034,7 +1043,7 @@ Still slower than the dGPU, but "485s to ingest 50K" is no longer the right ment
 
 This section previously said *"Vision is absent because `local-vision` resolves to the
 dGPU's far better model. The tier correctly rejects images."* **Both halves are now wrong.**
-Since 2026-08-06 the dGPU runs `--no-mmproj` and **`server-qwen38-27b` falls back to
+Since 2026-08-06 the dGPU runs `--no-mmproj` and **`server-qwen3.8-27b` falls back to
 `gemma-4-e2b` on this tier** — with `gemma-4-e4b` as its fallback (removed 2026-08-06).
 Both carry projectors.
 
@@ -1103,7 +1112,7 @@ is no longer worth testing: it needs a second entry, and the request field does 
 
 **Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. `gemma-4-e2b` and
 `embeddinggemma-2` are pinned resident via `groups:` with `swap: false`, because they back
-**both** background tasks and `server-qwen38-27b` vision fallback — a title request and an
+**both** background tasks and `server-qwen3.8-27b` vision fallback — a title request and an
 image request must not evict each other. ~3.5 GB each.
 
 - **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
@@ -1120,19 +1129,29 @@ image request must not evict each other. ~3.5 GB each.
 - **Bandwidth-bound, and that is why MTP loses here.** The device has no batching slack for
   speculative verification to exploit — the opposite of the CPU-offloaded dGPU.
 
-**Intel NPU (experimental, not routed)** — `intel_npu_llama_cpp` profile, standalone
-`llama-server` on the OpenVINO backend (no llama-swap integration exists), `Qwen3-1.7B-Q4_0`,
-port 8083, `-c 1024`. **0.61 t/s decode** — a 24-token tool call took 39s vs ~7s warm on the
-iGPU, ~21x slower on a model 2.4x smaller. Tool calling *does* work (correct arguments,
-`finish_reason: tool_calls`); the limit is throughput, not capability. Stateless only, no
-`--parallel > 1`, Q4_0-oriented quant. No image exists upstream — build from
-`.devops/openvino.Dockerfile` with the llama.cpp repo as build context:
+**Intel NPU — whisper ASR now, not an LLM.** The experimental `intel_npu_llama_cpp` profile
+and its OpenVINO `llama-server` (`Qwen3-1.7B`, 0.61 t/s decode, port 8083) are **gone**.
+Port 8083 now serves `whisper-small-int4` through `whisper-pro-asr` for local STT. The
+build recipe that used to live here is no longer used.
 
-```bash
-podman build -t localhost/llama-cpp-openvino:server-5d8ccdf \
-  -f .devops/openvino.Dockerfile --target server \
-  "https://github.com/ggml-org/llama.cpp.git#5d8ccdf9d1273bfd83ad8f72565885acc450997e"
-```
+- **The NPU runs dynamic IRs; the app's gate is wrong.** whisper-pro-asr refuses the NPU
+  unless the OpenVINO IR has static input shapes, and *every* optimum Whisper export is
+  dynamic — so out of the box it silently decodes on the CPU. On OpenVINO 2026.3.1 the NPU
+  executes those IRs fine (verified directly with `WhisperPipeline`, not just the probe), so
+  the service sets `VERIFY_RUNTIME=false` to skip the gate (`ASR_DEVICE=NPU` pins the
+  device). That flag only skips the probe, the NPU warm-up, and a startup ONNX-diagnostics
+  log — and it also disables the safety check, so if a future model/driver breaks on the NPU
+  there is no automatic CPU fallback.
+- **Model choice: `whisper-small-int4`** (`anubhav200/openai-whisper-small-openvino-int4`),
+  mounted read-only from `$LLAMA_MODELS_DIR/whisper-small-int4-ov`. Measured on a 60 s clip
+  in one session: small-int4 NPU 4.8 s, large-v3-turbo NPU 8.2 s (and turbo needed a ~179 s
+  NPU compile vs ~21 s). Turbo on the iGPU is faster still (4.4 s) and far more accurate —
+  small-int4 trades accuracy for the NPU.
+- **`MODEL_IDLE_TIMEOUT=0` keeps it resident.** The default 300 s unloads the model after
+  five idle minutes, and the NPU **recompiles on every reload** (the compiled blob is never
+  cached — the ASR pipeline is built with no `cache_dir`; the banner's "Binary Cache Status"
+  is a false positive off the `temp/` dir). With 0 it stays in NPU memory for the container's
+  life; only an actual recreate pays the ~21 s compile again.
 
 The iGPU and NPU share the LPDDR5x bus with the CPU — running both concurrently slows
 both. **They are not independent throughput adders.**
@@ -1180,21 +1199,21 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
 
 Direct model names only.
 
-- `model.default: server-qwen38-27b`, `delegation.model: server-qwen38-27b`.
+- `model.default: server-qwen3.8-27b`, `delegation.model: server-qwen3.8-27b`.
 - `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
   `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
   the actual `--ctx-size` KV allocation.
 
 | model | pin | why |
 |---|---|---|
-| `server-qwen38-27b` | **131072** | remote desktop, 128K ctx. `gemma-4-e2b` fallback only has 64K — an overflow there is a clean rejection, not a blind description |
+| `server-qwen3.8-27b` | **131072** | remote desktop, 128K ctx. `gemma-4-e2b` fallback only has 64K — an overflow there is a clean rejection, not a blind description |
 | `gemma-4-e2b` | **65536** | laptop iGPU, 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU |
 
-**`server-qwen38-27b: 131072` matches the desktop.** The desktop's `server-qwen38-27b` is
+**`server-qwen3.8-27b: 131072` matches the desktop.** The desktop's `server-qwen3.8-27b` is
 `qwen3.8-27b` at `--ctx-size 131072` (MTP 128K), so Hermes is aligned.
 
 **`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
-llama-server here is `--parallel 1`, and on `server-qwen38-27b` that is forced by MTP, so
+llama-server here is `--parallel 1`, and on `server-qwen3.8-27b` that is forced by MTP, so
 children serialize regardless of what this value says. It is not harmful — Hermes queues —
 but do not read it as evidence that three children run concurrently. See
 [Parallel subagents](#parallel-subagents--analysed-not-measured-2026-08-09) for what it
@@ -1210,7 +1229,7 @@ the gateway was dropping it. Now that it lands, the live settings are:
 | key | value | why |
 |---|---|---|
 | `agent.reasoning_effort` | `medium` | floor for anything without an override |
-| `agent.reasoning_overrides.server-qwen38-27b` | `xhigh` | main turn gets the deep tier |
+| `agent.reasoning_overrides.server-qwen3.8-27b` | `xhigh` | main turn gets the deep tier |
 | `auxiliary.approval.reasoning_effort` | `none` | `max_tokens=16` must not go to reasoning |
 | `auxiliary.title_generation.reasoning_effort` | `none` | one-line output, no trace needed |
 | `auxiliary.compression.reasoning_effort` | `low` | on the critical path, mid-turn |
@@ -1224,18 +1243,18 @@ Auxiliary tasks split on **critical path vs background**, not prompt size:
 
 | tier | tasks |
 |---|---|
-| `server-qwen38-27b` | `compression`, `web_extract`, `mcp`, `skills_hub`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge`, `approval`* |
+| `server-qwen3.8-27b` | `compression`, `web_extract`, `mcp`, `skills_hub`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge`, `approval`* |
 | `gemma-4-e2b` | `title_generation`, `tts_audio_tags` |
 
-\*`approval` on `server-qwen38-27b` is now permanent (2026-08-24) — it is pinned to
+\*`approval` on `server-qwen3.8-27b` is now permanent (2026-08-24) — it is pinned to
 `reasoning_effort: none` per request, which is what made it safe. See the note below. The
 rest of this table matches the live config exactly; an older revision had drifted.
 
-Anything the user waits on goes to `server-qwen38-27b` — it is faster *and* reuses the
+Anything the user waits on goes to `server-qwen3.8-27b` — it is faster *and* reuses the
 loaded model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
 Timeouts are well above Hermes' defaults because a timeout mid-compression drops context.
 
-**Delegation runs on `server-qwen38-27b`, measured not assumed:** 33.6s vs 2m05.8s on the
+**Delegation runs on `server-qwen3.8-27b`, measured not assumed:** 33.6s vs 2m05.8s on the
 iGPU. During synchronous delegation the parent is idle so the primary GPU is free anyway
 and the child reuses the loaded model; each instance is `--parallel 1` so concurrent
 children serialize either way; and subagent cost is prefill-dominated, where the iGPU is
@@ -1247,14 +1266,14 @@ word. On a thinking model the whole budget goes to reasoning:
 
 | tier | result |
 |---|---|
-| `server-qwen38-27b` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
+| `server-qwen3.8-27b` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
 | `gemma-4-e2b` (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
 
-Smart approval was silently broken while it pointed at `server-qwen38-27b`, then kept there
+Smart approval was silently broken while it pointed at `server-qwen3.8-27b`, then kept there
 by operator decision (2026-08-17). **Resolved 2026-08-24 without moving the task:**
 `auxiliary.approval.reasoning_effort: none` makes the request itself non-thinking
 (`enable_thinking = false` at llama-server), so `max_tokens=16` is spent on the answer.
-`server-qwen38-27b` may now stay as the approval tier. The old rule — *never point `approval`
+`server-qwen3.8-27b` may now stay as the approval tier. The old rule — *never point `approval`
 at a thinking model* — is superseded by *never point it at a thinking **request***; the
 tier no longer matters, the effort does. Caveat unchanged: `_smart_approve` would not fire
 from a `hermes -z` one-shot even with a flagged command — verify interactively, watching
@@ -1307,7 +1326,7 @@ The provider id must not contain a dot: the SDK derives its providerOptions key 
 (anomalyco/opencode#23622). `custom` is fine.
 
 **Ctrl-T cycles effort through model `variants` (2026-08-24).** `variant_cycle` is bound to
-`ctrl+t` ("Cycle model variants") by default. `server-qwen38-27b` defines three:
+`ctrl+t` ("Cycle model variants") by default. `server-qwen3.8-27b` defines three:
 
 ```json
 "variants": {
@@ -1327,17 +1346,17 @@ unset**. Unset is not "no effort" — it falls through to `model.options.reasoni
 `medium` variant removes the duplicate if it annoys. A variant named `default` is treated
 specially by the picker (filtered from labels) — don't use that name.
 
-Variants also appear in the model picker as `custom/server-qwen38-27b/<variant>`, but
+Variants also appear in the model picker as `custom/server-qwen3.8-27b/<variant>`, but
 **`opencode run -m` does not accept that suffix** — it fails with `UnknownError` /
 `err_db0207f2`. Variant selection is TUI-only; for headless runs use `--agent` (or an agent
 with both `model` and `variant` set, though that combination hung in testing and is not
 recommended).
 
 **Small models are deliberately absent from `opencode.json` (2026-08-24).** `gemma-4-e2b`
-and `qwen3.5-2b` were removed from the opencode picker only — they remain live in
-`llama-swap-intel.yaml`, in `litellm-config.laptop.yaml`, and as the `gemma-4-e2b` model
-entry for Hermes' `title_generation` / `tts_audio_tags`. Do not "tidy up" the iGPU tier to
-match opencode; the two are intentionally different.
+was removed from the opencode picker only — it remains live in `llama-swap-intel.yaml`, in
+`litellm-config.laptop.yaml`, and as the `gemma-4-e2b` model entry for Hermes'
+`title_generation` / `tts_audio_tags`. Do not "tidy up" the iGPU tier to match opencode;
+the two are intentionally different.
 
 **Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
 LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
@@ -1346,7 +1365,7 @@ LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
 Hermes sends is separate and currently unpinned.
 
 **Fallbacks cannot absorb a context overflow.** The same log shows LiteLLM failing over to
-`gemma-4-26b`, which was also 64K, and failing identically. Every local model shares one
+`gemma-4-26b` (since retired), which was also 64K, and failing identically. Every local model shares one
 window by design, so a fallback list is the wrong tool for this failure.
 
 **`context_window_fallbacks` — considered and rejected.** LiteLLM's own error suggests it,
@@ -1362,18 +1381,20 @@ each rejection costs a full ~18s load.
   empty body that looks like a model failure. Poll `/health/liveliness`.
 - **`request_timeout: 600`** — local inference trips the default; a cold load plus vision
   prefill surfaced as a useless `InternalServerError - Connection error`. Don't lower it.
-- **Fallbacks match the name as *requested*, not resolved.** `server-qwen38-27b` does not
+- **Fallbacks match the name as *requested*, not resolved.** `server-qwen3.8-27b` does not
   inherit a fallback declared for `qwen3.6-35b` — it fails with `No fallback model group
-  found for original model_group=server-qwen38-27b`. Every model group needs its own entry.
+  found for original model_group=server-qwen3.8-27b`. Every model group needs its own entry.
 - **Do not list one machine's models in the other's config.** The laptop once carried the
   desktop's entries pointing at an unreachable host; once the laptop gained its own
-  `gemma-4-26b` that became a duplicate `model_name` and LiteLLM would have load-balanced
+  `gemma-4-26b` (since retired) that became a duplicate `model_name` and LiteLLM would have load-balanced
   across a live and a dead endpoint.
 - **The server-side LiteLLM is in-repo and live — edit it here (2026-08-17).**
   `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
   chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server`
-  and exposes `qwen3.8-27b` and `qwen3.6-35b` plus the aliases `server-qwen38-27b` /
-  `server-qwen36-35b`, which is what the laptop's remote entries resolve through.
+  and exposes `qwen3.8-27b` and `qwen3.6-35b`, which is what the laptop's remote entries
+  forward to directly (`model: openai/qwen3.8-27b`). It also defines the non-dotted aliases
+  `server-qwen38-27b` / `server-qwen36-35b` (`model_group_alias`) — separate from the
+  laptop's own dotted `server-qwen3.8-27b` / `server-qwen3.6-35b`.
   `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out
   in `llama-cpp.yml`; do not edit it.
 - **`reasoning_effort` needs `allowed_openai_params` — `drop_params: true` eats it
@@ -1382,15 +1403,33 @@ each rejection costs a full ~18s load.
   no warning, no log line, just a full-reasoning response. Adding
   `allowed_openai_params: ["reasoning_effort"]` to a model's `litellm_params` forwards it
   verbatim — LiteLLM does no normalization on the value, so `xhigh` survives (unlike
-  Bifrost). **Both hops must allowlist it**: a laptop request to `server-qwen38-27b`
+  Bifrost). **Both hops must allowlist it**: a laptop request to `server-qwen3.8-27b`
   crosses the laptop's LiteLLM *and* the desktop's, and either one dropping it loses the
-  param. Deliberately **not** applied to `gemma-4-e2b`/`qwen3.5-2b` — those run
+  param. Deliberately **not** applied to `gemma-4-e2b` — it runs
   `--reasoning off` as a correctness requirement, and Hermes sends `reasoning_effort` on
   every request, so the drop there is load-bearing.
 
 ### Remote outage handling — how the gateway fails over to local (2026-08-25)
 
-The laptop routes `server-qwen38-27b` through the desktop's LiteLLM at
+**Superseded 2026-10-16: busy now means *wait*, not fail over.** Fallbacks are commented
+out and the requirement became "client waits until the server model finishes". The
+desktop's llama.cpp (`--parallel 1`) queues FIFO while a slot is occupied, so the remote
+entries now run `timeout`/`stream_timeout: 900` + `keepalive_seconds: 15` (SSE pings keep
+the connection live through the silent queue wait), `cooldown_time: 0` with
+`allowed_fails_policy` removed — the old first-timeout-300s-cooldown was producing the
+useless `429 all_deployments_in_cooldown` the clients actually saw. Router-wide
+`retry_after: 15` spaces the 3 retries that remain (transient 502s now wait instead of
+bursting). `TimeoutErrorRetries: 0` stays: a litellm timeout disconnects the upstream,
+llama.cpp aborts the disconnected generation, so a retry would restart it from zero.
+Desktop side: `request_timeout` 600→960 so the laptop is always the one that gives up,
+and `TimeoutErrorRetries: 0` added for both Qwen groups so its `num_retries: 3` cannot
+re-send cancelled work. Accepted trade-off: busy and down are indistinguishable from the
+client (both are silence), so a powered-off desktop now surfaces only after ~900s instead
+of ~180s. Everything below stays as the 2026-08-25 fail-fast design and documents the
+LiteLLM 1.99.0 cooldown quirks (`_is_cooldown_required`, per-deployment
+`model_info.allowed_fails_policy`), which are still true.
+
+The laptop routes `server-qwen3.8-27b` through the desktop's LiteLLM at
 `https://chat.gusev.tech/v1`. When the desktop is off (TCP blackhole — the dominant
 failure shape for a powered-off machine with a DynDNS IP), the old behavior was to hang
 for ~30 minutes before falling back to local `qwen3.6-35b`. Root cause: `request_timeout:
@@ -1456,6 +1495,16 @@ only affect the two remote entries.
 
 ## Operational gotchas
 
+- **502 `proxy error: EOF` right after a stream = llama-swap reusing a connection
+  llama-server already closed.** llama-swap pools idle upstream keep-alive sockets;
+  llama-server advertises keep-alive on streamed responses and then closes them anyway,
+  so the next request lands on the dead socket and 502s. Reads like "model is busy"
+  because it fires during back-to-back streaming jobs (a 118-chunk run failing at
+  chunk 52). Fix landed 2026-10-16: `disableKeepAlives: true` on **every** model in every
+  `llama-swap*` config — one fresh TCP connect per request, <1 ms on localhost.
+  Per-model key only; there is no global switch (verified against llama-swap
+  `config-schema.json`).
+
 - **Episodic `400 Invalid model name passed in model=<name>\x00\x00...` (2026-08-24).**
   The desktop's LiteLLM intermittently rejects a model name that arrives NUL-padded.
   Confirmed to be LiteLLM's own error (`proxy/route_llm_request.py:152`,
@@ -1469,10 +1518,10 @@ only affect the two remote entries.
   protocol rerun completely erased.
 
   Ruled out: the laptop hop (reproduces calling the desktop directly); `model_group_alias`
-  (the direct name `qwen3.8-27b` fails at the same rate as the alias `server-qwen38-27b`);
+  (the direct name `qwen3.8-27b` fails at the same rate as the alias `server-qwen3.8-27b`);
   config drift (`/v1/models` returns all four names clean and correctly sized); and
   HTTP/2 vs HTTP/1.1. A separate, possibly unrelated failure mode appears as client
-  **timeouts** on the same endpoint, including on `server-qwen36-35b` — plausibly the
+  **timeouts** on the same endpoint, including on `server-qwen3.6-35b` — plausibly the
   24GB card cold-loading the other model, which is expected cost, not a fault.
 
   **Retrying the identical request has always succeeded.** `num_retries: 3` does not cover
@@ -1538,9 +1587,9 @@ LiteLLM is on 4000 on both machines, and going through aliases is the better tes
 ./smoke.py                    # after ANY config edit, container restart, or model swap
 ./smoke.py --quick            # just show what is loaded where (no generation)
 
-./llmbench.py --models qwen3.6-35b gemma-4-26b --tests perf --rounds 3
+./llmbench.py --models qwen3.6-35b gemma-4-e4b --tests perf --rounds 3
 ./llmbench.py --models qwen3.6-35b qwen3.8-27b --tests all   # before promoting a config
-./llmbench.py --models server-qwen38-27b --fail-on-regression       # CI gate
+./llmbench.py --models server-qwen3.8-27b --fail-on-regression       # CI gate
 ```
 
 `smoke.py` is the gate after any change to this repo. It replays the exact `max_tokens=16`
@@ -1548,7 +1597,7 @@ approval shape and flags empty-content responses — that is how the smart-appro
 was found, and it is the one failure mode a "does it respond" check misses.
 
 `llmbench.py --tests all` is what a config must pass **before being promoted** into
-`server-qwen38-27b`: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a
+`server-qwen3.8-27b`: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a
 real image.
 
 ### Reading its output against this stack
