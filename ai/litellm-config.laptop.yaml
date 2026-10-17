@@ -37,6 +37,15 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
+  - model_name: lfm2.5-24b
+    litellm_params:
+      model: openai/lfm2.5-24b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
   - model_name: ornith-1.5-9b
     litellm_params:
       model: openai/ornith-1.5-9b

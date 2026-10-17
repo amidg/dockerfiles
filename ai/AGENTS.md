@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `qwen3.6-35b` (default, MTP, 128K), `ornith-1.5-9b` (MTP, 64K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `lfm2.5-24b` (131K, QAD Q4_0, N=24, **no MTP**, ttl 0), `qwen3.6-35b` (default, MTP, 128K), `ornith-1.5-9b` (MTP, 64K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
 | `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
@@ -274,6 +274,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | resolved name | source | use |
 |---|---|---|
 | `server-qwen3.8-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
+| `lfm2.5-24b` | laptop dGPU (RTX 5070, 131K, QAD Q4_0, N=24, no MTP, ttl 0) | fast local agent, long-context local work |
 | `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 128K) | fallback, local-only work |
 | `ornith-1.5-9b` | laptop dGPU (RTX 5070, MTP, 64K, NVFP4) | small-ish local model |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV) | small model, vision, background |
@@ -287,9 +288,10 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   desktop alias — it forwards `openai/qwen3.8-27b` directly. **The dotted form is canonical
   for the laptop.**
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
-  `qwen3.6-35b`, `ornith-1.5-9b` and `gemma-4-e4b`; requesting a different one evicts the
-  loaded model. `qwen3.6-35b` and `gemma-4-e4b` run 128K, so there is no separate
-  big-context entry; `ornith-1.5-9b` is 64K.
+  `lfm2.5-24b`, `qwen3.6-35b`, `ornith-1.5-9b` and `gemma-4-e4b`; requesting a different one
+  evicts the loaded model. `lfm2.5-24b`, `qwen3.6-35b` and `gemma-4-e4b` run 128K, so there
+  is no separate big-context entry; `ornith-1.5-9b` is 64K. `lfm2.5-24b` is `ttl: 0` — it
+  never *idle*-unloads, but that does not exempt it from a cross-model swap.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
   MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
@@ -339,6 +341,7 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
+| RTX 5070 | `lfm2.5-24b` **(QAD Q4_0, N=24, no MTP, 131K, ttl 0)** | **1804 t/s** | **37.3 t/s** (41.3 decode), 45.9K @1732 t/s | ~7278 MiB |
 | RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(retired; MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
@@ -374,6 +377,56 @@ spill to system RAM and halved decode speed; `q8_0` stays entirely in VRAM. Full
 prefill — this is a prompt cache hit artifact, not real prefill. Always test with ≥2
 models so the alternation flushes the cache and every round measures cold prefill.
 
+### LFM2.5-24B-A2B on RTX 5070 8GB — promoted config (2026-10-17)
+
+**`lfm2.5-24b` beats the MTP incumbent on every axis, without MTP.** Head-to-head against
+`qwen3.6-35b`, same session, 3 rounds, `--tests perf tools quality longctx`:
+
+| model | prefill | decode | **deep** | tools | quality | longctx |
+|---|---|---|---|---|---|---|
+| **`lfm2.5-24b`** (QAD Q4_0, N=24) | **1804 t/s** | 41.3 | **37.3** | 4/4 | 4/4 | 45.9K @ **1732 t/s** (26.5 s) |
+| `qwen3.6-35b` (MTP, N=35) | 883 t/s | 30.8 | 34.6 | 4/4 | 4/4 | 50.0K @ 891 t/s (56.1 s) |
+
+**2.0x prefill, +34% decode, +8% deep, ~2x long-context ingest**, equal tools and quality.
+Round 1 is a warm-up outlier for both (659/23.8 and 522/25.9) — compare within the session,
+as always.
+
+Config: `LFM2.5-24B-A2B-QAD-Q4_0.gguf` (13.58 GB), `--n-cpu-moe 24`, `--ctx-size 131072`,
+`--ubatch-size 1024`, q4_0/q4_0 KV, `--load-mode none`, `--threads 6 --cpu-range 0-5
+--cpu-strict 1`, **no `--spec-type`** (no draft head exists for this model), `--no-mmproj`
+(text-only), `ttl: 0`. **7278 MiB VRAM, 873 MiB free, RSS 8392 MiB**, cold load 12-17 s.
+RSS is the number that does not show in `nvidia-smi` and it matters here: **8392 MiB against
+the 35B's 19.4 GB**, so ~11 GB of system RAM is handed back on this tier.
+
+**QAD Q4_0, not Q4_K_M — and the "Q4_K_M is the floor" rule does not apply to it.** That rule
+is about 3-bit K-quants and i-quants, whose *CPU* dequant cost outweighs the bytes they save
+when experts are CPU-resident. Q4_0 is the cheapest 4-bit CPU dequant path, and this file is
+quantization-aware-*distilled* — trained to recover Q4_0's accuracy — so it is a different
+trade, not a smaller quant. Q4_K_M for this model is untested; bench it only if this file
+fails a quality gate.
+
+**N is calibrated, not inherited: ~322 MiB per expert layer on the GPU.** Measured by delta —
+N=26 → 6634 MiB, N=24 → 7278 MiB — so **16 of the 40 expert layers are on the card**. N=22
+would be ~7900 MiB / ~229 MiB free, inside the crash zone this stack has hit twice, and the
+no-MTP sweep says two layers is worth ~0.2 t/s: **N=24 is the optimum, not a waypoint.** The
+`N=35` below belongs to `qwen3.6-35b`; do not copy it.
+
+**MTP is not required to win this tier.** `qwen3.6-35b` needs its draft head to reach 34.6
+deep; LFM2.5-24B reaches 37.3 without one, because 2.3B active parameters plus 16
+GPU-resident expert layers outrun the 35B's 35 CPU-resident ones. MTP stays the biggest win
+*available to a given model* — see [MTP](#mtp--the-single-biggest-win-on-this-tier-2026-08-06) —
+not a precondition for a fast laptop tier.
+
+**`ttl: 0` pins against idle eviction only.** A request for `qwen3.6-35b`, `ornith-1.5-9b` or
+`gemma-4-e4b` still evicts it (8GB cannot co-locate them); it buys residency, not exclusivity.
+Cold load is a one-off `--load-mode none` read of 13.58 GB.
+
+**LiteLLM deliberately does not allowlist `reasoning_effort` for this model.** See
+[LiteLLM](#litellm). It thinks before answering and prefixes `content` with a blank line, so
+the `max_tokens=16` approval shape comes back empty — and would not string-match `APPROVE`
+even if non-empty. **Do not point `approval` at it** without the `reasoning_effort: none`
+treatment.
+
 ## Running 26B/35B models on an 8GB card
 
 Both large models are MoE, and ~90% of their weights are expert tensors any given token
@@ -385,7 +438,12 @@ and does nothing on dense models.
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
 | `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **35** |
+| `lfm2.5-24b` | 40 | 64 / 4 active | QAD-Q4_0 (13.58 GB) | **24** |
 | `gemma-4-26b` *(retired)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
+
+**`lfm2.5-24b` is the only N measured per-layer: ~322 MiB of expert per layer** (N=26 → 6634
+MiB, N=24 → 7278 MiB). Use that ratio to size any future MoE on this card; the other rows'
+`N` values were tuned empirically and never converted to MiB.
 
 **The `N` column is the 8GB laptop's value and belongs to this section only.** On the
 24GB desktop the same model runs **no `--n-cpu-moe` at all** — every layer left on the CPU
@@ -781,6 +839,11 @@ flag") was true when written and is wrong now: llama.cpp merged MTP in PR #22673
 b10276 exposes `--spec-type draft-mtp`. For Qwen3.6 the MTP head ships **inside the same
 GGUF** (`MTP-UD-Q4_K_M` is 22.66 GB vs 22.13 GB plain, a ~505 MiB head), so **no
 `--model-draft` is needed** — that flag is only for Gemma-style separate heads.
+
+**Counter-example (2026-10-17): a model with no draft head at all now leads this card.**
+`lfm2.5-24b` reaches **37.3 t/s deep** against `qwen3.6-35b`'s 34.6 *with MTP enabled* — see
+[LFM2.5-24B-A2B on RTX 5070 8GB](#lfm25-24b-a2b-on-rtx-5070-8gb--promoted-config-2026-10-17).
+MTP is the biggest win **available to a given model**, not a precondition for a fast tier.
 
 Measured against the no-MTP control (same file, no `--spec-type`), same session, 3 rounds:
 
@@ -1407,7 +1470,9 @@ each rejection costs a full ~18s load.
   crosses the laptop's LiteLLM *and* the desktop's, and either one dropping it loses the
   param. Deliberately **not** applied to `gemma-4-e2b` — it runs
   `--reasoning off` as a correctness requirement, and Hermes sends `reasoning_effort` on
-  every request, so the drop there is load-bearing.
+  every request, so the drop there is load-bearing. **Same deliberate drop for `lfm2.5-24b`**
+  (2026-10-17): LFM2.5's template defines no effort vocabulary, so allowlisting it would
+  forward an off-vocabulary value to the server and only risk an error.
 
 ### Remote outage handling — how the gateway fails over to local (2026-08-25)
 

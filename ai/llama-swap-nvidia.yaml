@@ -19,6 +19,23 @@ models:
     ttl: 600
     disableKeepAlives: true
 
+  "lfm2.5-24b":
+    cmd: |
+      /app/llama-server \
+        --model /models/LFM2.5-24B-A2B-QAD-Q4_0.gguf \
+        --no-mmproj \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --n-cpu-moe 24 --ctx-size 131072 --parallel 1 \
+        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
+        --batch-size 2048 --ubatch-size 1024 \
+        --cache-reuse 256 \
+        --threads 6 --cpu-range 0-5 --cpu-strict 1 \
+        --load-mode none \
+        --temp 0.1 --top-k 50 --repeat-penalty 1.05
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 0
+    disableKeepAlives: true
+
   "ornith-1.5-9b":
     cmd: |
       /app/llama-server \
