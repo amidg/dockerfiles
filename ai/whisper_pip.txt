@@ -1,0 +1,19 @@
+# Python dependencies for the sherpa-onnx "local" engine used by the Hermes `transcribe` skill.
+#
+# Install:
+#     python3 -m pip install -r whisper_pip.txt
+#
+# Verify:
+#     python3 -c "import sherpa_onnx, numpy; print(sherpa_onnx.__version__)"
+#
+# The models are NOT pip packages; download them separately (see the skill's SKILL.md
+# "Models" section) into SHERPA_MODELS_DIR (default /mnt/data/llama/models/sherpa-onnx).
+#
+# NOTE: onnxruntime-openvino is deliberately NOT listed. sherpa-onnx statically bundles its
+# own ONNX Runtime (CPU), so installing onnxruntime-openvino does not give it OpenVINO/NPU --
+# provider="openvino" just logs "OpenVINOExecutionProvider is not available ... Fallback to
+# cpu". There is no OpenVINO-enabled sherpa-onnx wheel on PyPI.
+sherpa-onnx==1.13.8
+# numpy is required at runtime (audio buffers); it is not pulled in by sherpa-onnx's own
+# dependency list, so it is pinned here explicitly.
+numpy
