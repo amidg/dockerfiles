@@ -1,0 +1,3 @@
+[submodule "ai/Strata"]
+	path = ai/Strata
+	url = https://github.com/Niko1221/Strata

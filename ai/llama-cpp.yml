@@ -48,43 +48,6 @@ services:
     ports:
       - 9000:9000
 
-  amd_llama_swap:
-    <<: [*base_llama_swap]
-    profiles:
-      - amd_llama_cpp
-      - amd_llama_cpp_server
-    extends:
-      file: ../base.yml
-      service: base_amdgpu
-    image: ghcr.io/mostlygeek/llama-swap:rocm
-    container_name: llama_swap_server
-    volumes:
-      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - ./llama-swap-server.yml:/app/config.yaml:z,ro
-    ports:
-      - 8080:8080
-    environment:
-      - no_proxy=localhost,127.0.0.1
-
-  vulkan_llama_swap:
-    <<: [*base_llama_swap]
-    profiles:
-      - vulkan_llama_cpp
-      - vulkan_llama_cpp_server
-      - server
-    extends:
-      file: ../base.yml
-      service: base_mesa_gpu
-    image: ghcr.io/mostlygeek/llama-swap:vulkan
-    container_name: llama_swap_server
-    volumes:
-      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - ./llama-swap-server.yml:/app/config.yaml:z,ro
-    ports:
-      - 8080:8080
-    environment:
-      - no_proxy=localhost,127.0.0.1
-
   nvidia_llama_swap:
     <<: [*base_llama_swap]
     profiles:
@@ -136,6 +99,39 @@ services:
     ports:
       - 8083:9000
 
+  strata:
+    profiles:
+      - server
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    build:
+      context: ./Strata
+      args:
+        CUDA_ARCHITECTURES: 120
+    image: localhost/strata:0.1.45
+    container_name: strata
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - /mnt/data/llama/strata:/data
+    ports:
+      - 8080:8080
+    ulimits:
+      memlock: -1
+    stop_grace_period: 90s
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - MODEL=IQ2_XS
+      - FAMILY=qwen
+      - CONTEXT=131072
+      - VISION=yes
+      - KV=k8v4
+      - GGUF_DIR=/models
+      - STRATA_ARENA_PIN_GIB=40
+
   base_litellm: &base_litellm
     profiles:
       - null_profile
@@ -173,35 +169,11 @@ services:
     profiles:
       - server
     volumes:
-      - ./litellm-config.server.yaml:/app/config.yaml:z,ro
+      - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
     ports:
       - 4000:4000
 
-  open-webui:
-    profiles:
-      - webui
-      - intel_llama_cpp
-      - nvidia_llama_cpp
-      - laptop
-      - server
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    env_file:
-      - path: ./litellm.env
-        required: true
-    environment:
-      - OPENAI_API_BASE_URL=http://litellm:4000/v1
-      - ENABLE_OLLAMA_API=false
-    volumes:
-      - open-webui:/app/backend/data
-    networks:
-      - llama-swap-network
-    ports:
-      - 3001:8080
-
 volumes:
-  open-webui:
-    name: open-webui
   litellm_postgres:
     name: litellm_postgres
   intel_sycl_cache:

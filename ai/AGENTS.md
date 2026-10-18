@@ -21,16 +21,79 @@ value, update the table here in the same commit.
 
 ## Architecture
 
-Two machines. Each llama-swap instance mounts one config and advertises only what its
-device can run.
+Two machines. The laptop runs llama-swap (one config per device, one `llama-server`
+subprocess per model); the desktop runs a single resident Strata process. Each advertises
+only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, 128K, UD-Q4_K_XL body + Q3_K_S head, N=35, temp 0.6), `lfm2.5-24b` (131K, QAD Q4_0, N=24, **no MTP**, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
-| `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
+| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**IQ2_XS, Strata**, 131K, `k8v4` KV, vision, arena pinned in 96GB RAM) |
 
-### Qwen3.8-27B on 7900 XTX 24GB — promoted config (2026-08-15)
+## Strata on the desktop — promoted 2026-10-17
+
+The desktop stopped running llama.cpp. It runs **Strata** (git submodule `ai/Strata`,
+pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile server up -d
+--build` with `CUDA_ARCHITECTURES=120`) serving **Qwen3.8-Flash-Next GSQ-RCO IQ2_XS** — a
+125B-A6B MoE with a ~51B n-gram (PLE) table and a bundled MTP draft layer.
+
+| | |
+|---|---|
+| GPU | 5070 Ti 16GB — the container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
+| 7900 XTX | **display only.** Mixed HIP+CUDA in one Strata run is unsupported (`docs/MULTI_GPU.md`, `docs/AMD_HIP.md`), and the container ships no ROCm |
+| RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel; the arena is page-locked, so `ulimits.memlock: -1` is mandatory |
+| SSD | `/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
+| context / KV / vision | `131072` / `k8v4` / `yes` |
+| gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
+
+**Why Strata and not llama.cpp.** No quant of this model fits 16GB VRAM (the smallest
+published GGUF is 72.5GB), so it only runs tiered, and Strata is built for exactly that
+partition — hot experts in VRAM, the rest of the arena pinned in RAM, the n-gram table on
+the SSD. llama.cpp has no equivalent residency model.
+
+**NVFP4 was evaluated and rejected, despite the 10980XE's AVX-512.** Per `docs/NVFP4.md`
+and issue #2347: the NVFP4 packs are 128GB on disk, carry ~63.3GiB of experts, and want
+**~80GB of RAM** for the arena — over budget at a 40GiB pin. It also decodes *slower* than
+IQ2_XS (114 vs 132 tok/s on a 5090), because FP4 tensor cores accelerate only the prompt
+path (`w4a4`, sm_120a). AVX-512 cleared the CPU-side objection (AVX2-only hosts were
+refused on 0.1.44/44.1), not the RAM one. Upgrade path if RAM ever goes past ~96GB:
+`--family nvfp4 --model NVFP4` — and note decode, not prefill, is what that trade costs.
+
+**Quant: IQ2_XS, the largest that fits the budget.** The project's own 16GB-card
+recommendation. GSQ-RCO is the supported family (`Q2_0 | IQ2_XS | IQ3_XXS | IQ3_S`);
+IQ3_XXS lands near the 40GiB arena cap with no margin, so it is the first thing to try
+after a RAM increase — not before. KV is `k8v4`; step down to `int8` then `q4_0` only if a
+131K prompt OOMs.
+
+**Weights are user-supplied, not downloaded.** `GGUF_DIR=/models` with the IQ2_XS shards
+under their original names plus `mmproj-Qwen3.8-Flash-Next-BF16.gguf`. Strata writes
+`<shard>.done` checksum markers next to them, so the models dir is mounted writable (this
+is also why it is not `:ro` here while every llama-swap mount is). The MTP draft is the
+only file Strata fetches itself, into `/data`; the engine is never re-downloaded after the
+image build.
+
+**Not yet verified anywhere — the migration was delivered dry.** Three first-boot checks
+live in the README: (1) podman CDI wiring — upstream documents `--gpus all` for Docker and
+never mentions podman, so `base_nvidia`'s reservation is the first thing to prove or
+replace with `nvidia-ctk cdi generate` + `--device nvidia.com/gpu=all`; (2) the arena
+actually pinning ~36-40GiB while the desktop stays responsive; (3) the model id Strata
+advertises on `/v1/models`, which must match the LiteLLM `model:` field.
+
+**Known risk, accepted:** port 8080 is published with **no API key**, so anything on the
+LAN can reach an unauthenticated OpenAI endpoint. LiteLLM :4000 (master key) is the
+supported path; binding 8080 to loopback is the fix if it ever matters.
+
+**The laptop side is deliberately untouched (2026-10-17).** `litellm-config.laptop.yaml`
+still routes `server-qwen3.8-27b` and `server-qwen3.6-35b` at `api.gusev.tech`, and neither
+exists on the desktop anymore — it serves only `qwen3.8-flash-next`. Rewiring the laptop's
+remote entries (and the Hermes/opencode pins) is a separate, explicitly deferred change.
+
+
+### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
+
+*(Superseded by [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17). The
+tuning numbers below are kept so the dense-27B path is not re-evaluated from scratch.)*
 
 MTP 128K, Vulkan backend on AMD RDNA3. Quant: IQ4_XS. KV quant: `q5_0`/`q4_1`. Harness
 uses `chat_template_kwargs: {"reasoning_effort": "low"}`. Reasoning efforts can be set per
@@ -131,22 +194,27 @@ llama.cpp puts it in `usage`. Fixed `timings()` to merge `usage` fields. Replace
 anti-thinking system messages with `chat_template_kwargs` for `reasoning_effort: "low"`.
 
 Host ports: **8081 primary GPU, 8082 secondary, 8083 whisper (Intel NPU)** on the laptop;
-the desktop's llama-swap is on **8080** and Open WebUI on **3000**. Both machines run
-`container_name: litellm` on 4000 — they are separate hosts, so there is no conflict.
+the desktop's **Strata is on 8080** (no Open WebUI anywhere since 2026-10-17). Both
+machines run their gateway on 4000 — they are separate hosts, so there is no conflict.
 
 Container-internal ports are always 8080, which is why `litellm-config.*.yaml` points at
-`http://llama_swap_*:8080/v1` regardless of the host mapping. Changing a host port does
-not require a LiteLLM change.
+`http://llama_swap_*:8080/v1` (laptop) or `http://strata:8080/v1` (desktop) regardless of
+the host mapping. Changing a host port does not require a LiteLLM change.
 
 **The laptop runs nvidia + intel concurrently.** They used to share a container name and
 port via the `base_llama_swap` anchor, which made them mutually exclusive. `container_name`,
 `ports` and the config mount are per-service now — do not move them back into the anchor.
 
 Request flow: agents → LiteLLM (`:4000`) → llama-swap (`:8081`/`:8082`) → a `llama-server`
-subprocess per model. GGUFs live in `${LLAMA_MODELS_DIR:-~/.llama/models}`, mounted at
-`/models` (this laptop: `/mnt/data/llama/models`).
+subprocess per model, **on the laptop only**. The desktop's flow is agents → LiteLLM →
+Strata (`:8080`) → one long-resident process (no per-model spawn, no TTL). GGUFs live in
+`${LLAMA_MODELS_DIR:-~/.llama/models}`, mounted at `/models` (this laptop:
+`/mnt/data/llama/models`).
 
-### Qwen3.6-35B-A3B on 7900 XTX 24GB — promoted config (2026-08-18)
+### Qwen3.6-35B-A3B on 7900 XTX 24GB — retired 2026-10-17
+
+*(Superseded by [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17); the
+`--n-cpu-moe` findings below still explain why desktop llama.cpp tuning never transferred.)*
 
 **Decision: no `--n-cpu-moe` at all, `--ubatch-size 1024`, and the Qwen3.6 thinking-mode
 *precise-coding* sampler — `--temp 0.6`, no presence penalty.** `53.0 → 177.6 t/s deep, a
@@ -273,12 +341,20 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 
 | resolved name | source | use |
 |---|---|---|
-| `server-qwen3.8-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
+| `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
 | `lfm2.5-24b` | laptop dGPU (RTX 5070, 131K, QAD Q4_0, N=24, no MTP, ttl 0) | fast local agent, long-context local work |
 | `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 128K, Q4_K_XL/Q3_K_S, N=35, temp 0.6) | local coding agent (promoted 2026-10-17) |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | fast GPU-resident work, background, **auxiliary tasks**, vision |
 | `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
+
+- **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
+  The old dotted name and `server-qwen3.6-35b` are gone from the desktop; the laptop config
+  still lists them and is scheduled for a separate rewiring (see
+  [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17)). `~/.hermes/config.yaml`
+  and `~/.config/opencode/opencode.json` must be re-pointed to `qwen3.8-flash-next` on the
+  desktop side, and unset on the laptop side until its rewiring lands. The name is direct —
+  no `server-` prefix, no aliases — like everything else.
 
 - **`ornith-1.5-9b` is retired (2026-10-17).** Too weak to figure tasks out in practice; the
   fast GPU-resident slot is `gemma-4-e4b`, which is multimodal and does the same jobs better.
@@ -287,12 +363,12 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   (6.5 GB) is deleted. If a fast 9B is ever wanted again, note it was the *only* thing at 64K
   on the dGPU — everything current runs 128K.
 
-- **Two spellings of the server names exist.** The laptop (`litellm-config.laptop.yaml`,
-  Hermes, opencode) uses the dotted `server-qwen3.8-27b` / `server-qwen3.6-35b`; the
-  desktop's `litellm-config.server.yaml` keeps the non-dotted `server-qwen38-27b` /
-  `server-qwen36-35b` as `model_group_alias` entries. The laptop does not go through the
-  desktop alias — it forwards `openai/qwen3.8-27b` directly. **The dotted form is canonical
-  for the laptop.**
+- **Two spellings of the server names existed; one is gone.** The laptop
+  (`litellm-config.laptop.yaml`, Hermes, opencode) still uses the dotted
+  `server-qwen3.8-27b` / `server-qwen3.6-35b`; the desktop's `litellm-config.server.yaml`
+  and its `model_group_alias` entries were deleted on 2026-10-17. The desktop now serves
+  `qwen3.8-flash-next` and nothing else. **The dotted form survives only as the laptop's
+  stale remote entry** and dies with the deferred laptop rewiring.
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
   `lfm2.5-24b`, `tiel-coder-35b` and `gemma-4-e4b`; requesting a different one
   evicts the loaded model. All three run 128K; `lfm2.5-24b` is `ttl: 0` — it
@@ -304,10 +380,10 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   Full benchmark pending.
 - **`gemma-4-e4b` MTP head** is `mtp-gemma-4-E4B-it.gguf` (95 MB) — separate file like the
   26B, not bundled in the GGUF. `embedding_length_out` must match the target's `n_embd`.
-- **`server-qwen3.8-27b` is the only vision model on the main tier.** It carries a projector.
-  `gemma-4-e2b` is its fallback — also has a projector. A blind model confidently
-  describing an image is worse than a clean error. When deleting a vision model,
-  **re-point the fallback in the same change**.
+- **`qwen3.8-flash-next` is the only vision model on the main tier.** It carries a
+  `mmproj-Qwen3.8-Flash-Next-BF16.gguf` projector. `gemma-4-e2b` is the fallback — also has
+  a projector. A blind model confidently describing an image is worse than a clean error.
+  When deleting a vision model, **re-point the fallback in the same change**.
 - **`embeddinggemma-2` is now wired on the laptop.** `llama-swap-intel.yaml` defines it
   in the `igpu` group with `--pooling mean --ctx-size 8192`, and `litellm-config.laptop.yaml`
   exposes it as `embeddinggemma-2`. Anything calling `/v1/embeddings` on the laptop should
@@ -1347,6 +1423,12 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
 
 Direct model names only.
 
+> **Stale on the desktop as of 2026-10-17.** Every `server-qwen3.8-27b` reference in this
+> section now needs to be `qwen3.8-flash-next` (desktop, 131072 pin unchanged). The edits
+> live in `~/.hermes/config.yaml` and `~/.config/opencode/opencode.json`, outside this
+> repo, and are part of the deferred laptop rewiring — see
+> [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17).
+
 - `model.default: server-qwen3.8-27b`, `delegation.model: server-qwen3.8-27b`.
 - `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
   `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
@@ -1354,11 +1436,11 @@ Direct model names only.
 
 | model | pin | why |
 |---|---|---|
-| `server-qwen3.8-27b` | **131072** | remote desktop, 128K ctx. `gemma-4-e2b` fallback only has 64K — an overflow there is a clean rejection, not a blind description |
+| `qwen3.8-flash-next` (was `server-qwen3.8-27b`) | **131072** | desktop, 131K ctx. `gemma-4-e2b` fallback only has 64K — an overflow there is a clean rejection, not a blind description |
 | `gemma-4-e2b` | **65536** | laptop iGPU, 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU |
 
-**`server-qwen3.8-27b: 131072` matches the desktop.** The desktop's `server-qwen3.8-27b` is
-`qwen3.8-27b` at `--ctx-size 131072` (MTP 128K), so Hermes is aligned.
+**The 131072 pin carries over unchanged.** Strata serves the desktop at `CONTEXT=131072`,
+so the pin stays correct across the engine swap; only the name changes.
 
 **`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
 llama-server here is `--parallel 1`, and on `server-qwen3.8-27b` that is forced by MTP, so
@@ -1511,7 +1593,7 @@ was removed from the opencode picker only — it remains live in `llama-swap-int
 the two are intentionally different.
 
 **Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
-LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.server.yaml`) and
+LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.desktop.yaml`) and
 `limit.output` in `opencode.json` are **32K (32768) for models with a 128K window, 16K
 (16384) for models with a 64K window**. Apply it to any new entry. The per-request cap
 Hermes sends is separate and currently unpinned.
@@ -1540,15 +1622,13 @@ each rejection costs a full ~18s load.
   desktop's entries pointing at an unreachable host; once the laptop gained its own
   `gemma-4-26b` (since retired) that became a duplicate `model_name` and LiteLLM would have load-balanced
   across a live and a dead endpoint.
-- **The server-side LiteLLM is in-repo and live — edit it here (2026-08-17).**
+- **The server-side LiteLLM is in-repo and live — edit it here (2026-10-17).**
   `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
-  chat.gusev.tech) mounting `litellm-config.server.yaml`; it fronts `llama_swap_server`
-  and exposes `qwen3.8-27b` and `qwen3.6-35b`, which is what the laptop's remote entries
-  forward to directly (`model: openai/qwen3.8-27b`). It also defines the non-dotted aliases
-  `server-qwen38-27b` / `server-qwen36-35b` (`model_group_alias`) — separate from the
-  laptop's own dotted `server-qwen3.8-27b` / `server-qwen3.6-35b`.
-  `litellm-config.desktop.yaml` is legacy — its `litellm_desktop` service is commented out
-  in `llama-cpp.yml`; do not edit it.
+  chat.gusev.tech) mounting **`litellm-config.desktop.yaml`**, which now fronts `strata`
+  and exposes exactly one local model, `qwen3.8-flash-next`. The old
+  `litellm-config.server.yaml` (and its `qwen3.8-27b`/`qwen3.6-35b` entries plus the
+  non-dotted `model_group_alias` pair) was **deleted 2026-10-17**. `litellm-config.desktop.yaml`
+  is the live desktop config now — the old note calling it legacy is superseded.
 - **`reasoning_effort` needs `allowed_openai_params` — `drop_params: true` eats it
   otherwise (2026-08-24).** For an unrecognised `openai/*` model LiteLLM raises
   `UnsupportedParamsError`, and `drop_params: true` converts that into a **silent** drop:
@@ -1705,9 +1785,36 @@ only affect the two remote entries.
 - **`healthCheckTimeout: 60` is too low — recommended, not yet landed (2026-08-09).** With
   `--load-mode none` the 22.66 GB GGUF is read from disk with **no mmap on every load**, and
   60s is not a safe budget for that on this laptop. If llama-swap kills a load mid-flight it
-  looks like a mystery failure under agentic churn. **300** is the safe value, for both
-  `llama-swap-nvidia.yaml` and `llama-swap-server.yml`. Raise it before running any
-  benchmark sweep — it is a confound in every cold-load measurement.
+  looks like a mystery failure under agentic churn. **300** is the safe value — already set
+  in `llama-swap-nvidia.yaml` and `llama-swap-intel.yaml`; the old
+  `llama-swap-server.yml` recommendation died with the file on 2026-10-17. Raise it before
+  running any benchmark sweep — it is a confound in every cold-load measurement.
+
+### Strata (desktop) gotchas
+
+- **`ulimits.memlock: -1` is mandatory.** The engine page-locks the expert arena; without
+  it the container fails at startup. Verify: `podman inspect strata --format
+  '{{.HostConfig.Ulimits}}'`.
+- **`stop_grace_period: 90s`, not the repo default 5s.** Releasing a page-locked arena on
+  SIGTERM regularly exceeds 10s (upstream documents `docker stop -t 60`), and a SIGKILL
+  mid-release leaves the arena to the OOM reaper.
+- **First start is minutes of silence, not a hang.** The setup pass unpacks the pack,
+  fetches the MTP draft and loads the arena before :8080 opens; the image's healthcheck
+  carries `--start-period=600s` for that reason. Watch `podman logs -f strata`.
+- **`STRATA_ARENA_PIN_GIB=40` of 96GB is the desktop's whole memory contract.** The arena
+  is page-locked *and* the desktop is a daily driver — raising the pin trades desktop
+  responsiveness for expert-cache hits, and there is no zram-style safety net for pinned
+  pages.
+- **The models dir is mounted writable on purpose.** Strata writes `<shard>.done` checksum
+  markers next to the GGUFs; `:ro` breaks first-boot verification. Every llama-swap mount
+  in this repo is `:ro`/`:z,ro` — do not "fix" this one to match.
+- **podman is undocumented upstream.** Strata's docs assume Docker + nvidia-container-toolkit
+  and never mention podman. `base_nvidia`'s `deploy.resources.reservations` is what this
+  repo uses for `nvidia_llama_swap`, so it is the first thing to trust — and the first
+  thing to replace with `nvidia-ctk cdi generate` + `--device nvidia.com/gpu=all` if the
+  container starts without a GPU.
+- **The container is CUDA-only.** There is no ROCm path in the image, and a mixed
+  HIP+CUDA run is unsupported upstream — do not try to bring the 7900 XTX in.
 
 ## Benchmarking
 
@@ -1730,10 +1837,16 @@ On the **laptop** `LITELLM_ENV` is the only wiring needed — the scripts defaul
 `localhost:8081` (primary GPU), `:8082` (secondary) and `:4000` (gateway), which matches.
 Without a key, `smoke.py --endpoint-only` still works.
 
-On the **desktop** llama-swap is on host port **8080**, so `smoke.py`'s tier probe will
-report the primary GPU unreachable. Either edit `TIERS` at the top of `smoke.py`, or use
-`llmbench.py --endpoint http://localhost:8080/v1`. The gateway checks are unaffected —
-LiteLLM is on 4000 on both machines, and going through aliases is the better test anyway.
+On the **desktop**, **Strata** is on host port **8080** (there is no llama-swap there), so
+`smoke.py`'s tier probe reports the primary GPU unreachable. Either edit `TIERS` at the top
+of `smoke.py`, or use `llmbench.py --endpoint http://localhost:8080/v1`. The gateway checks
+are unaffected — LiteLLM is on 4000 on both machines, and going through the gateway is the
+better test anyway.
+
+**No Strata numbers exist yet.** Every performance figure in this file is llama.cpp, on the
+laptop. The desktop's Strata tier has not been benchmarked — there was nothing to measure
+against, since the migration was delivered without a running deployment. First measurements
+belong here when they happen.
 
 ### When to run what
 
@@ -1742,17 +1855,20 @@ LiteLLM is on 4000 on both machines, and going through aliases is the better tes
 ./smoke.py --quick            # just show what is loaded where (no generation)
 
 ./llmbench.py --models tiel-coder-35b gemma-4-e4b --tests perf --rounds 3
-./llmbench.py --models tiel-coder-35b qwen3.8-27b --tests all   # before promoting a config
-./llmbench.py --models server-qwen3.8-27b --fail-on-regression       # CI gate
+./llmbench.py --models tiel-coder-35b gemma-4-e4b --tests all   # before promoting a config
+./llmbench.py --models qwen3.8-flash-next --fail-on-regression  # CI gate
 ```
 
 `smoke.py` is the gate after any change to this repo. It replays the exact `max_tokens=16`
 approval shape and flags empty-content responses — that is how the smart-approval breakage
 was found, and it is the one failure mode a "does it respond" check misses.
 
-`llmbench.py --tests all` is what a config must pass **before being promoted** into
-`server-qwen3.8-27b`: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a
-real image.
+`llmbench.py --tests all` is what a config must pass **before being promoted** into the main
+tier: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a real
+image. On the desktop, the equivalent gate runs against `qwen3.8-flash-next` — and note
+`smoke.py`/`llmbench.py` speak OpenAI, so they need `--endpoint http://localhost:8080/v1`
+(there is no llama-swap `/api/models/unload` endpoint to free the GPU with; Strata is
+resident by design).
 
 ### Reading its output against this stack
 

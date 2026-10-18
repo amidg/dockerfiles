@@ -1,7 +1,7 @@
-# Local LLM stack — llama.cpp + llama-swap + LiteLLM
+# Local LLM stack — llama.cpp + llama-swap (laptop) / Strata (desktop) + LiteLLM
 
 Self-hosted inference for the Hermes agent across two machines. One OpenAI-compatible
-endpoint, stable model aliases, per-machine hardware config behind them.
+endpoint, stable model names, per-machine engine behind them.
 
 This file is **how to run it**. For why anything is tuned the way it is — and the traps
 that cost hours — read [`AGENTS.md`](AGENTS.md).
@@ -14,11 +14,13 @@ export LLAMA_MODELS_DIR=/mnt/data/llama/models     # where the GGUFs live
 # laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
 
-# desktop: 7900 XTX (Vulkan + its own LiteLLM)
-podman-compose -f ai/llama-cpp.yml --profile server up -d
+# desktop: 5070 Ti 16GB — builds and runs Strata (Qwen3.8-Flash-Next)
+podman-compose -f ai/llama-cpp.yml --profile server up -d --build
 ```
 
-LiteLLM needs ~30-60s. Poll before sending traffic:
+The desktop's `--build` compiles the Strata engine from the `ai/Strata` submodule on
+first use (and after any submodule bump). LiteLLM needs ~30-60s. Poll before sending
+traffic:
 
 ```bash
 curl -s localhost:4000/health/liveliness
@@ -28,13 +30,53 @@ curl -s localhost:4000/health/liveliness
 |---|---|
 | `localhost:4000/v1` | LiteLLM gateway — **point agents here** |
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
-| `localhost:3000` | Open WebUI |
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
 | `localhost:8083` | whisper-pro ASR (Intel NPU) — STT |
-| `localhost:8080` | desktop llama-swap (7900 XTX), direct |
+| `localhost:8080` | desktop Strata (5070 Ti), direct — **no auth, LAN-reachable** |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
+
+## Desktop: Strata + Qwen3.8-Flash-Next
+
+The desktop runs **Strata** (`ai/Strata`, pinned to its release tag) instead of
+llama.cpp: a 125B-A6B MoE that never fits in VRAM, run as a GPU expert cache (5070 Ti
+16GB) + page-locked expert arena in system RAM + the n-gram table on the SSD. The
+7900 XTX is the display card and is **not** used for inference — Strata cannot mix
+HIP and CUDA in one run, and its container is CUDA-only.
+
+| | |
+|---|---|
+| GPU | 5070 Ti 16GB (`--vram-reserve` default) |
+| RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB |
+| SSD | `/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, caches) |
+| context | 131072 |
+| KV | `k8v4` |
+| vision | yes |
+| model name | `qwen3.8-flash-next` (LiteLLM → `http://strata:8080/v1`) |
+
+### Weights to download (manual, into `$LLAMA_MODELS_DIR`)
+
+- GSQ-RCO **IQ2_XS** GGUF shards, original filenames — Strata matches the first shard by
+  the canonical `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-…` name, or any `*-00001-of-*.gguf`
+  whose name contains the model name
+- `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (~0.9GB) — vision
+
+The MTP draft (~6GB) is **not** downloaded by hand: Strata's setup fetches it into
+`/data` on first start. Strata also writes `<shard>.done` checksum markers next to the
+GGUFs, which is why the models dir is mounted writable.
+
+### First-boot checklist
+
+1. **GPU wiring** — confirm the container sees the 5070 Ti (`podman logs strata`, Strata's
+   `/v1/status`). If it does not, the CDI route is
+   `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml` plus a
+   `--device nvidia.com/gpu=all` device entry instead of `base_nvidia`'s reservation.
+2. **Arena** — `grep VmLck /proc/$(podman inspect -f '{{.State.Pid}}' strata)/status`;
+   expect ~36-40 GiB pinned, and confirm the desktop stays responsive.
+3. **Model id** — `curl -s 127.0.0.1:8080/v1/models`; if Strata advertises a different id
+   than `qwen3.8-flash-next`, change the `model:` field in
+   `ai/litellm-config.desktop.yaml` to match (one line).
 
 ## Whisper ASR (Intel NPU)
 
@@ -131,47 +173,61 @@ again: **~21 s for small-int4**, ~179 s for large-v3-turbo.
 ## Architecture
 
 ```
-agents ──> LiteLLM :4000 ──┬──> llama-swap :8081 ──> llama-server (primary GPU)
-           (aliases,       │
-            fallbacks,     └──> llama-swap :8082 ──> llama-server (iGPU, laptop only)
-            cloud models)
+agents ──> LiteLLM :4000 ──┬──> llama-swap :8081 ──> llama-server (laptop primary GPU)
+           (model names,    │
+            routing)        └──> llama-swap :8082 ──> llama-server (laptop iGPU)
+
+agents ──> LiteLLM :4000 ──────> Strata :8080        (desktop, 5070 Ti)
 ```
 
-LiteLLM resolves a **semantic alias** to a model and forwards to the llama-swap instance
-that owns it. llama-swap spawns and kills one `llama-server` per model on demand, and
-unloads after an idle TTL. Cloud models (Anthropic, Gemini) route through the same
-gateway.
+LiteLLM forwards a requested model name to whichever engine owns it. On the laptop,
+llama-swap spawns and kills one `llama-server` per model on demand and unloads after an
+idle TTL. On the desktop, Strata is a single long-resident process — there is nothing to
+swap, and the desktop's gateway exposes exactly one local model.
 
-## Use the aliases, not model names
+## Use the model names
 
-The names are identical on both machines — that is what lets one shared
-`~/.hermes/config.yaml` drive either box. Only the model behind each name changes.
+Direct names, no aliases. The laptop and the desktop serve different names — a shared
+`~/.hermes/config.yaml` points at whichever box it is talking to.
 
-| alias | laptop | desktop | for |
+| name | machine | engine | for |
 |---|---|---|---|
-| `local-main` | `qwen3.6-35b` | `qwen3.6-27b` | main agent, delegation, anything user-facing |
-| `local-vision` | `gemma-4-e2b` (iGPU) | `qwen3.6-27b` | images and PDFs — falls back to `gemma-4-26b` |
-| `local-tiny` | `gemma-4-e2b` | `gemma-4-12b` | titles, tags, background chores |
-| `local-embed` | *(currently unwired)* | *(not available)* | RAG embeddings, 1024-dim |
+| `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K | main agent, delegation, vision, anything user-facing |
+| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 128K | local agent work |
+| `lfm2.5-24b` | laptop | llama-swap, RTX 5070, 131K | fast local agent, long-context local work |
+| `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | small model, vision, background |
+| `gemma-4-e2b` | laptop | llama-swap, Arc iGPU, 64K | background tasks, vision fallback |
+| `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
+| `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
+
+The desktop's LiteLLM serves **only** `qwen3.8-flash-next` locally now — the cloud
+Anthropic/Gemini entries were dropped with the llama.cpp migration.
 
 ```bash
 curl -s localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"local-main","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"hi"}],"max_tokens":400}'
 ```
-
-Hardcoding a model name works but breaks on the other machine.
 
 ## What runs where (laptop)
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `qwen3.6-35b` (default, MTP, 128K), `qwen3.5-9b` (MTP, 64K), `gemma-4-26b` (vision, 128K) | everything the user waits on |
-| Arc Pro iGPU | 8082 | `gemma-4-e2b` (**local-tiny + local-vision**), `embeddinggemma-2` (embeddings) | background chores + vision + embeddings |
+| RTX 5070 8GB | 8081 | `tiel-coder-35b` (default, MTP, 128K), `lfm2.5-24b` (131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K) | everything the user waits on |
+| Arc Pro iGPU | 8082 | `gemma-4-e2b` (background tasks + vision fallback), `embeddinggemma-2` (embeddings) | background chores + vision + embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
-Only **one** dGPU model is resident at a time. `gemma-4-26b` has no alias — request it by
-name, at the cost of a ~15-30s swap.
+Only **one** dGPU model is resident at a time — requesting another costs a ~15-30s swap.
+
+## What runs where (desktop)
+
+| device | port | model | role |
+|---|---|---|---|
+| 5070 Ti 16GB | 8080 | `qwen3.8-flash-next` (Strata, 131K, vision, `k8v4` KV) | everything — the only inference engine on the box |
+| 7900 XTX 24GB | — | — | display only; Strata's container is CUDA-only and cannot mix vendors |
+
+Strata never swaps models: the expert arena is page-locked in RAM and stays there, which
+is why the desktop has one model where the laptop has four.
 
 ## Key findings
 
@@ -230,27 +286,31 @@ git clone git@github.com:amidg/llm-benchmarking.git
 cd llm-benchmarking
 export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 
-./smoke.py          # every tier, every alias, vision, approval shape
+./smoke.py          # every tier, every model, vision, approval shape
 ./smoke.py --quick  # just show what is loaded where
 
 ./llmbench.py --models qwen3.6-35b gemma-4-26b --tests all
 ```
 
+On the **desktop**, llama-swap is not on :8081 — the local model is Strata on :8080, so
+either edit `TIERS` in `smoke.py` or drive it directly:
+`llmbench.py --endpoint http://localhost:8080/v1`. Gateway checks are unaffected (LiteLLM
+is :4000 on both machines).
+
 ## Files
 
 | file | what |
 |---|---|
-| `llama-cpp.yml` | compose: llama-swap instances, LiteLLM, Open WebUI, postgres |
+| `llama-cpp.yml` | compose: laptop llama-swap instances, desktop Strata, LiteLLM, postgres |
 | `llama-swap-nvidia.yaml` | laptop primary GPU |
 | `llama-swap-intel.yaml` | laptop secondary GPU (iGPU) |
-| `llama-swap-server.yml` | desktop 7900 XTX |
-| `litellm-config.laptop.yaml` | laptop gateway: aliases, fallbacks, cloud models |
-| `litellm-config.desktop.yaml` | desktop gateway — same alias names, different models |
+| `litellm-config.laptop.yaml` | laptop gateway: local + remote model names |
+| `litellm-config.desktop.yaml` | desktop gateway: `qwen3.8-flash-next` → Strata only |
+| `Strata/` | git submodule — the desktop inference engine (pinned release tag) |
 | `litellm.env` | secrets (gitignored) |
 | `AGENTS.md` | **rules, rationale, learnings — read before editing any config** |
 
 Configs deliberately carry **no comments**; all rationale lives in `AGENTS.md`.
-`ollama.yml`, `n8n.yml`, `research.yml`, `firecrawl.yaml` are separate stacks.
 
 ## Troubleshooting
 
@@ -267,9 +327,10 @@ took 4m32s once; the `intel_sycl_cache` volume prevents a repeat).
 **Blank `content` with filled `reasoning_content`.** Thinking model, budget ran out. Raise
 `max_tokens` to 400+.
 
-**Answers text fine but dies on images.** The dGPU tier runs `--no-mmproj` by design —
-vision lives on the iGPU as `local-vision` → `gemma-4-e2b`. A dGPU model rejecting an image
-is correct behaviour, not a fault.
+**Answers text fine but dies on images on the laptop dGPU.** That tier runs `--no-mmproj`
+by design — vision lives on the iGPU (`gemma-4-e2b`) and on the desktop
+(`qwen3.8-flash-next` carries a projector). A laptop dGPU model rejecting an image is
+correct behaviour, not a fault.
 
 **A single-model `llmbench` run reports nonsense prefill on rounds 2+.** The prompt is
 byte-identical every round, so it hits the server-side prompt cache, `prompt_n` collapses
@@ -277,12 +338,23 @@ to ~4 tokens and `prefill_tps` becomes noise (round 1 is the only valid one). Al
 **two or more** `--models` — alternating flushes the cache. This has looked like a
 performance regression twice.
 
-**Never copy `--n-cpu-moe` between the laptop and the desktop.** On the 8GB laptop it is
-nearly free; on the 24GB desktop *every* CPU-resident expert layer costs ~40% of decode.
-The desktop runs no `--n-cpu-moe` at all — see `AGENTS.md`.
+**Never port llama.cpp tuning between the laptop and the desktop.** The desktop no longer
+runs llama.cpp — there is no `--n-cpu-moe`, `--ubatch-size` or `--threads` to copy, and
+Strata's memory model (VRAM expert cache + 40GiB pinned RAM arena + n-gram table on the
+SSD) is not llama.cpp's. Laptop flags are laptop flags.
 
-**Out of VRAM on the dGPU.** Drop `--ubatch-size` (2048 → 1024) *before* raising
-`--n-cpu-moe`. With MTP, N costs ~7% of decode per 4 layers while prefill has 3x of margin.
+**Strata is silent for a long time on first start.** The setup pass downloads the MTP
+draft, unpacks it and loads the arena before the port opens — minutes, not seconds. Watch
+`podman logs -f strata`; the image's own healthcheck allows a `--start-period=600s` for
+exactly this reason.
+
+**Strata dies with a memlock error.** The compose service must run with
+`ulimits.memlock: -1` — the arena is page-locked. `podman inspect strata --format
+'{{.HostConfig.Ulimits}}'` confirms it.
+
+**"Unable to start: database is locked" on `podman-compose up` with `--build`.** A build
+and a running container race on the same image tag; `podman-compose build strata` first,
+then `up -d`.
 
 **iGPU model will not load.** Check `free -h` — the Arc allocates against `MemFree`, not
 reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
@@ -290,8 +362,11 @@ reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
 ```bash
 podman ps
 podman logs --tail 30 llama_swap_nvidia
+podman logs --tail 30 strata
 curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
+curl -s 127.0.0.1:8080/health
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+free -h
 ```
 
 ## Reaching the gateway from a libvirt VM
