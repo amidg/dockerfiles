@@ -27,9 +27,9 @@ model_list:
       max_output_tokens: 32768
       cooldown_time: 0
 
-  - model_name: qwen3.6-35b
+  - model_name: tiel-coder-35b
     litellm_params:
-      model: openai/qwen3.6-35b
+      model: openai/tiel-coder-35b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]
@@ -46,21 +46,12 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
-  - model_name: ornith-1.5-9b
-    litellm_params:
-      model: openai/ornith-1.5-9b
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-      allowed_openai_params: ["reasoning_effort"]
-    model_info:
-      max_input_tokens: 65536
-      max_output_tokens: 16384
-
   - model_name: gemma-4-e4b
     litellm_params:
       model: openai/gemma-4-e4b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
+      allowed_openai_params: ["reasoning_effort"]
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
@@ -88,6 +79,8 @@ model_list:
       model: openai/whisper-large-v3
       api_base: http://whisper_server:9000/v1
       api_key: sk-no-key-required
+      timeout: 2400
+      stream_timeout: 2400
     model_info:
       mode: audio_transcription
 
@@ -97,6 +90,8 @@ router_settings:
     server-qwen3.8-27b:
       TimeoutErrorRetries: 0
     server-qwen3.6-35b:
+      TimeoutErrorRetries: 0
+    whisper:
       TimeoutErrorRetries: 0
 
 litellm_settings:
@@ -109,8 +104,8 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   #fallbacks:
-  #  - server-qwen3.8-27b: ["qwen3.6-35b", "ornith-1.5-9b", "gemma-4-e4b"]
-  #  - server-qwen3.6-35b: ["ornith-1.5-9b", "gemma-4-e4b"]
+  #  - server-qwen3.8-27b: ["tiel-coder-35b", "gemma-4-e4b"]
+  #  - server-qwen3.6-35b: ["gemma-4-e4b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

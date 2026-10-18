@@ -26,7 +26,7 @@ device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `lfm2.5-24b` (131K, QAD Q4_0, N=24, **no MTP**, ttl 0), `qwen3.6-35b` (default, MTP, 128K), `ornith-1.5-9b` (MTP, 64K), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, 128K, UD-Q4_K_XL body + Q3_K_S head, N=35, temp 0.6), `lfm2.5-24b` (131K, QAD Q4_0, N=24, **no MTP**, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
 | `llama-swap-server.yml` | `llama_swap_server` | 7900 XTX 24GB (desktop) | 8080 | `qwen3.8-27b` (**medium default, effort per request**, MTP, 128K, Vulkan), `qwen3.6-35b` (**MTP + vision**, 128K, Vulkan) |
 
@@ -275,11 +275,17 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 |---|---|---|
 | `server-qwen3.8-27b` | remote desktop (7900 XTX, Vulkan, 128K) | main agent, delegation, vision, anything user-facing |
 | `lfm2.5-24b` | laptop dGPU (RTX 5070, 131K, QAD Q4_0, N=24, no MTP, ttl 0) | fast local agent, long-context local work |
-| `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 128K) | fallback, local-only work |
-| `ornith-1.5-9b` | laptop dGPU (RTX 5070, MTP, 64K, NVFP4) | small-ish local model |
-| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV) | small model, vision, background |
+| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 128K, Q4_K_XL/Q3_K_S, N=35, temp 0.6) | local coding agent (promoted 2026-10-17) |
+| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | fast GPU-resident work, background, **auxiliary tasks**, vision |
 | `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
+
+- **`ornith-1.5-9b` is retired (2026-10-17).** Too weak to figure tasks out in practice; the
+  fast GPU-resident slot is `gemma-4-e4b`, which is multimodal and does the same jobs better.
+  Removed from `llama-swap-nvidia.yaml`, `litellm-config.laptop.yaml`, `~/.hermes/config.yaml`
+  (its `skills_hub` / `approval` / `mcp` tasks → `gemma-4-e4b`) and `opencode.json`; the GGUF
+  (6.5 GB) is deleted. If a fast 9B is ever wanted again, note it was the *only* thing at 64K
+  on the dGPU — everything current runs 128K.
 
 - **Two spellings of the server names exist.** The laptop (`litellm-config.laptop.yaml`,
   Hermes, opencode) uses the dotted `server-qwen3.8-27b` / `server-qwen3.6-35b`; the
@@ -288,9 +294,8 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   desktop alias — it forwards `openai/qwen3.8-27b` directly. **The dotted form is canonical
   for the laptop.**
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
-  `lfm2.5-24b`, `qwen3.6-35b`, `ornith-1.5-9b` and `gemma-4-e4b`; requesting a different one
-  evicts the loaded model. `lfm2.5-24b`, `qwen3.6-35b` and `gemma-4-e4b` run 128K, so there
-  is no separate big-context entry; `ornith-1.5-9b` is 64K. `lfm2.5-24b` is `ttl: 0` — it
+  `lfm2.5-24b`, `tiel-coder-35b` and `gemma-4-e4b`; requesting a different one
+  evicts the loaded model. All three run 128K; `lfm2.5-24b` is `ttl: 0` — it
   never *idle*-unloads, but that does not exempt it from a cross-model swap.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
@@ -342,7 +347,8 @@ the same session.** Ratios have been stable across every repetition.
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
 | RTX 5070 | `lfm2.5-24b` **(QAD Q4_0, N=24, no MTP, 131K, ttl 0)** | **1804 t/s** | **37.3 t/s** (41.3 decode), 45.9K @1732 t/s | ~7278 MiB |
-| RTX 5070 | `qwen3.6-35b` **(default, MTP, 128K)** | **991 t/s** | **46.3 t/s** (41.2 shallow), 36.9 @118K | ~7275 MiB |
+| RTX 5070 | `tiel-coder-35b` **(promoted, MTP, 128K, N=35)** | **897 t/s** | **40.5 t/s** (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
+| RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(retired; MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
 | RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3275 t/s** | **110-112 t/s** | ~7432 MiB |
@@ -417,7 +423,7 @@ GPU-resident expert layers outrun the 35B's 35 CPU-resident ones. MTP stays the 
 *available to a given model* — see [MTP](#mtp--the-single-biggest-win-on-this-tier-2026-08-06) —
 not a precondition for a fast laptop tier.
 
-**`ttl: 0` pins against idle eviction only.** A request for `qwen3.6-35b`, `ornith-1.5-9b` or
+**`ttl: 0` pins against idle eviction only.** A request for `tiel-coder-35b` or
 `gemma-4-e4b` still evicts it (8GB cannot co-locate them); it buys residency, not exclusivity.
 Cold load is a one-off `--load-mode none` read of 13.58 GB.
 
@@ -426,6 +432,85 @@ Cold load is a one-off `--load-mode none` read of 13.58 GB.
 the `max_tokens=16` approval shape comes back empty — and would not string-match `APPROVE`
 even if non-empty. **Do not point `approval` at it** without the `reasoning_effort: none`
 treatment.
+
+### Tiel-Coder-35B-A3B — evaluated, rejected on speed (2026-10-17)
+
+`Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf` (22.75 GB, Q3_K_S MTP head, Sharp v22.5.0 template)
+was benched as the coding-agent candidate against both incumbents, same session, 3 rounds,
+`--tests perf tools quality approval thinking longctx` (no `vision` — its `--no-mmproj` is
+deliberate; vision belongs to the iGPU tier). It **passes every correctness check and fails
+every performance one**:
+
+| model | prefill | shallow | **deep** | acc s/d | tools | quality | longctx |
+|---|---|---|---|---|---|---|---|
+| `tiel-coder-35b` (MTP, N=35) | 894 t/s | 34.8 | **37.5** | 46%/55% | 4/4 | 4/4 | 50.2K @ 891 t/s |
+| `lfm2.5-24b` (no MTP, N=24) | **1918 t/s** | 43.7 | **44.7** | — | 4/4 | 4/4 | 45.9K @ 1805 t/s |
+| `qwen3.6-35b` (MTP, N=35) | 939 t/s | 43.1 | **46.9** | **68%/78%** | 4/4 | 4/4 | 50.0K @ 929 t/s |
+
+VRAM 7402 MiB (749 free), RSS **18555 MiB**, thinking clean (205 reasoning chars, content
+non-empty — terser than LFM's 1039). Through the gateway with `reasoning_effort: "none"` it
+returns `APPROVE` in 4 tokens, `finish: stop` — **the Sharp template honours the effort
+ladder and the allowlist works**, so the approval-shape trap that hits LFM/`gemma-4-e2b` does
+not apply here.
+
+**Why it loses: MTP acceptance, not quant mix.** The main-body expert types are *identical*
+to `qwen3.6-35b` (blk.39 `{Q3_K_M, Q4_K_S}`), and prefill is within 5% — so the file is not
+a "smaller quant" problem. Decode is ~20% down because its draft head verifies at **46%/55%
+against the incumbent's 68%/78%**; same-arch, same-size, same-N, only the head and template
+differ. Prime suspect is the **recent head shrink Q8_0 → Q3_K_S** (revision ~Sep 2026, saves
+~0.5 GB VRAM); the discriminating test would be the superseded Q8_0-head revision or the
+non-MTP sibling repo carrying Ornith's own template — not run, no reason to spend more on a
+loser.
+
+**Consequence: promoted anyway on 2026-10-17 (user decision).** The measured costs above are
+accepted in exchange for the coding-specialist behaviour (Ornith-1.5 post-training), which
+`llmbench` does not measure. `tiel-coder-35b` replaces the local `qwen3.6-35b` entry in
+`llama-swap-nvidia.yaml` and `litellm-config.laptop.yaml` (no LiteLLM fallback wiring — the
+fallback block stays commented out; it was scrubbed to reference tiel). The Qwen3.6-35B GGUF
+was deleted. Do not re-litigate the speed trade without a new llama.cpp build: deep is
+~40 vs qwen's ~46, prefill ~897 vs ~991, RSS 18.6 vs 19.4 GB, and draft acceptance 55% vs
+78% is structural (base model + Sharp template, not the head — see the follow-up below).
+
+**Follow-up: the draft head is NOT the problem, and the superseded Q8_0 head does not fit
+(2026-10-17).** The pre-refresh revision (Q8_0 head + Sharp v22.4.0) was rebuilt *without*
+re-downloading it — the head is a contiguous tail block, so a ~895 MB ranged fetch (24 MB
+header + 870 MB tail) plus the current file's body reconstructs it byte-for-byte
+(23,259,486,752 bytes; non-head body verified identical by aligned range hashes). Results:
+
+| arm (`--spec-draft-n-max` / head) | accept s/d | tools | quality | note |
+|---|---|---|---|---|
+| n-max 2 / Q3_K_S (current) | 47-51%/55% | 4/4 | 4/4 | control |
+| n-max 2 / **Q8_0** | 45-51%/**57%** | 4/4 | 4/4 | needs N=36 |
+| **n-max 3** / Q8_0 | 39%/53% | 4/4 | 4/4 | worse |
+
+- **Head precision is not the acceptance lever**: Q8_0 is +2 pts deep, inside noise. The
+  23-pt gap to `qwen3.6-35b`'s 78% is the base model (Ornith-1.5 post-training) and/or the
+  Sharp template, not the quant.
+- **The Q8_0 head does not fit at N=35**: its block-40 experts are GPU-resident and cost
+  ~460 MB more; the server loads but the first inference OOMs. It needs **N=36** — which is
+  exactly why upstream re-quantized the head. Do not "fix" tiel by going back a revision.
+- **`--spec-draft-n-max 3` loses acceptance again** (39%/53% vs 45-51%/57%), corroborating
+  the earlier `n-max 3` finding. Keep 2.
+- **Corrected clean numbers (2-model run, 4 rounds):** `tiel-coder-35b` (Q3_K_S, n-max 2)
+  **deep 40.5 t/s** (40.5/38.7/40.6/41.2 — stable), prefill 897, acc 47%/55%, tools 4/4,
+  quality 4/4; `lfm2.5-24b` same session: deep **48.0**, prefill 1932. Tiel loses to LFM2.5
+  on every axis (16% deep, half the prefill, 2.2x the RSS) and verifies drafts at 55% against
+  the incumbent's 78%.
+- **Vs `qwen3.6-35b` directly (2×22.7 GB, 45 GB working set — run was floor-limited):**
+  tiel 28.0 deep vs qwen 26.6, so they are comparable *under that handicap*; with lfm's
+  36 GB run showing tiel at 40.5 and qwen's own documented 46.3, the ordering is
+  **qwen ≈ 46 > tiel ≈ 40 > (lfm 48 by a different mechanism)**. Tiel's only possible edge
+  is coding quality, which `llmbench` does not measure — its measured costs are real:
+  −15% deep vs qwen, −50% prefill and 2.2x RSS vs LFM2.5, and 55% vs 78% draft acceptance.
+- **The earlier 3-way figures were invalidated by two unrelated interference sources:**
+  (a) a runaway `python3` worker in `whisper_server` (`whisper-pro-asr:full`) at 316-381% CPU
+  and ~200 MB/s of reads — plain `podman stop` does not stick there, `restart: unless-stopped`
+  relaunches it; (b) **interleaving three ~20 GB GGUFs** on this 62 GB box with zram 8/8 full —
+  every swap re-reads 13-23 GB and kernel reclaim throttles the decode that follows. Under
+  (b), *every* model read 15-27 t/s deep, including the recipe-benchmarked incumbent; the same
+  configs read 40-48 t/s as a 2-model run. **Rule: bench at most 2 large models at a time
+  here, and check `loadavg` + zram first.** It is not CPU throttling: P-cores boost to
+  4.6-5.1 GHz under load and a single 700-token generation sustained 39.6 t/s.
 
 ## Running 26B/35B models on an 8GB card
 
@@ -437,7 +522,7 @@ and does nothing on dense models.
 
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
-| `qwen3.6-35b` | 40 | 256 / 8 active | **MTP-**UD-Q4_K_M (22.66 GB) | **35** |
+| `tiel-coder-35b` | 40 | 256 / 8 active | **UD-**Q4_K_XL body + **Q3_K_S** head (22.75 GB) | **35** |
 | `lfm2.5-24b` | 40 | 64 / 4 active | QAD-Q4_0 (13.58 GB) | **24** |
 | `gemma-4-26b` *(retired)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
 
@@ -1306,12 +1391,16 @@ Auxiliary tasks split on **critical path vs background**, not prompt size:
 
 | tier | tasks |
 |---|---|
-| `server-qwen3.8-27b` | `compression`, `web_extract`, `mcp`, `skills_hub`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge`, `approval`* |
+| `server-qwen3.8-27b` | `compression`, `web_extract`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge` |
+| `gemma-4-e4b` (laptop dGPU) | `mcp`, `skills_hub`, `approval`* |
 | `gemma-4-e2b` | `title_generation`, `tts_audio_tags` |
 
-\*`approval` on `server-qwen3.8-27b` is now permanent (2026-08-24) — it is pinned to
-`reasoning_effort: none` per request, which is what made it safe. See the note below. The
-rest of this table matches the live config exactly; an older revision had drifted.
+\*These three moved from the retired `ornith-1.5-9b` to `gemma-4-e4b` on 2026-10-17 (see
+[Direct naming](#direct-naming-2026-08-25)). `approval` is pinned to `reasoning_effort: none`
+per request, which is what makes it safe, and `gemma-4-e4b`'s LiteLLM entry now carries
+`allowed_openai_params: ["reasoning_effort"]` — without that allowlist the param is dropped
+and the `max_tokens=16` shape returns **empty** (measured). With it: `APPROVE`, `finish: stop`,
+3 tokens.
 
 Anything the user waits on goes to `server-qwen3.8-27b` — it is faster *and* reuses the
 loaded model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
@@ -1652,8 +1741,8 @@ LiteLLM is on 4000 on both machines, and going through aliases is the better tes
 ./smoke.py                    # after ANY config edit, container restart, or model swap
 ./smoke.py --quick            # just show what is loaded where (no generation)
 
-./llmbench.py --models qwen3.6-35b gemma-4-e4b --tests perf --rounds 3
-./llmbench.py --models qwen3.6-35b qwen3.8-27b --tests all   # before promoting a config
+./llmbench.py --models tiel-coder-35b gemma-4-e4b --tests perf --rounds 3
+./llmbench.py --models tiel-coder-35b qwen3.8-27b --tests all   # before promoting a config
 ./llmbench.py --models server-qwen3.8-27b --fail-on-regression       # CI gate
 ```
 
@@ -1704,6 +1793,12 @@ actually bitten this stack:
 
 - **Free the GPU first.** `curl -s -X POST 127.0.0.1:8081/api/models/unload`. A model left
   resident from a previous run skews the first measurement and can OOM a second load.
+- **Keep a run's summed GGUF footprint ≤ ~40 GB** on this laptop (62 GB RAM, zram 8/8 full).
+  Three ~20 GB models (59 GB) read 15-27 t/s deep; **two 22.7 GB 35Bs (45 GB) already
+  depressed** tiel/qwen to 28/27 t/s; the same tiel read **40.5** against 13.6 GB LFM2.5
+  (36 GB total). Every large-fileset run re-reads 13-23 GB per swap and kernel reclaim
+  throttles the decode that follows. Check `cut -d' ' -f1 /proc/loadavg` and `free -h`
+  first, and remember `whisper_server` can run away at 300%+ CPU — see the Tiel entry above.
 - **Long runs belong in the background.** `--tests all` across two 35B models takes 20-40
   minutes; model swaps (~15-30s each) dominate. Poll the output file rather than blocking.
 - **Watch `free -h`, not just `nvidia-smi`.** `--n-cpu-moe` puts ~20 GB in system RAM, and
