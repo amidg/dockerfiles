@@ -2036,6 +2036,11 @@ each rejection costs a full ~18s load.
   `litellm-config.server.yaml` (and its `qwen3.8-27b`/`qwen3.6-35b` entries plus the
   non-dotted `model_group_alias` pair) was **deleted 2026-10-17**. `litellm-config.desktop.yaml`
   is the live desktop config now — the old note calling it legacy is superseded.
+  **Editing it needs a container restart, not just a file write (2026-10-19).** LiteLLM
+  caches the parsed config in memory and in its postgres, so after changing a window or an
+  entry it keeps advertising the old values even though the file inside the container is
+  already current. `podman restart litellm_server`, then verify on `/v1/models` — that is
+  how the 262144 window was confirmed live.
 - **`reasoning_effort` needs `allowed_openai_params` — `drop_params: true` eats it
   otherwise (2026-08-24).** For an unrecognised `openai/*` model LiteLLM raises
   `UnsupportedParamsError`, and `drop_params: true` converts that into a **silent** drop:
