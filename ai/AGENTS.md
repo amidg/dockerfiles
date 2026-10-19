@@ -27,7 +27,7 @@ only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback), `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, on-demand — the coding slot) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **the default agent model** since 2026-10-18), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 131K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 
@@ -375,7 +375,8 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | resolved name | source | use |
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
-| `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27, ttl 0) | **main agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
+| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector, ttl 0) | **default agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
+| `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
 | `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | on-demand coding model (deep 40.1 t/s); won the Q3_K_XL A/B against Qwen3.6-35B |
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *GGUF + projector kept on disk, unwired — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
@@ -406,9 +407,9 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   `qwen3.8-flash-next` and nothing else. **The dotted form survives only as the laptop's
   stale remote entry** and dies with the deferred laptop rewiring.
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
-  `gemma-4-26b-a4b` (default, `ttl: 0`), `gemma-4-e4b` (on-demand) and `qwen3.6-35b`
-  (on-demand, `ttl: 600`); requesting another evicts the loaded model. All run 131K/128K.
-  `ttl: 0` means the 26B never *idle*-unloads, but that does not exempt it from a
+  `tiel-coder-35b` (default, `ttl: 0`), `gemma-4-26b-a4b` (on-demand) and `gemma-4-e4b`
+  (on-demand); requesting another evicts the loaded model. All run 131K/128K.
+  `ttl: 0` means tiel never *idle*-unloads, but that does not exempt it from a
   cross-model swap.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
@@ -460,8 +461,8 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `gemma-4-26b-a4b` **(promoted 2026-10-18; MTP, vision, 131K, N=27, ttl 0)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
-| RTX 5070 | `tiel-coder-35b` **(on-demand coding slot; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | 1442 t/s | **40.1 t/s** (31.7 shallow), acc 47%/81% | ~7262 MiB at load, 7316 after a 1280px image |
+| RTX 5070 | `gemma-4-26b-a4b` **(on-demand since 2026-10-18; MTP, vision, 131K, N=27)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
+| RTX 5070 | `tiel-coder-35b` **(default agent since 2026-10-18; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | 1442 t/s | **40.1 t/s** (31.7 shallow), acc 47%/81% | ~7262 MiB at load, 7316 after a 1280px image |
 | RTX 5070 | `qwen3.6-35b` **(Q3_K_XL; retained on disk, unwired)** | 1533 t/s | 39.9 t/s (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image |
 | RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
 | RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
@@ -623,10 +624,11 @@ from; Qwen is the Unsloth repo. All rows same-session, interleaved.
 | VRAM after image | 7316 MiB (835 free) | 7424 MiB (727 free) |
 | scripted coding task | **1 attempt, 30.8 s** | 1 attempt, 61.6 s |
 
-**Decision: tiel takes the on-demand slot; qwen's GGUF and projector stay on disk, unwired.**
-The rule was pre-committed: tiel within 10% on deep with 4/4 correctness → tiel wins on the
-agentic quality it was liked for, plus 2x the task speed. Deep is a 0.5% tie; qwen's +6%
-prefill and +5% shallow are real but small.
+**Decision: tiel takes the slot — and became the default agent model the same day**
+(`ttl: 0`, Hermes `model.default`, delegation, every `auxiliary.*`). Qwen's GGUF and projector
+stay on disk, unwired. The rule was pre-committed: tiel within 10% on deep with 4/4
+correctness → tiel wins on the agentic quality it was liked for, plus 2x the task speed. Deep
+is a 0.5% tie; qwen's +6% prefill and +5% shallow are real but small.
 
 **The old tiel speed penalty is gone, cause not isolated.** The retired Q4_K_XL tiel accepted
 drafts at 47%/55% on an identical flag set and lost to Qwen's 68%/78%; this Q3_K_XL build
@@ -1226,6 +1228,7 @@ llama-swap spawns the subprocess on demand.
 | model | n_embd | projector |
 |---|---|---|
 | qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` (run with `--no-mmproj-offload`: CPU projector, ~40 s/image) |
+| tiel-coder-35b | 2048 (Ornith projector; matches — image requests run) | `tiel-coder-35b-mmproj-BF16.gguf` (CPU projector; OCR weaker than the Gemma/Qwen projectors) |
 | gemma-4-26b-a4b | 2816 | `mmproj-F16.gguf` (from the `gemma-4-26B-A4B-it-qat-GGUF` repo) |
 | gemma-4-26b *(retired)* | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
 | gemma-4-12b *(retired)* | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
@@ -1742,8 +1745,9 @@ Direct model names only.
 > repo, and are part of the deferred laptop rewiring — see
 > [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17).
 
-- `model.default: gemma-4-26b-a4b`, `delegation.model: gemma-4-26b-a4b` (laptop, 2026-10-18);
-  the desktop's default is `qwen3.8-flash-next`.
+- `model.default: tiel-coder-35b`, `delegation.model: tiel-coder-35b` (laptop, 2026-10-18);
+  the desktop's default is `qwen3.8-flash-next`. Every `auxiliary.*` role also points at
+  `tiel-coder-35b` — see the co-residency note below.
 - `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
   `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
   the actual `--ctx-size` KV allocation.
@@ -1751,6 +1755,7 @@ Direct model names only.
 | model | pin | why |
 |---|---|---|
 | `qwen3.8-flash-next` (was `server-qwen3.8-27b`) | **131072** | desktop, 131K ctx |
+| `tiel-coder-35b` | **131072** | laptop dGPU, 131K ctx — the default since 2026-10-18 |
 | `gemma-4-26b-a4b` | **131072** | laptop dGPU, 131K ctx. Native window is 262144 — the pin is what stops a 256K advertisement overrunning the KV allocation |
 | `gemma-4-e4b` | **131072** | laptop dGPU, 128K ctx; on-demand only |
 
@@ -1774,7 +1779,7 @@ the gateway was dropping it. Now that it lands, the live settings are:
 | key | value | why |
 |---|---|---|
 | `agent.reasoning_effort` | `medium` | floor for anything without an override |
-| `agent.reasoning_overrides.server-qwen3.8-27b` | `xhigh` | main turn gets the deep tier |
+| `agent.reasoning_overrides.tiel-coder-35b` | `xhigh` | main turn gets the deep tier. Verified accepted: `xhigh`/`medium`/`low`/`none` all return cleanly on the Sharp template |
 | `auxiliary.approval.reasoning_effort` | `none` | `max_tokens=16` must not go to reasoning |
 | `auxiliary.title_generation.reasoning_effort` | `none` | one-line output, no trace needed |
 | `auxiliary.compression.reasoning_effort` | `low` | on the critical path, mid-turn |
@@ -1784,26 +1789,35 @@ comment is stale for `provider: custom`, which routes through the profile above 
 Levels are limited to `xhigh`/`medium`/`low`/`none` by Qwen3.8's template even though
 Hermes' `VALID_REASONING_EFFORTS` accepts `minimal`/`high`/`max`/`ultra` too.
 
-Auxiliary tasks split on **critical path vs background**, not prompt size:
+Auxiliary tasks split on **critical path vs background**, not prompt size. Since
+2026-10-18 **every** role is on `tiel-coder-35b`:
 
 | tier | tasks |
 |---|---|
-| `server-qwen3.8-27b` | `compression`, `web_extract`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge` |
-| **`gemma-4-26b-a4b` (laptop dGPU)** | `mcp`, `skills_hub`, `approval`*, `vision`, `title_generation`, `tts_audio_tags` |
+| **`tiel-coder-35b` (laptop dGPU, default)** | `mcp`, `skills_hub`, `approval`*, `vision`, `title_generation`, `tts_audio_tags`, `compression`, `web_extract`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge` |
 
-\*These six moved to `gemma-4-26b-a4b` on 2026-10-18, from `gemma-4-e4b` (mcp/skills_hub/
-approval) and from the removed `gemma-4-e2b` (vision/title_generation/tts_audio_tags). **All
-of them must be on the same model as `model.default`** — 13.27 GiB + e4b's 4.2 GiB cannot
-co-reside in 8 GB, so pointing an aux role at e4b or e2b would evict the main agent and cost a
-full ~15 s reload on the next turn. `approval` and `title_generation` are pinned to
-`reasoning_effort: none` per request, which is what makes the `max_tokens=16` shape work on a
-thinking model; `gemma-4-26b-a4b`'s LiteLLM entry carries
+\*The `server-qwen3.8-27b` group moved here on 2026-10-18: those names had been pointing at
+the dead `api.gusev.tech` remote since the Strata migration, so those roles were failing
+outright — this is a repair, not just a re-point. The six desktop-era roles and the six
+laptop roles now share one model, which is the rule below. `approval` and `title_generation`
+are pinned to `reasoning_effort: none` per request, which is what makes the `max_tokens=16`
+shape work on a thinking model; the tiel LiteLLM entry carries
 `allowed_openai_params: ["reasoning_effort"]` — without that allowlist the param is dropped
-silently and the shape returns **empty**. With it, through the gateway: `APPROVE`,
-`finish: stop`, 0 reasoning chars, 16-token budget.
+silently and the shape returns **empty**. Verified through the gateway: `DENY`/`APPROVE`,
+`finish: stop`, 0 reasoning chars, within 16 tokens.
 
-Anything the user waits on goes to `server-qwen3.8-27b` — it is faster *and* reuses the
-loaded model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
+**All aux roles must be on the same model as `model.default`.** tiel is 17.2 GiB and
+`gemma-4-26b-a4b` is 14.25 GiB; neither pair co-resides in 8 GB, so pointing one aux role at
+another model would evict the main agent and cost a full load on the next turn.
+
+**Vision moved to tiel with everything else, and it is the weakest part of that move.**
+tiel reads images (projector matches, 1831 prompt tokens, `finish: stop`) but misreads the
+synthetic test word deterministically where qwen read it exactly; `gemma-4-26b-a4b` remains
+the better OCR model via its GPU-resident projector. If image work becomes important, point
+`auxiliary.vision` back at `gemma-4-26b-a4b` and accept the ~15 s reload per image turn.
+
+Anything the user waits on goes to `tiel-coder-35b` — one model, no swap. Fire-and-forget
+tasks now share it too; there is no small local tier left (the iGPU is embeddings only).
 Timeouts are well above Hermes' defaults because a timeout mid-compression drops context.
 
 **Delegation runs on `server-qwen3.8-27b`, measured not assumed:** 33.6s vs 2m05.8s on the

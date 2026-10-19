@@ -1,4 +1,14 @@
 model_list:
+  - model_name: tiel-coder-35b
+    litellm_params:
+      model: openai/tiel-coder-35b
+      api_base: http://llama_swap_nvidia:8080/v1
+      api_key: sk-no-key-required
+      allowed_openai_params: ["reasoning_effort"]
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
   - model_name: server-qwen3.8-27b
     litellm_params:
       model: openai/qwen3.8-27b
@@ -40,16 +50,6 @@ model_list:
   - model_name: gemma-4-e4b
     litellm_params:
       model: openai/gemma-4-e4b
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-      allowed_openai_params: ["reasoning_effort"]
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
-  - model_name: tiel-coder-35b
-    litellm_params:
-      model: openai/tiel-coder-35b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]

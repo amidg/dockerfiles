@@ -239,9 +239,9 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | name | machine | engine | for |
 |---|---|---|---|
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
-| `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
+| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** (40.1 t/s deep, 1442 t/s prefill) |
+| `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
-| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand coding model (40.1 t/s deep, 1442 t/s prefill); won the Q3_K_XL A/B |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 
@@ -258,7 +258,7 @@ curl -s localhost:4000/v1/chat/completions \
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand), `tiel-coder-35b` (MTP, vision on CPU, 131K, on-demand) | everything the user waits on |
+| RTX 5070 8GB | 8081 | `tiel-coder-35b` (default, MTP, vision on CPU, 131K, ttl 0), `gemma-4-26b-a4b` (MTP, vision, 131K, on-demand), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
