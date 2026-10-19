@@ -181,8 +181,10 @@ Apply, in order, on a fresh checkout at `~/Projects/dockerfiles`:
 **B0. Prerequisites, once**
 - NVIDIA driver ≥ 580; `podman`, `podman-compose`; the repo cloned at
   `~/Projects/dockerfiles` (or wherever it lives on that machine).
-- Fast NVMe with ≥ 200GB free: `/mnt/data/llama` (models) and `/mnt/data/llama/strata`
-  (Strata data dir — n-gram table, MTP draft, pack, config).
+- Fast NVMe with ≥ 200GB free: `/var/mnt/data/llama` (models) and
+  `/var/mnt/data/llama/strata` (Strata data dir — n-gram table, MTP draft, pack,
+  config). On Fedora Atomic `/mnt/data` and `/var/mnt/data` are the same directory;
+  this runbook uses the canonical `/var/mnt/data`.
 
 **B1. Update the checkout**
 
@@ -193,13 +195,14 @@ git submodule update --init --checkout ai/Strata   # pins v0.1.45 (or the tag th
 ```
 
 **B2. Download the weights manually** into `$LLAMA_MODELS_DIR` (the same dir the laptop
-uses, e.g. `/mnt/data/llama/models`) — **original filenames, do not rename**:
+uses, e.g. `/var/mnt/data/llama/models`) — **original filenames, do not rename**:
 
 ```bash
-export LLAMA_MODELS_DIR=/mnt/data/llama/models
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
 cd $LLAMA_MODELS_DIR
 hf download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
-  --include "*IQ2_XS*" --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
+  --include "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-*.gguf" \
+  --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
   --local-dir .
 ```
 
@@ -211,13 +214,13 @@ the draft itself into `/data` on first start). Verify the first shard name conta
 **B3. Prepare the data dir**
 
 ```bash
-sudo mkdir -p /mnt/data/llama/strata && sudo chown $USER /mnt/data/llama/strata
+mkdir -p /var/mnt/data/llama/strata   # already created user-owned on the desktop 2026-10-18
 ```
 
 **B4. Build and start**
 
 ```bash
-export LLAMA_MODELS_DIR=/mnt/data/llama/models
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
 podman-compose -f ai/llama-cpp.yml --profile server build strata   # engine build, CUDA_ARCHITECTURES=120
 podman-compose -f ai/llama-cpp.yml --profile server up -d
 ```

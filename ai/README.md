@@ -9,7 +9,7 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 ## Run it
 
 ```bash
-export LLAMA_MODELS_DIR=/mnt/data/llama/models     # where the GGUFs live
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models     # where the GGUFs live
 
 # laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
@@ -55,7 +55,7 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 |---|---|
 | GPU | 5070 Ti 16GB (`--vram-reserve` default) |
 | RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB — **40GB is the maximum**, 48GB only for the documented worst case below |
-| SSD | `/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, caches) |
+| SSD | `/var/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, caches) |
 | context | 131072 |
 | KV | `k8v4` |
 | vision | **cpu** — the engine only recommends the GPU encoder at ≥23.5GB VRAM (upstream #2406); on 16GB the CPU encoder frees ~1.1-1.4GB for the expert cache at a 3-5% decode cost |
@@ -64,10 +64,11 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 ### Weights to download (manual, into `$LLAMA_MODELS_DIR`)
 
 ```bash
-export LLAMA_MODELS_DIR=/mnt/data/llama/models
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
 cd $LLAMA_MODELS_DIR
 hf download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
-  --include "*IQ2_XS*" --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
+  --include "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-*.gguf" \
+  --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
   --local-dir .
 ```
 
@@ -89,9 +90,9 @@ cd ~/Projects/dockerfiles
 git pull --ff-only
 git submodule update --init --checkout ai/Strata
 
-export LLAMA_MODELS_DIR=/mnt/data/llama/models
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
 hf download ukisai/... # the two lines above
-mkdir -p /mnt/data/llama/strata
+mkdir -p /var/mnt/data/llama/strata
 
 podman-compose -f ai/llama-cpp.yml --profile server build strata
 podman-compose -f ai/llama-cpp.yml --profile server up -d

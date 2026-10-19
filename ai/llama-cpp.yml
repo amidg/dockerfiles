@@ -116,7 +116,7 @@ services:
       - llama-swap-network
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - /mnt/data/llama/strata:/data
+      - /var/mnt/data/llama/strata:/data
     ports:
       - 8080:8080
     ulimits:

@@ -44,7 +44,7 @@ pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile 
 | GPU | 5070 Ti 16GB — the container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
 | 7900 XTX | **display only.** Mixed HIP+CUDA in one Strata run is unsupported (`docs/MULTI_GPU.md`, `docs/AMD_HIP.md`), and the container ships no ROCm |
 | RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
-| SSD | `/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
+| SSD | `/var/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
 | context / KV / vision | `131072` / `k8v4` / **`cpu`** |
 | gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
 
