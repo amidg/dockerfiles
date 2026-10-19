@@ -44,7 +44,9 @@ repo's business, not this plan's.
   all client pins keep the name even though Swift 1.5 weights answer. Documented as a
   deliberate, user-owned naming choice (it is the model the desktop serves; the Swift
   post-train is what it is). No aliases.
-- Context 131072, KV `k8v4` (unchanged; k8v4 is fine with Swift packs and KV streaming
+- Context **262144**, KV `k8v4` (raised from 131072 on 2026-10-19 — 262K + k8v4 streaming;
+  KV is only 13 × 816 B/token here, so the whole window costs 2.59 GiB of pinned RAM and no
+  VRAM, and the total pinned set stays ≈36.4 GiB inside the 40 GiB contract)
   works with it from v0.1.40).
 - **Swift Q2_0 is excluded** — its shards split one layer's experts across both shards,
   which Strata's packer cannot handle yet (upstream issue #171). Not a candidate.
@@ -58,7 +60,7 @@ repo's business, not this plan's.
 ```yaml
       - MODEL=IQ2_XS
       - FAMILY=swift
-      - CONTEXT=131072
+      - CONTEXT=262144
       - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
@@ -280,4 +282,4 @@ from `$LLAMA_MODELS_DIR` at the user's discretion — they are outside this repo
 - Laptop rewiring: `ai/litellm-config.laptop.yaml` remote entries still name
   `server-qwen3.8-27b` / `server-qwen3.6-35b`, which no longer exist.
 - Client pins: `~/.hermes/config.yaml` and `~/.config/opencode/opencode.json` must be
-  re-pointed to `qwen3.8-flash-next` (131072 pin stays correct).
+  re-pointed to `qwen3.8-flash-next` (262144 pin since 2026-10-19).

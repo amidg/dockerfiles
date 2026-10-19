@@ -126,12 +126,13 @@ services:
       - no_proxy=localhost,127.0.0.1
       - MODEL=IQ2_XS
       - FAMILY=swift
-      - CONTEXT=131072
+      - CONTEXT=262144
       - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
       - STRATA_ARENA_PIN_GIB=40
       - STRATA_ALLOWED_HOSTS=strata
+      - REINSTALL=${STRATA_REINSTALL:-0}
 
   base_litellm: &base_litellm
     profiles:

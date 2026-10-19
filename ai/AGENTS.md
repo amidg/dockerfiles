@@ -29,7 +29,7 @@ only what its device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **the default agent model** since 2026-10-18), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
-| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 131K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
+| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
 
@@ -45,7 +45,7 @@ pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile 
 | 7900 XTX | **display only.** Mixed HIP+CUDA in one Strata run is unsupported (`docs/MULTI_GPU.md`, `docs/AMD_HIP.md`), and the container ships no ROCm |
 | RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
 | SSD | `/var/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
-| context / KV / vision | `131072` / `k8v4` / **`cpu`** |
+| context / KV / vision | `262144` / `k8v4` / **`cpu`** |
 | gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
 
 **Why Strata and not llama.cpp.** No quant of this model fits 16GB VRAM (the smallest
@@ -71,11 +71,15 @@ The **only** sanctioned step up is **Swift IQ3_XXS at pin 44** (~42.9 GiB arena,
 vs IQ2_XS's 0.341, ~15% slower decode) — inside the 48GB worst case. Everything heavier
 (`IQ3_S` 50.3 GiB, Unsloth `UD-Q4_K_XL` 77 GiB, NVFP4 68 GiB) is out of scope: past 48GB
 they stream from the SSD, which on this box is the slow mode measured at 7-9 tok/s on
-12-16GB cards. **Never raise the pin past 48.**
+12-16GB cards. **Never raise the pin past 48.** **262K context fits inside that contract** (2026-10-19):
+this architecture carries only 12 QSA layers + the draft, so `k8v4` is 13 × 816 B = 10 608
+B/token — 262144 tokens of KV is **2.59 GiB** total, of which only the 32K resident window
+(332 MiB) is VRAM. Arena stays 33.8 GiB, so the whole pinned set is ≈36.4 GiB. Raising
+`--kv-resident` to 65536 would need 664 MiB against the 418 MiB free — rejected.
 
 **Vision runs on the CPU.** `VISION=cpu`, because the engine recommends the GPU encoder
 only at ≥23.5GB VRAM (upstream #2406) and this card is 16GB: the CPU encoder frees
-~1.1-1.4GB for the expert cache at a 3-5% decode cost. On a 131K-context `k8v4` setup the
+~1.1-1.4GB for the expert cache at a 3-5% decode cost. On a 262K-context `k8v4` setup the
 VRAM is worth more than the encoder speed.
 
 **The name deliberately does not match the weights.** `qwen3.8-flash-next` names **Swift
@@ -95,7 +99,7 @@ were refused on 0.1.44/44.1), not the RAM one. Upgrade path if RAM ever goes pas
 **Quant mechanics worth keeping.** GSQ-RCO is a family tag, not the only one: `swift` is
 the current one, `qwen` the base, `nvfp4` the packs, `coder` the pruned variant. KV is
 `k8v4` (fine with Swift packs, and KV streaming works with it from v0.1.40); step down to
-`int8` then `q4_0` only if a 131K prompt OOMs — from 64K context up the KV lives in RAM and
+`int8` then `q4_0` only if a 262K prompt OOMs — from 64K context up the KV lives in RAM and
 is deducted from the resident expert budget.
 
 **Weights are user-supplied, not downloaded.** `GGUF_DIR=/models` with the Swift IQ2_XS
@@ -117,10 +121,13 @@ must match the LiteLLM `model:` field.
 LAN can reach an unauthenticated OpenAI endpoint. LiteLLM :4000 (master key) is the
 supported path; binding 8080 to loopback is the fix if it ever matters.
 
-**The laptop side is deliberately untouched (2026-10-17).** `litellm-config.laptop.yaml`
-still routes `server-qwen3.8-27b` and `server-qwen3.6-35b` at `api.gusev.tech`, and neither
-exists on the desktop anymore — it serves only `qwen3.8-flash-next`. Rewiring the laptop's
-remote entries (and the Hermes/opencode pins) is a separate, explicitly deferred change.
+**The laptop's dead remote entries are gone (2026-10-19).** `litellm-config.laptop.yaml`
+used to route `server-qwen3.8-27b` and `server-qwen3.6-35b` at `api.gusev.tech`; neither
+existed on the desktop (which serves only `qwen3.8-flash-next`). Both entries and their
+`model_group_retry_policy` blocks were deleted, and the commented `fallbacks:` block was
+scrubbed to live names. **Consequence, accepted:** the laptop's Hermes still routes aux
+roles at `server-qwen3.8-27b`, so those fail once the laptop pulls and recreates LiteLLM —
+rewiring `~/.hermes/config.yaml` on the laptop is now urgent, not optional.
 
 
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
@@ -374,7 +381,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 
 | resolved name | source | use |
 |---|---|---|
-| `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
+| `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
 | `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector, ttl 0) | **default agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
@@ -400,12 +407,13 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   (6.5 GB) is deleted. If a fast 9B is ever wanted again, note it was the *only* thing at 64K
   on the dGPU — everything current runs 128K.
 
-- **Two spellings of the server names existed; one is gone.** The laptop
-  (`litellm-config.laptop.yaml`, Hermes, opencode) still uses the dotted
-  `server-qwen3.8-27b` / `server-qwen3.6-35b`; the desktop's `litellm-config.server.yaml`
-  and its `model_group_alias` entries were deleted on 2026-10-17. The desktop now serves
-  `qwen3.8-flash-next` and nothing else. **The dotted form survives only as the laptop's
-  stale remote entry** and dies with the deferred laptop rewiring.
+- **Two spellings of the server names existed; one is gone.** The laptop's
+  `litellm-config.laptop.yaml` carried the dotted `server-qwen3.8-27b` /
+  `server-qwen3.6-35b` remote entries; the desktop's `litellm-config.server.yaml` and its
+  `model_group_alias` entries were deleted on 2026-10-17, and the laptop's two dead entries
+  followed on **2026-10-19**. Every config in this repo now names `qwen3.8-flash-next` and
+  nothing else for the desktop. Only a client-side pin can still spell the old names —
+  `~/.hermes/config.yaml` on the laptop does, and that is the remaining rewiring.
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
   `tiel-coder-35b` (default, `ttl: 0`), `gemma-4-26b-a4b` (on-demand) and `gemma-4-e4b`
   (on-demand); requesting another evicts the loaded model. All run 131K/128K.
@@ -1774,7 +1782,7 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
 Direct model names only.
 
 > **Stale on the desktop as of 2026-10-17.** Every `server-qwen3.8-27b` reference in this
-> section now needs to be `qwen3.8-flash-next` (desktop, 131072 pin unchanged). The edits
+> section now needs to be `qwen3.8-flash-next` (desktop, 262144 pin). The edits
 > live in `~/.hermes/config.yaml` and `~/.config/opencode/opencode.json`, outside this
 > repo, and are part of the deferred laptop rewiring — see
 > [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17).
@@ -1793,8 +1801,10 @@ Direct model names only.
 | `gemma-4-26b-a4b` | **131072** | laptop dGPU, 131K ctx. Native window is 262144 — the pin is what stops a 256K advertisement overrunning the KV allocation |
 | `gemma-4-e4b` | **131072** | laptop dGPU, 128K ctx; on-demand only |
 
-**The 131072 pin carries over unchanged.** Strata serves the desktop at `CONTEXT=131072`,
-so the pin stays correct across the engine swap; only the name changes.
+**The desktop pin moved to 262144 with the engine (2026-10-19).** Strata now serves
+`CONTEXT=262144`, so `qwen3.8-flash-next`'s pin is **262144** (the 131072 pin belonged to the
+131K era). The laptop models keep 131072. Clients are told the window by the pin, so an
+un-updated client keeps compacting at 131K — correct but wasteful, not broken.
 
 **`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
 llama-server here is `--parallel 1`, and on `server-qwen3.8-27b` that is forced by MTP, so

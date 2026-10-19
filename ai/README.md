@@ -57,7 +57,7 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 | GPU | 5070 Ti 16GB (`--vram-reserve` default) |
 | RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB — **40GB is the maximum**, 48GB only for the documented worst case below |
 | SSD | `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}` → `/data:z` (n-gram table, MTP draft, pack, caches) — the mount carries the SELinux `:z` label or the container cannot write it |
-| context | 131072 |
+| context | 262144 |
 | KV | `k8v4` |
 | vision | **cpu** — the engine only recommends the GPU encoder at ≥23.5GB VRAM (upstream #2406); on 16GB the CPU encoder frees ~1.1-1.4GB for the expert cache at a 3-5% decode cost |
 | model name | `qwen3.8-flash-next` (LiteLLM → `http://strata:8080/v1`) — deliberately names the Swift weights |
@@ -253,7 +253,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 
 | name | machine | engine | for |
 |---|---|---|---|
-| `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
+| `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 262K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
 | `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** (40.1 t/s deep, 1442 t/s prefill) |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
@@ -301,7 +301,7 @@ Only **one** dGPU model is resident at a time — requesting another costs a ~15
 
 | device | port | model | role |
 |---|---|---|---|
-| 5070 Ti 16GB | 8080 | `qwen3.8-flash-next` (Strata, Swift 1.5 IQ2_XS, 131K, vision on CPU, `k8v4` KV) | everything — the only inference engine on the box |
+| 5070 Ti 16GB | 8080 | `qwen3.8-flash-next` (Strata, Swift 1.5 IQ2_XS, 262K, vision on CPU, `k8v4` KV) | everything — the only inference engine on the box |
 | 7900 XTX 24GB | — | — | display only; Strata's container is CUDA-only and cannot mix vendors |
 
 Strata never swaps models: the expert arena is page-locked in RAM and stays there, which
