@@ -2041,6 +2041,13 @@ each rejection costs a full ~18s load.
   entry it keeps advertising the old values even though the file inside the container is
   already current. `podman restart litellm_server`, then verify on `/v1/models` — that is
   how the 262144 window was confirmed live.
+  **Recreating `strata` needs the same restart (2026-10-19).** A recreated container comes
+  back on a **new bridge IP** (10.89.0.6 → 10.89.0.12 was observed), and `litellm_server`
+  keeps failing with `OpenAIException - Connection error` against the old address even
+  though `httpx`/`urllib` from inside its own container reach the new one fine. So the rule
+  is: **`podman-compose up -d` (which recreates strata) is always followed by
+  `podman restart litellm_server`** — the same class of stale-state trap as the config
+  cache above. `smoke.py` catches it as vision + approval failures while direct :8080 works.
 - **`reasoning_effort` needs `allowed_openai_params` — `drop_params: true` eats it
   otherwise (2026-08-24).** For an unrecognised `openai/*` model LiteLLM raises
   `UnsupportedParamsError`, and `drop_params: true` converts that into a **silent** drop:
