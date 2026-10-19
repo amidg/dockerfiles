@@ -68,9 +68,9 @@ Dockerfile extension (below).
   llama.cpp fallback entry uses the bundled form. Do not wire it into the poly config.
 - **GPU arch: 120** (RTX 5070 Laptop is Blackwell) — same `CUDA_ARCHITECTURES` build arg as
   the desktop image.
-- Expected performance (PolyStrata reference laptop, RTX 4070 8GB / 32GB RAM, same file):
-  **~83 t/s writes, ~1,700 t/s prompt reads** vs the llama.cpp incumbent's measured
-  **40.1 t/s deep / 1442 t/s prefill**. The A/B gate below decides promotion.
+- Measured on rollout (2026-10-19, same-session A/B): **51.2 / 63.3 / 65.1 t/s deep,
+  1704 t/s prefill** vs the llama.cpp incumbent's **32.6 / 34.5 / 33.5 deep, 1638 t/s
+  prefill**, with tools/quality/approval equal. Poly promoted; see Section B.
 
 ## Section A — agent work (repo only) — LANDED 2026-10-19
 
@@ -163,8 +163,8 @@ runbook, benchmark results once measured.
 - the upstream Dockerfile gap and what `ai/polystrata.Dockerfile` adds;
 - co-residency rules: strata-poly holds ~7-8GB of the card while resident; **any** dGPU
   load (gemma on-demand, llama.cpp tiel fallback) requires unloading strata-poly first via
-  `POST /api/models/unload` on `:8080` (poly hands VRAM back cleanly); llama-swap cannot
-  call it automatically;
+  `POST /api/models/unload` on `:8080` **with a JSON body** (`-H 'Content-Type: application/json' -d '{}'`;
+  a bare POST is rejected) — poly hands VRAM back cleanly; llama-swap cannot call it automatically;
 - the deliberate naming note: `tiel-coder-35b` names strata-poly weights; the engine's
   registry name is not a rename prompt;
 - the "MTP head file unused by poly" note;
@@ -175,13 +175,25 @@ runbook, benchmark results once measured.
 
 `feat: add strata-poly laptop service for Tiel Coder 35B (strata_laptop)`.
 
-## Section B — manual rollout runbook (user, on the laptop) — PENDING
+## Section B — manual rollout runbook (user, on the laptop) — ROLLED OUT 2026-10-19
 
 **B0. Prerequisites, once**
 - NVIDIA driver ≥ 580 (CUDA 13); `podman`, `podman-compose`; repo cloned.
 - Weights already in `$LLAMA_MODELS_DIR` (`Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf`,
-  17.2GB; `mmproj-BF16.gguf`, 0.9GB — original filenames, do not rename; setup verifies
-  SHA-256 against its pinned revision `bbe9e566`). Separate MTP head file: leave as-is.
+  17.2GB; the projector 0.9GB). No download is needed, but the projector must exist under
+  **its original name** — setup.py looks for `$LLAMA_MODELS_DIR/mmproj-BF16.gguf` exactly;
+  the llama.cpp entry mounts the same inode as `tiel-coder-35b-mmproj-BF16.gguf`. Link it
+  once (0 bytes), after checking the pinned size/hash (`902822016`,
+  `d9ce3102…52837`):
+
+  ```bash
+  cd /mnt/data/llama/models
+  sha256sum tiel-coder-35b-mmproj-BF16.gguf
+  ln tiel-coder-35b-mmproj-BF16.gguf mmproj-BF16.gguf
+  ```
+
+  Without the link setup silently downloads its own 0.9GB copy. Separate MTP head file:
+  leave as-is (poly's draft block is inside the GGUF).
 
 **B1. Checkout**
 
@@ -202,10 +214,20 @@ mkdir -p /var/mnt/data/llama/strata
 ```bash
 export LLAMA_MODELS_DIR=/mnt/data/llama/models        # laptop path per AGENTS.md
 export STRATA_DATA_DIR=/var/mnt/data/llama/strata
+
+# free the card first: llama.cpp tiel is resident and holds ~7.3GB of the 8GB
+podman-compose -f ai/llama-cpp.yml --profile laptop stop nvidia_llama_swap
+nvidia-smi --query-gpu=memory.used --format=csv,noheader   # expect ~0
+
 podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop   # compose takes the service key
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d strata_laptop
-podman-compose -f ai/llama-cpp.yml --profile laptop up -d   # rest of the laptop stack
 ```
+
+The rest of the laptop stack (`intel_llama_swap`, `whisper_server`, `litellm`, postgres) can
+stay up; only the dGPU llama-swap must be down. **A blanket `--profile laptop up -d` also
+starts `nvidia_llama_swap`** — either run it before the strata start or stop that service
+again afterwards. Note the dGPU is already pointed at `strata:8080` by the LiteLLM config, so
+the main model is down until the first start completes; go straight from the stop to the up.
 
 First start: setup pass (tokenizer dir, run config; no model download — `GGUF_DIR=/models`)
 then model load. Minutes of logged silence is normal; watch `podman logs -f strata`.
@@ -243,19 +265,25 @@ export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 # strata-poly arm (direct :8080 — no llama-swap /api/models/unload on this backend)
 ./llmbench.py --endpoint http://localhost:8080/v1 --models tiel-coder-35b-a3b-ud-q3_k_xl \
   --tests all --rounds 3
-# incumbent llama.cpp arm (unload strata-poly first: POST 127.0.0.1:8080/api/models/unload)
+# incumbent llama.cpp arm (unload strata-poly first: POST 127.0.0.1:8080/api/models/unload
+#  with -H 'Content-Type: application/json' -d '{}' — a bare POST answers "send application/json")
 ./llmbench.py --endpoint http://localhost:8081/v1 --models tiel-coder-35b \
   --tests all --rounds 3
 ```
 
-Reference for the poly arm: ~83 t/s writes / ~1,700 t/s reads on the reference laptop.
-Incumbent baseline: deep 40.1 / prefill 1442. Gate: tools 4/4, quality no worse than the
-incumbent, vision on a real image, approval PASS (the `reasoning_effort` allowlist is
-already in the LiteLLM entry). Record numbers in README + AGENTS.md in the same commit.
-Note absolute values drift 20-30% with thermals — compare within the session only.
+**Result (2026-10-19, same session):** poly **51.2 / 63.3 / 65.1 deep**, 59.7 shallow,
+1704 t/s prefill (r1), accept 60-81%/80-92%, 50,173-token needle @ 1338 t/s (37.5 s),
+tools 4/4, quality 4/4, approval PASS. llama.cpp: **32.6 / 34.5 / 33.5 deep**, 26.7
+shallow, 1638 t/s prefill, 49,968 @ 1451 t/s (34.4 s), same 4/4 and PASS. Poly is ~90%
+faster at depth for a ~8% slower long-context ingest; real-1280px vision read `PLATYPUSS`
+in 7.6 s (llama.cpp read `PLAYYUUS`). **Promoted; poly is the resident engine, llama.cpp
+`nvidia_llama_swap` stays up as the manual fallback but must not load while poly is
+resident.** VRAM 7544 MiB, `vram_free_mib: 255`, ~29 GB system RAM, first boot ~30 s,
+warm reload after an unload ~4 s.
 
 **B6. Switchover (manual fallback path, both directions)**
-- poly → llama.cpp: `curl -s -X POST 127.0.0.1:8080/api/models/unload` (VRAM returned),
+- poly → llama.cpp: `curl -s -X POST -H 'Content-Type: application/json' -d '{}' 127.0.0.1:8080/api/models/unload`
+  (VRAM returned; a bare POST is rejected),
   then use `:8081/v1` directly (or temporarily repoint the LiteLLM entry and
   `podman restart litellm`).
 - llama.cpp → poly: unload via `curl -s -X POST 127.0.0.1:8081/api/models/unload`, then any
@@ -282,8 +310,10 @@ The submodule and image can stay; nothing else depends on them.
 
 - **The Dockerfile extension is adapted, not upstream-documented** — budget a debugging
   session on the first image build (BUILD.json hash bookkeeping is the fiddly part).
-- **`STRATA_ALLOWED_HOSTS` is a Strata-engine env**; poly's server may not honor it. Check
-  B4.4 first boot; `API_KEY` is the fallback.
+- **`STRATA_ALLOWED_HOSTS` — verified honored, not a risk.** Unlike the earlier assumption
+  that it was a Strata-engine-only env, the pinned poly server reads `$STRATA_ALLOWED_HOSTS`
+  itself (`serve/server.py:6815`, `allowed_hosts_of`). Keep the B4.4 gateway check; `API_KEY`
+  remains the fallback but should not be needed.
 - **PolyStrata churn:** pin the submodule to a tag; re-pinning is a deliberate step.
 - **Co-residency:** two engines competing for 8GB is the standing failure mode; the runbook
   and AGENTS.md make the unload-first rule explicit everywhere the card is shared.

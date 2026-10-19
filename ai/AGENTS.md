@@ -380,7 +380,7 @@ CPU-resident* and mmap indirection sat on the expert-gather path. No expert is C
 here, so that rationale no longer applies and plain mmap may cost nothing while making
 llama-swap's cold loads cheaper. Untested — do not assume either way.
 
-## Strata-poly on the laptop — Tiel Coder 35B-A3B (added 2026-10-19, rollout pending)
+## Strata-poly on the laptop — Tiel Coder 35B-A3B (added 2026-10-19, rolled out 2026-10-19)
 
 The laptop gained a second engine: the **`strata_laptop`** compose service running the
 container **`strata`** (submodule `ai/PolyStrata`, pinned to **`v0.1.45-poly.1`** =
@@ -445,7 +445,7 @@ mandatory — poly pins its RAM the same way as the desktop engine, with
 **Co-residency is the standing failure mode, and the unload-first rule is not optional.**
 While strata-poly is resident it holds ~7-8GB of the 8GB card. **Any** llama-swap load on
 `:8081` — `gemma-4-26b-a4b`, `gemma-4-e4b`, or the llama.cpp `tiel-coder-35b` fallback —
-must be preceded by `curl -s -X POST 127.0.0.1:8080/api/models/unload`; llama-swap has no
+must be preceded by `curl -s -X POST -H 'Content-Type: application/json' -d '{}' 127.0.0.1:8080/api/models/unload`; llama-swap has no
 way to call that endpoint, so it is a human (or harness) step. The reverse is symmetric:
 unload `:8081` before a request to `:8080`. There is **no LiteLLM `fallbacks:` block**
 between the two backends, deliberately: the repo rejected fallbacks for this card because
@@ -454,28 +454,47 @@ long session. Switchover is a runbook step, not routing.
 
 **Weights, names, and the model id.** `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB)
 and `mmproj-BF16.gguf` (0.9GB) — **original repo filenames**; setup.py matches them
-exactly and verifies SHA-256 against its pinned revision `bbe9e566`. The llama.cpp entry
-mounts the same projector under `tiel-coder-35b-mmproj-BF16.gguf`. The models dir is
+exactly. The laptop's copy of the projector is named `tiel-coder-35b-mmproj-BF16.gguf`
+(the llama.cpp entry's mount name), so `mmproj-BF16.gguf` must be a **hardlink** to it
+(`ln`, 0 bytes; verified `902822016` B / `d9ce3102…`). Without the link setup finds no
+projector in `$LLAMA_MODELS_DIR` and downloads its own 0.9GB copy. The separate MTP head
+file is unused by poly. The models dir is
 mounted **writable** (`.done` markers), both mounts carry the SELinux `:z` label, and the
 data dir default is `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}` — **the desktop's path
 name on purpose**: the two boxes are separate hosts with separate disks, so a shared name
 never aliases, and the same `$STRATA_DATA_DIR` override works on both.
 
-**Expected gain, gate not run.** PolyStrata's reference laptop (RTX 4070 8GB, 32GB RAM,
-the same file) reads **~83 t/s writes / ~1,700 t/s prompt reads**. The llama.cpp incumbent
-measures **deep 40.1 t/s / prefill 1442 t/s** (2026-10-18, same-session baseline). The
-A/B is `llmbench.py --endpoint http://localhost:8080/v1 --models
-tiel-coder-35b-a3b-ud-q3_k_xl --tests all --rounds 3` against the `:8081` arm, strata-poly
-unloaded for the incumbent arm. Gate as everywhere: `tools` 4/4, `quality` no worse, vision
-on a real 1280px image, approval PASS. Record numbers in README + AGENTS.md in the same
-commit. Until then, every poly number in this file is *expected*, not measured.
+**Measured, gated, and promoted (2026-10-19).** Same-session A/B, `llmbench.py --tests all
+--rounds 3`, both arms on this laptop, same GGUF:
 
-**Known risks, accepted:** `STRATA_ALLOWED_HOSTS` is a *Strata-engine* env var and poly's
-server may not honor it — check the gateway hop on first boot, `API_KEY` is the fallback
-(it also disables the check); the submodule is pinned to a **tag**, not main, because
+| | **strata-poly** (`:8080`) | llama.cpp (`:8081`) |
+|---|---|---|
+| prefill (r1) | **1704 t/s** | 1638 t/s |
+| decode (shallow) | **59.7 t/s** | 26.7 t/s |
+| deep | **51.2 / 63.3 / 65.1** | 32.6 / 34.5 / 33.5 |
+| draft accept s/d | 60-81% / 80-92% | 44-52% / 81% |
+| 50K longctx | 50,173 @ 1338 t/s (37.5 s) | 49,968 @ 1451 t/s (34.4 s) |
+| tools / quality / approval | 4/4 / 4/4 / PASS | 4/4 / 4/4 / PASS |
+| vision (1×1 / real 1280px) | yes / `PLATYPUSS`, 7.6 s | yes / `PLAYYUUS` |
+
+**Deep is ~90% faster at depth (63-65 vs 33-34 t/s), prefill is a tie, long-context ingest
+is ~8% slower, and correctness is identical.** Poly round 1 (51.2 deep) is a warm-up
+outlier; rounds 2-3 are the steady state. Absolute values drift 20-30% with thermals — the
+incumbent's 2026-10-18 baseline read 40.1 deep, today it read 33.5 in the same session in
+which poly read 63-65. Vision was also checked manually on a real 1280px image, not just
+the harness's 1×1 PNG. VRAM 7544 MiB at load with `vram_free_mib: 255` (the elastic expert
+cache owns that margin), system RAM ~29 GB in use. First boot ~30 s (engine is prebuilt in
+the image); warm reload after an unload ~4 s.
+
+**Known risks, accepted:** the submodule is pinned to a **tag**, not main, because
 PolyStrata has active churn; podman is undocumented upstream (same CDI fallback as the
 desktop); the image build runs on the machine it runs on, and the entrypoint warns on a
-CPU without AVX2 (the Ultra 9 285H has AVX2 — fine).
+CPU without AVX2 (the Ultra 9 285H has AVX2 — fine). **`STRATA_ALLOWED_HOSTS` is not on
+this list** — the pinned poly server reads it itself (`serve/server.py:6815`,
+`allowed_hosts_of`), so the gateway hop is expected to work; the B4.4 check stays and
+`API_KEY` remains the fallback. Fresh-host note: `ai/polystrata.Dockerfile` pins
+`FROM docker.io/nvidia/cuda:…` because an unqualified `nvidia/cuda` makes podman's
+short-name resolution fail (no TTY) before the build starts.
 
 ### Strata-poly (laptop) gotchas
 
@@ -500,7 +519,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | resolved name | source | use |
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
-| `tiel-coder-35b` | laptop dGPU, **strata-poly** (container `strata`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata:8080` from 2026-10-19; the A/B against the llama.cpp baseline is not run yet |
+| `tiel-coder-35b` | laptop dGPU, **strata-poly** (container `strata`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata:8080`, and the 2026-10-19 A/B promoted it: deep 63-65 vs llama.cpp's 33-34 t/s, tools/quality/approval equal |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
 | `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
@@ -539,7 +558,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   cross-model swap.
 - **The rule is now across engines, not just models: one resident engine on the card.**
   `strata` (strata-poly) holds ~7-8GB while resident, and llama-swap cannot unload
-  it — free it first with `curl -s -X POST 127.0.0.1:8080/api/models/unload` before any
+  it — free it first with `curl -s -X POST -H 'Content-Type: application/json' -d '{}' 127.0.0.1:8080/api/models/unload` before any
   `:8081` load, and unload `:8081` before a request to `:8080`. LiteLLM has no fallback
   path between the engines by design (see
   [Strata-poly on the laptop](#strata-poly-on-the-laptop--tiel-coder-35ba3b-2026-10-19-rollout-pending)).
@@ -644,6 +663,7 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
+| RTX 5070 | `tiel-coder-35b` **(strata-poly, container `strata`; resident; 131K, UD-Q3_K_XL read in place, vision on CPU)** | **1704 t/s** | **63.3-65.1 t/s** (51.2 round-1 warm-up), shallow 59.7 | ~7544 MiB (elastic expert cache, 255 free) |
 | RTX 5070 | `gemma-4-26b-a4b` **(on-demand since 2026-10-18; MTP, vision, 131K, N=27)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
 | RTX 5070 | `tiel-coder-35b` **(default agent since 2026-10-18; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | 1442 t/s | **40.1 t/s** (31.7 shallow), acc 47%/81% | ~7262 MiB at load, 7316 after a 1280px image |
 | RTX 5070 | `qwen3.6-35b` **(Q3_K_XL; retained on disk, unwired)** | 1533 t/s | 39.9 t/s (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image |
@@ -2405,8 +2425,9 @@ better test anyway.
 
 The same applies to **strata-poly on the laptop**: drive it with
 `llmbench.py --endpoint http://localhost:8080/v1 --models tiel-coder-35b-a3b-ud-q3_k_xl`,
-and free the card with `POST :8080/api/models/unload` (the poly server has its own
-unload endpoint; llama-swap's `:8081` endpoint cannot free it). `smoke.py`'s laptop tier
+and free the card with `POST :8080/api/models/unload` **with a JSON body**
+(`-H 'Content-Type: application/json' -d '{}'` — a bare POST answers `send application/json`);
+the poly server has its own unload endpoint, and llama-swap's `:8081` endpoint cannot free it. `smoke.py`'s laptop tier
 probe will not see `:8080` — it probes `:8081`/`:8082`.
 
 **Strata numbers now exist — see the desktop section below.** Every other performance
@@ -2434,7 +2455,8 @@ tier: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing o
 image. On the desktop, the equivalent gate runs against `qwen3.8-flash-next` — and note
 `smoke.py`/`llmbench.py` speak OpenAI, so they need `--endpoint http://localhost:8080/v1`
 (the desktop's Strata has no unload endpoint; it is resident by design). The laptop's
-strata-poly is resident too, but it **does** answer `POST :8080/api/models/unload`, which is
+strata-poly is resident too, but it **does** answer `POST :8080/api/models/unload` — with a
+JSON body (`-H 'Content-Type: application/json' -d '{}'`; a bare POST is rejected) — which is
 how the card is handed back to llama-swap for the incumbent arm of the A/B.
 
 ### Reading its output against this stack

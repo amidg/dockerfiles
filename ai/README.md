@@ -171,20 +171,36 @@ Upstream's own image builds only the Qwen `strata` engine, so the in-repo
 setup.py's own build helpers; the first start finds `engine-poly/BUILD.json` current and
 goes straight to loading the model.
 
-**Weights are already on disk** — `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB) and
-`mmproj-BF16.gguf` (0.9GB), **original filenames**; setup verifies SHA-256 against its
-pinned revision. The separate MTP head file is **not** used by poly (its draft block ships
-inside the GGUF) — it exists for the llama.cpp fallback entry.
+**Weights are already on disk — no download.** `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf`
+(17.2GB, pinned SHA-256 `46b8fbeb…`) and the projector (0.9GB). setup.py looks for the
+projector under **its original name**, `$LLAMA_MODELS_DIR/mmproj-BF16.gguf`; the llama.cpp
+entry mounts the same inode as `tiel-coder-35b-mmproj-BF16.gguf`. Link it once (0 bytes,
+after checking SHA-256 `d9ce3102…`):
+
+```bash
+ln /mnt/data/llama/models/tiel-coder-35b-mmproj-BF16.gguf /mnt/data/llama/models/mmproj-BF16.gguf
+```
+
+Without the link setup downloads its own 0.9GB copy. The separate MTP head file is **not**
+used by poly (its draft block ships inside the GGUF) — it exists for the llama.cpp fallback
+entry.
+
+**Free the card before the first start.** llama-swap's resident tiel holds ~7.3GB of the
+8GB, so stop it first (it also hands back ~18GB of RAM):
 
 ```bash
 cd ~/Projects/dockerfiles
 git pull --ff-only
 git submodule update --init --checkout ai/PolyStrata
 mkdir -p /var/mnt/data/llama/strata
+podman-compose -f ai/llama-cpp.yml --profile laptop stop nvidia_llama_swap
 podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop   # compose takes the service key
-podman-compose -f ai/llama-cpp.yml --profile laptop up -d
+podman-compose -f ai/llama-cpp.yml --profile laptop up -d strata_laptop
 podman logs -f strata   # minutes of expected silence: tokenizer pack, config, model load
 ```
+
+A later blanket `--profile laptop up -d` also starts `nvidia_llama_swap`; keep it stopped
+(or unload poly first) — see co-residency below.
 
 First-boot checks, in order: `curl -s 127.0.0.1:8080/health`; the log reports the RTX 5070
 (same podman CDI fallback as the desktop); `/v1/models` (informational — the LiteLLM entry
@@ -194,17 +210,26 @@ after ~30-60s; `free -h` ≈ 22GB in use with the model resident.
 
 **Co-residency: unload strata-poly before any llama-swap load.** While strata-poly is
 resident it holds ~7-8GB of the card, so `gemma-4-26b-a4b`, `gemma-4-e4b`, and the
-llama.cpp `tiel-coder-35b` fallback all need `curl -s -X POST 127.0.0.1:8080/api/models/unload`
+llama.cpp `tiel-coder-35b` fallback all need `curl -s -X POST -H 'Content-Type: application/json' -d '{}' 127.0.0.1:8080/api/models/unload`
 first; llama-swap cannot call it. The reverse direction is the same: unload `:8081` before
 a request to `:8080`. The llama.cpp tiel entry stays wired as the manual fallback, reachable
 direct on `:8081/v1`.
 
-**The A/B gate against the llama.cpp incumbent is not run yet.** Incumbent baseline (llama.cpp,
-2026-10-18): **deep 40.1 t/s, prefill 1442 t/s**. PolyStrata's reference laptop (RTX 4070 8GB,
-same file) reads ~83 t/s writes / ~1,700 t/s prompt reads. Run
-`llmbench.py --endpoint http://localhost:8080/v1 --models tiel-coder-35b-a3b-ud-q3_k_xl --tests all
---rounds 3` against the `:8081` arm in one session, and record the numbers in this file and
-`AGENTS.md` in the same commit.
+**Measured and promoted (2026-10-19), same-session A/B, `llmbench.py --tests all --rounds 3`:**
+
+| | strata-poly (`:8080`) | llama.cpp (`:8081`) |
+|---|---|---|
+| prefill (r1) | **1704 t/s** | 1638 t/s |
+| decode (shallow) | **59.7 t/s** | 26.7 t/s |
+| deep | **51.2 / 63.3 / 65.1** | 32.6 / 34.5 / 33.5 |
+| 50K longctx | 50,173 @ 1338 t/s (37.5 s) | 49,968 @ 1451 t/s (34.4 s) |
+| tools / quality / approval | 4/4 / 4/4 / PASS | 4/4 / 4/4 / PASS |
+| vision | yes (real 1280px: `PLATYPUSS`, 7.6 s) | yes (`PLAYYUUS`) |
+
+Deep decode is **~90% faster** (63-65 vs 33-34 t/s) at equal correctness; prefill is a tie
+and long-context ingest is ~8% slower. Absolute values drift 20-30% with thermals — compare
+within one session only (the incumbent's 2026-10-18 baseline was 40.1 deep; today's same-run
+number is 33.5). VRAM 7544 MiB at load, ~29GB system RAM, first boot ~30s.
 
 ## Whisper ASR (Intel NPU)
 
@@ -313,7 +338,8 @@ LiteLLM forwards a requested model name to whichever engine owns it. On the lapt
 llama-swap spawns and kills one `llama-server` per model on demand and unloads after an
 idle TTL; strata-poly is one long-resident process, as on the desktop. **The 8GB card is
 shared: only one of the two dGPU engines can hold it at a time** — unload strata-poly
-(`POST :8080/api/models/unload`) before llama-swap loads anything, and unload llama-swap
+(`POST :8080/api/models/unload` with a JSON body: `-H 'Content-Type: application/json' -d '{}'`)
+before llama-swap loads anything, and unload llama-swap
 (`POST :8081/api/models/unload`) before a request to strata-poly.
 
 ## Use the model names
@@ -518,7 +544,7 @@ then `up -d`.
 reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
 
 **llama-swap loads fail while `strata` (strata-poly) is resident.** Not a bug — two engines,
-one 8GB card. Unload strata-poly (`curl -s -X POST 127.0.0.1:8080/api/models/unload`) before
+one 8GB card. Unload strata-poly (`curl -s -X POST -H 'Content-Type: application/json' -d '{}' 127.0.0.1:8080/api/models/unload`) before
 any llama-swap model loads, and unload llama-swap (`POST 127.0.0.1:8081/api/models/unload`)
 before a request to `:8080`.
 

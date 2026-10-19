@@ -28,7 +28,7 @@
 # The container needs --ulimit memlock=-1: strata-poly pins its RAM working set with
 # cudaHostRegister, like the desktop engine.
 
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04
+FROM docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04
 
 # STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1 and
 # docker stop's SIGTERM reaches it (same as upstream).
