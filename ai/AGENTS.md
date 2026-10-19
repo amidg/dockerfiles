@@ -501,7 +501,7 @@ spill to system RAM and halved decode speed; `q8_0` stays entirely in VRAM. Full
 prefill — this is a prompt cache hit artifact, not real prefill. Always test with ≥2
 models so the alternation flushes the cache and every round measures cold prefill.
 
-### Gemma 4 26B-A4B on RTX 5070 8GB — the main agent model (2026-10-18)
+### Gemma 4 26B-A4B on RTX 5070 8GB — default agent for a few hours, now on-demand (2026-10-18)
 
 `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (14.25 GB) + `mmproj-F16.gguf` +
 `mtp-gemma-4-26B-A4B-it.gguf`, **one entry** carrying all three. It replaces
@@ -589,14 +589,19 @@ retiring models were still resident so they appear in the table):
 model that is also the vision model, the tool caller and the long-context reader, and which
 removes both predecessors' cross-model swaps. It is a consolidation, not a speed play.
 
-**Co-residency consequence:** 13.27 GiB + e4b's 4.2 GiB cannot share 8 GB, so pointing any
-Hermes `auxiliary.*` role at e4b would evict the main model and cost a 13.27 GiB reload on
-the next turn. Every aux role therefore points at `gemma-4-26b-a4b` — same model, no swap.
+**Co-residency consequence (holds for whoever is default):** 13.27 GiB + e4b's 4.2 GiB
+cannot share 8 GB, so pointing any Hermes `auxiliary.*` role at another model evicts the
+main model and costs a full reload on the next turn. Every aux role therefore follows
+`model.default` — gemma's day, then tiel's from the same evening.
 
-**Client pins move with the model.** `~/.config/opencode/opencode.json` now offers
-`gemma-4-26b-a4b` (`limit.context` 131072 / `limit.output` 32768) where it used to pin
-`tiel-coder-35b`; `gemma-4-e2b` is not selectable anywhere. Without the pin OpenCode never
-compacts and grows until the server rejects the request.
+**Client pins move with the model.** `~/.config/opencode/opencode.json` now defaults to
+`custom/tiel-coder-35b` (`limit.context` 131072 / `limit.output` 32768, variants
+`low`/`medium`/`xhigh`, `small_model` also tiel so title/summary calls do not swap). It
+offers `gemma-4-26b-a4b` as the alternative and no longer lists the dead
+`server-qwen3.8-27b`/`server-qwen3.6-35b` entries. Note the provider key is `custom`, so
+model ids must be `custom/<name>` — the old `openai/...` prefix pointed at a provider that
+does not exist. Without the `limit` pin OpenCode never compacts and grows until the server
+rejects the request.
 
 **One flag deliberately absent: `--cpu-range`/`--cpu-strict`.** At 131072 that pinning costs
 **−10% decode** (42.3 vs 46.5 t/s) and −16% at 16K — the opposite of the 64K thread sweep
