@@ -1,0 +1,11 @@
+{
+  "qwen3.8-flash-next": {
+    "longctx": {
+      "found": true,
+      "empty": false,
+      "ctx_tokens": 131915,
+      "prefill_tps": 2159.0,
+      "prefill_s": 61.1
+    }
+  }
+}

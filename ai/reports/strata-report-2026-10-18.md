@@ -267,3 +267,49 @@ python3 /tmp/opencode/vision_test.py                          # the 1280px image
 - The Swift `IQ3_XXS` step-up was **not** exercised (documented worst case, untested).
 - Hermes/opencode client pins (`~/.hermes/config.yaml`, `~/.config/opencode/opencode.json`)
   are still the deferred B8 work.
+
+---
+
+## Addendum (2026-10-19): context raised to 262144
+
+One reinstall pass (`CONTEXT=262144` + `STRATA_REINSTALL=1`, config/MTP/pack reused), ready
+in 30 s. `/v1/status`: native and `max_positions` **262144**; `/health` `max_context: 262144`.
+
+The prediction held exactly — the window costs RAM, not VRAM:
+
+| | 131072 | 262144 |
+|---|---|---|
+| `arena_mib` | 33 812 | **33 812 (unchanged)** |
+| `expert_cache_mib` / `vram_free_mib` | 9 775 / 418 | 9 543 / 418 |
+| KV total (RAM, pinned) | 1.29 GiB | 2.59 GiB |
+
+**Throughput at ~8.6K is unchanged**: prefill 2041 t/s, decode 109.9, deep **107.4 t/s**
+(131K run: 2036 / 111.7 / 113.5 — the difference is inside the ±10% round spread), tools
+4/4, quality 4/4, approval PASS.
+
+**Deep-window behaviour is the interesting part.** Two needle runs, numbers from the
+engine log (see the caveat below):
+
+| prompt | read | needle | decode at depth | expert-cache hit |
+|---|---|---|---|---|
+| 120 895 tokens | ~45 s | found ✅ | 119.7-147.7 t/s | 83.8% |
+| **197 451 tokens** | **61 s (~3 230 t/s effective)** | found ✅ | **132.1-156.3 t/s** | **95.5%** |
+
+Decode did **not** collapse at 197K — it improved with the cache hit rate, and only 0.1% of
+routed experts came over PCIe at that depth. The 40 GiB pin was not approached: this is a
+131K→262K raise with no measurable cost at the short end.
+
+**Harness caveat found in the process:** `llmbench.py`'s `ctx_tokens` and `prefill_tps` come
+from the response's `timings` object and **under-report on Strata** — it reported
+`104 516 tokens / 2 326 t/s` and `131 915 / 2 159 t/s` where the engine read `120 895` and
+`197 451`. Use the engine log for Strata long-context numbers; the harness's
+`found`/`empty` verdicts stay reliable.
+
+Host after the deep runs: RAM 54/93 GiB used, zram 4.7 GB data (the long prompts pushed
+swap, which the pinned arena/KV cannot use). Gateway still `PONG` in 0.6 s.
+
+Client-side follow-ups: the desktop's Hermes pin belongs at **262144** now; the laptop's
+remote `qwen3.8-flash-next` entry and the homelab hop were bumped in the same change
+(`f6cb935`, homelab `52b16ac`), and the laptop's two dead `server-qwen3.*` entries were
+removed — which makes the laptop's `~/.hermes/config.yaml` rewiring urgent rather than
+deferred.

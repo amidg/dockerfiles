@@ -69,6 +69,11 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 model on deep decode**, with LiteLLM adding no measurable cost. Arena 33.0 GiB of the
 40 GiB pin; warm restart 20 s.
 
+**Context raised to 262144 on 2026-10-19** (KV is only 13 × 816 B/token here, so the whole
+window adds 2.6 GiB of pinned RAM and no VRAM): a **197 451-token prompt is fully read in
+61 s** with the needle found and decode still 132-156 t/s at that depth; perf at ~8.6K is
+unchanged (2041 t/s prefill, 107.4 t/s deep).
+
 ### Weights to download (manual, into `$LLAMA_MODELS_DIR`)
 
 ```bash

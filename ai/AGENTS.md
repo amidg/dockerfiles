@@ -491,6 +491,28 @@ here (prefill 2036/2055/2036 t/s), so it did not bite.
   `Red circle / Blue square / Green triangle`, and transcribed a text card exactly — ~3 s
   each, with the encoder on the CPU.
 
+### Context raised to 262144 (2026-10-19) — measured
+
+One reinstall pass (`CONTEXT=262144`, `STRATA_REINSTALL=1`), config/MTP/pack reused, ready in
+30 s. `/health` `max_context: 262144`, `/v1/status` native and `max_positions` **262144**;
+`arena_mib` **unchanged at 33 812** and `expert_cache_mib` 9 543 with `vram_free_mib` 418 —
+exactly as predicted: the window costs RAM, not VRAM.
+
+| test | result |
+|---|---|
+| perf (r3, ~8.6K prompt) | prefill **2041 t/s**, decode 109.9, deep **107.4 t/s** (131K measured 113.5 — inside the round spread), acc 52%/65% |
+| tools / quality | 4/4 / 4/4 (unchanged) |
+| longctx, 120 895-token prompt | needle found; engine read it in ~45 s; decode 119.7-147.7 t/s; 83.8% expert-cache hit |
+| longctx, **197 451-token prompt** | needle found; **engine read the whole prompt in 61 s** (~3 230 t/s effective); decode 132.1-156.3 t/s; **95.5% expert-cache hit** |
+| gateway (`:4000`) | `PONG` in 0.6 s |
+| host | RAM 54/93 GiB used, zram 4.7 GB data (the deep-context runs pushed swap; the pinned arena/KV cannot be swapped) |
+
+**Harness caveat for this backend:** `llmbench.py`'s `ctx_tokens`/`prefill_tps` (from the
+response's `timings`) **under-report on Strata** — it read `104 516 / 2 326 t/s` and
+`131 915 / 2 159 t/s` where the engine's own log shows `120 895` and `197 451` tokens read
+(the rest looks like prompt-reuse accounting). **Quote the engine log for Strata long-context
+numbers**, not the harness fields; `found`/`empty` from the harness remain reliable.
+
 ### Measured performance (laptop)
 
 Absolute values drift 20-30% with load and thermals — **only compare models measured in
