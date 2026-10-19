@@ -2144,6 +2144,11 @@ only affect the two remote entries.
 - **The models dir is mounted writable on purpose.** Strata writes `<shard>.done` checksum
   markers next to the GGUFs; `:ro` breaks first-boot verification. Every llama-swap mount
   in this repo is `:ro`/`:z,ro` — do not "fix" this one to match.
+- **Both Strata mounts need the SELinux `:z` label** (`/models:z`, `/data:z`). Without it the
+  container cannot write the pack, the MTP draft or the checksum markers on an Enforcing
+  host — the failure surfaces mid-setup, not at start. The data dir is
+  `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}`; on Fedora Atomic keep it under
+  `/var/mnt/data` (the canonical path `/mnt/data` aliases to).
 - **podman is undocumented upstream.** Strata's docs assume Docker + nvidia-container-toolkit
   and never mention podman. `base_nvidia`'s `deploy.resources.reservations` is what this
   repo uses for `nvidia_llama_swap`, so it is the first thing to trust — and the first

@@ -221,6 +221,7 @@ mkdir -p /var/mnt/data/llama/strata   # already created user-owned on the deskto
 
 ```bash
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata    # compose default, override as needed
 podman-compose -f ai/llama-cpp.yml --profile server build strata   # engine build, CUDA_ARCHITECTURES=120
 podman-compose -f ai/llama-cpp.yml --profile server up -d
 ```

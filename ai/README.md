@@ -10,6 +10,7 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 
 ```bash
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models     # where the GGUFs live
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata      # desktop only: Strata's /data
 
 # laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
@@ -55,7 +56,7 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 |---|---|
 | GPU | 5070 Ti 16GB (`--vram-reserve` default) |
 | RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB — **40GB is the maximum**, 48GB only for the documented worst case below |
-| SSD | `/var/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, caches) |
+| SSD | `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}` → `/data:z` (n-gram table, MTP draft, pack, caches) — the mount carries the SELinux `:z` label or the container cannot write it |
 | context | 131072 |
 | KV | `k8v4` |
 | vision | **cpu** — the engine only recommends the GPU encoder at ≥23.5GB VRAM (upstream #2406); on 16GB the CPU encoder frees ~1.1-1.4GB for the expert cache at a 3-5% decode cost |
@@ -91,8 +92,9 @@ git pull --ff-only
 git submodule update --init --checkout ai/Strata
 
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata   # override the compose default
 hf download ukisai/... # the two lines above
-mkdir -p /var/mnt/data/llama/strata
+mkdir -p "$STRATA_DATA_DIR"
 
 podman-compose -f ai/llama-cpp.yml --profile server build strata
 podman-compose -f ai/llama-cpp.yml --profile server up -d
