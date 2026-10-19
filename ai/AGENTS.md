@@ -344,7 +344,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27, ttl 0) | **main agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
-| `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, vision via CPU projector) | on-demand text-first model (deep 39.8 t/s); image turns work but cost ~41 s |
+| `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | on-demand text-first model (deep 39.9 t/s, 1533 t/s prefill); image turns work but cost ~40 s |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
@@ -427,7 +427,7 @@ the same session.** Ratios have been stable across every repetition.
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
 | RTX 5070 | `gemma-4-26b-a4b` **(promoted 2026-10-18; MTP, vision, 131K, N=27, ttl 0)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
-| RTX 5070 | `qwen3.6-35b` **(on-demand; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35)** | 1213 t/s | **39.8 t/s** (36.2 shallow), acc 65%/79% | ~7040 MiB at load, 6746 after a 1280px image (~41 s image turn) |
+| RTX 5070 | `qwen3.6-35b` **(on-demand; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | **1533 t/s** | **39.9 t/s** (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image (~40 s image turn) |
 | RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
 | RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
 | RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
@@ -573,7 +573,8 @@ not cover this model with MTP and a projector — re-measure before adding `--no
 
 Re-added as an **on-demand** third dGPU entry (`ttl: 600`), not a main-agent candidate:
 `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2 GB) + `qwen3.6-35b-mmproj-F16.gguf` (899 MB),
-MTP n-max 2, N=35, 131072 ctx, q4_0 KV, `--no-mmproj-offload`.
+MTP n-max 2, N=35, 131072 ctx, q4_0 KV, `--batch-size 2048 --ubatch-size 2048`,
+`--no-mmproj-offload`.
 
 **The GPU-resident projector is what cost the decode, not the quant or the file size.**
 Three arms, same session, 3 rounds each, gemma control stable at 34.0-35.1 deep:
@@ -601,6 +602,21 @@ no longer needs GPU memory at all, so the usual "buy headroom by lowering N" has
 
 Decode is flat inside noise (38.7-39.9) while headroom collapses — same conclusion as the
 LFM2.5 tier: **N is a headroom dial here, not a speed dial.** N=35 keeps the largest margin.
+
+**The freed VRAM belongs to `--ubatch-size`, not to more GPU residents.** At N=35/ub1024 the
+entry runs 1217 t/s prefill with 1405 MiB free. Spending ~680 MiB on ub2048 buys **+26%
+prefill (1533 t/s)** with decode unchanged (39.9 vs 39.4, noise) and draft acceptance at depth
+actually rising (79% → 84%). Long context gains more: 49,968 tokens at **1513 t/s / 33.0 s**
+against 1125 t/s / 44.4 s at ub1024 — faster than `gemma-4-26b-a4b`'s 1246 t/s on the same
+run. It leaves **727 MiB free after a real 1280px image**, the same margin the promoted 26B
+runs at (733 MiB), and it survives for the same reason the 26B does: the vision encoder's
+buffer is on the CPU now, so the image path no longer competes with the compute buffer.
+
+**Two levers tested and rejected on this entry (2026-10-18).** N=33 (two more expert layers
+on the GPU): 39.5 vs 39.4 deep, noise, for 736 MiB of margin — the 35 CPU-resident layers,
+not the 5 GPU-resident ones, set decode here. `--no-repack`: **38.5 vs 39.4, slower** — the
+~6% repacking win recorded for Q4/Q4_K CPU-resident experts does not reproduce on Q3_K with
+MTP + a projector, so the default (repacking on) stays.
 
 **n-max 3 is still not lossless, and the verdict is config-dependent, not build-dependent.**
 At N=37/GPU-projector on b11641 it scored `quality` 4/4 and deep 39.4 (vs 37.6 at n-max 2,

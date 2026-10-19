@@ -195,7 +195,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K | main agent, delegation, vision, anything user-facing |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
-| `qwen3.6-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand text-first model (39.8 t/s deep); image turns work but cost ~41 s |
+| `qwen3.6-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand text-first model (39.9 t/s deep, 1533 t/s prefill); image turns work but cost ~40 s |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 

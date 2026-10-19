@@ -46,7 +46,7 @@ models:
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --n-cpu-moe 35 --ctx-size 131072 --parallel 1 \
         --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 2048 --ubatch-size 1024 \
+        --batch-size 2048 --ubatch-size 2048 \
         --cache-reuse 256 \
         --threads 6 \
         --load-mode none \
