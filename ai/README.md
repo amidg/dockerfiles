@@ -141,7 +141,7 @@ Every optimum-produced Whisper export is dynamic, so the gate forces ASR onto th
 `VERIFY_RUNTIME=false` (which only skips that probe, the engine's NPU warm-up, and a startup
 ONNX-diagnostics log). `ASR_DEVICE=NPU` then pins the device.
 
-Measured on a 60 s clip (laptop; iGPU shared with `gemma-4-e2b`):
+Measured on a 60 s clip (laptop; the iGPU now runs embeddings only):
 
 | model | device | build | inference (60 s) |
 |---|---|---|---|
@@ -193,10 +193,8 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | name | machine | engine | for |
 |---|---|---|---|
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K | main agent, delegation, vision, anything user-facing |
-| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 128K | local agent work |
-| `lfm2.5-24b` | laptop | llama-swap, RTX 5070, 131K | fast local agent, long-context local work |
-| `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | small model, vision, background |
-| `gemma-4-e2b` | laptop | llama-swap, Arc iGPU, 64K | background tasks, vision fallback |
+| `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
+| `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 
@@ -213,11 +211,23 @@ curl -s localhost:4000/v1/chat/completions \
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `tiel-coder-35b` (default, MTP, 128K), `lfm2.5-24b` (131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K) | everything the user waits on |
-| Arc Pro iGPU | 8082 | `gemma-4-e2b` (background tasks + vision fallback), `embeddinggemma-2` (embeddings) | background chores + vision + embeddings |
+| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | everything the user waits on |
+| Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
 Only **one** dGPU model is resident at a time — requesting another costs a ~15-30s swap.
+
+### Weights on the laptop (manual, into `$LLAMA_MODELS_DIR`)
+
+- `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (14.25GB), `mmproj-F16.gguf` (1.19GB — the
+  projector, from the same `gemma-4-26B-A4B-it-qat-GGUF` repo) and
+  `mtp-gemma-4-26B-A4B-it.gguf` (252MB) — the main dGPU model. Verify sha256 after
+  downloading; a truncated GGUF fails at load, not at download.
+- `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` + `gemma-4-e4b-qat-mmproj-F16.gguf` +
+  `mtp-gemma-4-E4B-it.gguf` — the on-demand fallback.
+- `embeddinggemma-2-Q8_0.gguf` — embeddings, the only iGPU model.
+- Deleted 2026-10-18 (re-downloadable if ever wanted back): the Tiel-Coder-35B and both
+  LFM2.5-24B GGUFs.
 
 ## What runs where (desktop)
 
@@ -269,7 +279,7 @@ The short version. Measurements and reasoning are in [`AGENTS.md`](AGENTS.md).
   does beat the CPU at expert work (+24%), but leaving CUDA for Vulkan costs 67% first.
 - **Text tests will not catch a vision crash.** Always send a real image after retuning.
 - **At the small end, prefer dense over MoE** — expert gathers are inefficient on the Arc.
-- **MTP is a LOSS on the iGPU** (-25% deep on `gemma-4-e2b`) even though it is the biggest
+- **MTP is a LOSS on the iGPU** (-25% deep on the retired `gemma-4-e2b`) even though it is the biggest
   win on the dGPU. The dGPU has CPU-offloaded experts with batching slack; the Arc is
   GPU-resident and bandwidth-bound, so speculative verification costs more than it saves.
   It also *improves* the shallow number, so judging on `decode` would ship a regression.
@@ -327,10 +337,11 @@ took 4m32s once; the `intel_sycl_cache` volume prevents a repeat).
 **Blank `content` with filled `reasoning_content`.** Thinking model, budget ran out. Raise
 `max_tokens` to 400+.
 
-**Answers text fine but dies on images on the laptop dGPU.** That tier runs `--no-mmproj`
-by design — vision lives on the iGPU (`gemma-4-e2b`) and on the desktop
-(`qwen3.8-flash-next` carries a projector). A laptop dGPU model rejecting an image is
-correct behaviour, not a fault.
+**Answers text fine but dies on images.** The laptop dGPU's `gemma-4-26b-a4b` carries a
+projector (as does the desktop's `qwen3.8-flash-next`), so an image request is expected to
+work there. The failure mode to know is the opposite one: a config that passes every text
+test can still kill the server on a real image when VRAM headroom cannot fit the vision
+encoder's buffer — test with a generated 1280px image, not a 1×1 PNG.
 
 **A single-model `llmbench` run reports nonsense prefill on rounds 2+.** The prompt is
 byte-identical every round, so it hits the server-side prompt cache, `prompt_n` collapses

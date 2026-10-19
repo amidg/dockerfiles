@@ -1,37 +1,21 @@
 healthCheckTimeout: 300
 
 models:
-  "tiel-coder-35b":
+  "gemma-4-26b-a4b":
     cmd: |
       /app/llama-server \
-        --model /models/Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf \
-        --no-mmproj \
+        --model /models/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf \
+        --mmproj /models/mmproj-F16.gguf \
+        --model-draft /models/mtp-gemma-4-26B-A4B-it.gguf \
         --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --n-cpu-moe 35 --ctx-size 131072 --parallel 1 \
+        --n-gpu-layers 99 --n-cpu-moe 27 --ctx-size 131072 --parallel 1 \
         --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
         --batch-size 2048 --ubatch-size 1024 \
         --cache-reuse 256 \
-        --threads 6 --cpu-range 0-5 --cpu-strict 1 \
+        --threads 6 \
+        --load-mode none \
         --spec-type draft-mtp --spec-draft-n-max 2 \
-        --load-mode none \
-        --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0.0
-    proxy: "http://127.0.0.1:${PORT}"
-    ttl: 600
-    disableKeepAlives: true
-
-  "lfm2.5-24b":
-    cmd: |
-      /app/llama-server \
-        --model /models/LFM2.5-24B-A2B-QAD-Q4_0.gguf \
-        --no-mmproj \
-        --host 127.0.0.1 --port ${PORT} \
-        --n-gpu-layers 99 --n-cpu-moe 24 --ctx-size 131072 --parallel 1 \
-        --flash-attn on --cache-type-k q4_0 --cache-type-v q4_0 \
-        --batch-size 2048 --ubatch-size 1024 \
-        --cache-reuse 256 \
-        --threads 6 --cpu-range 0-5 --cpu-strict 1 \
-        --load-mode none \
-        --temp 0.1 --top-k 50 --repeat-penalty 1.05
+        --temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0
     proxy: "http://127.0.0.1:${PORT}"
     ttl: 0
     disableKeepAlives: true

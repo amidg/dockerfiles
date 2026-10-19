@@ -27,8 +27,8 @@ only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, 128K, UD-Q4_K_XL body + Q3_K_S head, N=35, temp 0.6), `lfm2.5-24b` (131K, QAD Q4_0, N=24, **no MTP**, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV) |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `gemma-4-e2b` (background tasks), `embeddinggemma-2` (embeddings) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**IQ2_XS, Strata**, 131K, `k8v4` KV, vision, arena pinned in 96GB RAM) |
 
 ## Strata on the desktop — promoted 2026-10-17
@@ -342,10 +342,11 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | resolved name | source | use |
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
-| `lfm2.5-24b` | laptop dGPU (RTX 5070, 131K, QAD Q4_0, N=24, no MTP, ttl 0) | fast local agent, long-context local work |
-| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 128K, Q4_K_XL/Q3_K_S, N=35, temp 0.6) | local coding agent (promoted 2026-10-17) |
-| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | fast GPU-resident work, background, **auxiliary tasks**, vision |
-| `gemma-4-e2b` | laptop iGPU (Arc, 64K, no MTP, --reasoning off) | background/fire-and-forget, vision fallback |
+| `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27, ttl 0) | **main agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
+| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
+| ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
+| ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
+| ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
@@ -370,9 +371,9 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   `qwen3.8-flash-next` and nothing else. **The dotted form survives only as the laptop's
   stale remote entry** and dies with the deferred laptop rewiring.
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
-  `lfm2.5-24b`, `tiel-coder-35b` and `gemma-4-e4b`; requesting a different one
-  evicts the loaded model. All three run 128K; `lfm2.5-24b` is `ttl: 0` — it
-  never *idle*-unloads, but that does not exempt it from a cross-model swap.
+  `gemma-4-26b-a4b` (default, `ttl: 0`) and `gemma-4-e4b` (on-demand); requesting the other
+  evicts the loaded model. Both run 131K/128K. `ttl: 0` means the 26B never *idle*-unloads,
+  but that does not exempt it from a cross-model swap.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
   MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
@@ -380,10 +381,11 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   Full benchmark pending.
 - **`gemma-4-e4b` MTP head** is `mtp-gemma-4-E4B-it.gguf` (95 MB) — separate file like the
   26B, not bundled in the GGUF. `embedding_length_out` must match the target's `n_embd`.
-- **`qwen3.8-flash-next` is the only vision model on the main tier.** It carries a
-  `mmproj-Qwen3.8-Flash-Next-BF16.gguf` projector. `gemma-4-e2b` is the fallback — also has
-  a projector. A blind model confidently describing an image is worse than a clean error.
-  When deleting a vision model, **re-point the fallback in the same change**.
+- **`qwen3.8-flash-next` is the only vision model on the desktop tier**, carrying a
+  `mmproj-Qwen3.8-Flash-Next-BF16.gguf` projector; on the laptop that role is
+  `gemma-4-26b-a4b` (and `gemma-4-e4b` as the on-demand alternative). A blind model
+  confidently describing an image is worse than a clean error. When deleting a vision model,
+  **re-point the fallback in the same change**.
 - **`embeddinggemma-2` is now wired on the laptop.** `llama-swap-intel.yaml` defines it
   in the `igpu` group with `--pooling mean --ctx-size 8192`, and `litellm-config.laptop.yaml`
   exposes it as `embeddinggemma-2`. Anything calling `/v1/embeddings` on the laptop should
@@ -422,13 +424,14 @@ the same session.** Ratios have been stable across every repetition.
 
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
-| RTX 5070 | `lfm2.5-24b` **(QAD Q4_0, N=24, no MTP, 131K, ttl 0)** | **1804 t/s** | **37.3 t/s** (41.3 decode), 45.9K @1732 t/s | ~7278 MiB |
-| RTX 5070 | `tiel-coder-35b` **(promoted, MTP, 128K, N=35)** | **897 t/s** | **40.5 t/s** (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
+| RTX 5070 | `gemma-4-26b-a4b` **(promoted 2026-10-18; MTP, vision, 131K, N=27, ttl 0)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
+| RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
+| RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
 | RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(retired; MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
-| RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3275 t/s** | **110-112 t/s** | ~7432 MiB |
-| Arc iGPU | `gemma-4-e2b` | **713 t/s** | **14.4 t/s** (17.4 shallow) | ~3.5 GB RAM |
+| RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3114 t/s** | **134.8 t/s** (143.5 shallow), acc 50%/66% | ~7432 MiB |
+| Arc iGPU | `gemma-4-e2b` *(retired 2026-10-18; entry removed)* | 713 t/s | 14.4 t/s (17.4 shallow) | ~3.5 GB RAM |
 | Arc iGPU | `embeddinggemma-2` | embeddings only | — | ~3.5 GB RAM |
 | Intel NPU | `whisper-small-int4` (ASR, not an LLM) | — | ~4.2 s / 60 s clip | RAM |
 
@@ -459,7 +462,116 @@ spill to system RAM and halved decode speed; `q8_0` stays entirely in VRAM. Full
 prefill — this is a prompt cache hit artifact, not real prefill. Always test with ≥2
 models so the alternation flushes the cache and every round measures cold prefill.
 
-### LFM2.5-24B-A2B on RTX 5070 8GB — promoted config (2026-10-17)
+### Gemma 4 26B-A4B on RTX 5070 8GB — the main agent model (2026-10-18)
+
+`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (14.25 GB) + `mmproj-F16.gguf` +
+`mtp-gemma-4-26B-A4B-it.gguf`, **one entry** carrying all three. It replaces
+`tiel-coder-35b` and `lfm2.5-24b` as the default agent model, the delegation target and
+every Hermes auxiliary role; both predecessors' GGUFs are deleted. `gemma-4-e4b` stays as an
+on-demand fallback (nothing routes to it by default) and the iGPU tier is embeddings only.
+
+```yaml
+--n-gpu-layers 99 --n-cpu-moe 27 --ctx-size 131072 --parallel 1
+--flash-attn on --cache-type-k q4_0 --cache-type-v q4_0
+--batch-size 2048 --ubatch-size 1024 --cache-reuse 256
+--threads 6 --load-mode none
+--spec-type draft-mtp --spec-draft-n-max 2
+--temp 1.0 --top-k 64 --top-p 0.95 --min-p 0.0 --repeat-penalty 1.0
+ttl: 0
+```
+
+**The N walk, and why the answer is 27 not ~22-25.** Vision gates it: the projector's
+encoder buffer is a transient allocation on top of the loaded model, so a config that
+passes every text test can still die on an image.
+
+| N | VRAM at load | real 1280px image | deep | acc s/d |
+|---|---|---|---|---|
+| 25 | 7788 MiB | not tested (above budget) | — | — |
+| 26 | 7382 MiB, 769 MiB free | **`upstream process exited unexpectedly`, HTTP 502** | 35.7 | 62%/75% |
+| **27 (promoted)** | **6974 MiB** | **passed, ends at 7418 MiB (733 free)** | **35.0** | 62%/75% |
+
+~407 MiB per expert layer. **This is the third time a config has passed `llmbench`'s 1×1
+PNG and then crashed on a real image** — at 769 MiB free the encoder buffer did not fit;
+`vision: yes` from the harness means "the projector is wired up", nothing more. Generate a
+1280px image with a word in it before promoting anything with `--mmproj` on this card.
+
+**VRAM precedents are not budgets.** The old `gemma-4-26b` ran N=30 at ~7105 MiB, so N=30
+looked obviously safe for a same-size file — it is not, because this is a different quant
+recipe and the promoted config also carries the 1.19 GB projector. Measure, never inherit.
+
+**The projector and the 131K window live in one entry on purpose.** With 8 GB there is no
+room for a second vision entry, and a separate text-only entry would mean a cross-model swap
+(13.27 GiB, ~15 s) every time a turn touched an image. One entry, both capabilities, and
+`--flash-attn on` with `q4_0` KV pays for the window: 53,574-token needle ingested at
+**1236 t/s in 43.3 s**.
+
+**Thinking has no ladder, and that is load-bearing.** llama.cpp's gemma4 parser hardcodes
+`supports_thinking=true`; `low`/`medium`/`high` are all identical to "on" — only top-level
+`reasoning_effort: "none"` (or `chat_template_kwargs: {"enable_thinking": false}`, a
+JSON boolean) turns it off. Measured both directions on the promoted config: no control →
+201 reasoning chars; `"none"` → **0 reasoning chars, `content` answered, `finish: stop`**.
+
+- **Never add `--reasoning off` or `--reasoning-budget 0`.** The first makes thinking
+  unreachable for Hermes; the second leaks the trace into `content` (the documented failure
+  mode, re-confirmed on the tiny tier). The request field is the only correct off switch.
+- **`approval` and `title_generation` keep `reasoning_effort: none`**, and the LiteLLM entry
+  must carry `allowed_openai_params: ["reasoning_effort"]` or `drop_params: true` eats it
+  silently. Verified through the gateway: `APPROVE`, `finish: stop`, **0 reasoning chars**,
+  within the 16-token budget.
+- **The bench had to be fixed for this model.** `llmbench.py` sent
+  `chat_template_kwargs: {"reasoning_effort": "low"}` on every test, which is a no-op on
+  Gemma 4, so `t_approval_shape` reported EMPTY/FAIL on a model that works. It now sends
+  top-level `reasoning_effort: "none"` in the approval probe only, and `smoke.py` probes
+  `gemma-4-26b-a4b` instead of the removed `gemma-4-e2b`.
+
+**MTP n-max, measured interleaved with `gemma-4-e4b`** (3 rounds, `--perf-lines 320`):
+
+| n-max | shallow | **deep** | acc s/d | tools | quality |
+|---|---|---|---|---|---|
+| 1 | 32.9 | 32.2 | 73%/87% | — | — |
+| **2 (promoted)** | **34.7** | **35.7** | 62%/75% | 4/4 | 4/4 |
+| 3 | 31.6 | 37.3 | 52%/79% | 4/4 | 4/4 |
+
+n-max 3 is **not** promoted: its deep edge (1.6 t/s) is inside this box's session noise,
+shallow is 9% *worse*, and n-max 3 is the one parameter this file has twice caught being
+non-lossless on an earlier build. n-max 2 also survives the quality gate and a 1470-char
+thinking trace clean, so there is nothing to buy here. Re-check 3 after a llama.cpp upgrade.
+
+**Full suite, same session, 3 interleaved models** (`--tests all --rounds 3`, run while the
+retiring models were still resident so they appear in the table):
+
+| model | prefill | shallow | **deep** | acc s/d | tools | quality | vision |
+|---|---|---|---|---|---|---|---|
+| **`gemma-4-26b-a4b`** | 1358 t/s | 34.8 | **35.0** | 62%/75% | 4/4 | 4/4 | yes (real image) |
+| `gemma-4-e4b` | 3114 t/s | 143.5 | 134.8 | 50%/66% | 4/4 | 4/4 | yes |
+| `lfm2.5-24b` *(retired)* | 2032 t/s | 39.6 | 33.9 | — | 4/4 | 4/4 | no (expected) |
+
+**The trade is explicit and accepted:** ~35 t/s deep against e4b's ~135 and lfm's ~34, for a
+model that is also the vision model, the tool caller and the long-context reader, and which
+removes both predecessors' cross-model swaps. It is a consolidation, not a speed play.
+
+**Co-residency consequence:** 13.27 GiB + e4b's 4.2 GiB cannot share 8 GB, so pointing any
+Hermes `auxiliary.*` role at e4b would evict the main model and cost a 13.27 GiB reload on
+the next turn. Every aux role therefore points at `gemma-4-26b-a4b` — same model, no swap.
+
+**Client pins move with the model.** `~/.config/opencode/opencode.json` now offers
+`gemma-4-26b-a4b` (`limit.context` 131072 / `limit.output` 32768) where it used to pin
+`tiel-coder-35b`; `gemma-4-e2b` is not selectable anywhere. Without the pin OpenCode never
+compacts and grows until the server rejects the request.
+
+**One flag deliberately absent: `--cpu-range`/`--cpu-strict`.** At 131072 that pinning costs
+**−10% decode** (42.3 vs 46.5 t/s) and −16% at 16K — the opposite of the 64K thread sweep
+this file promoted it from. `--threads 6` alone is correct at long context. Related:
+weight repacking is default-enabled and measured **~6% slower** for these Q4/Q4_K CPU-resident
+experts (`-nr` 49.4 vs 46.3 t/s); the promoted entry leaves the default because that A/B did
+not cover this model with MTP and a projector — re-measure before adding `--no-repack`.
+
+### LFM2.5-24B-A2B on RTX 5070 8GB — retired 2026-10-18
+
+*(Superseded by [Gemma 4 26B-A4B](#gemma-4-26b-a4b-on-rtx-5070-8gb--the-main-agent-model-2026-10-18).
+`lfm2.5-24b` was replaced as the default agent model; its GGUF (QAD Q4_0) and the Q3_K_XL
+A/B file are deleted. The tuning below is kept so the Q4_0/no-MTP path is not re-derived
+from scratch.)*
 
 **`lfm2.5-24b` beats the MTP incumbent on every axis, without MTP.** Head-to-head against
 `qwen3.6-35b`, same session, 3 rounds, `--tests perf tools quality longctx`:
@@ -499,8 +611,8 @@ GPU-resident expert layers outrun the 35B's 35 CPU-resident ones. MTP stays the 
 *available to a given model* — see [MTP](#mtp--the-single-biggest-win-on-this-tier-2026-08-06) —
 not a precondition for a fast laptop tier.
 
-**`ttl: 0` pins against idle eviction only.** A request for `tiel-coder-35b` or
-`gemma-4-e4b` still evicts it (8GB cannot co-locate them); it buys residency, not exclusivity.
+**`ttl: 0` pins against idle eviction only.** A request for `gemma-4-e4b` still evicts it
+(8GB cannot co-locate them); it buys residency, not exclusivity.
 Cold load is a one-off `--load-mode none` read of 13.58 GB.
 
 **LiteLLM deliberately does not allowlist `reasoning_effort` for this model.** See
@@ -509,7 +621,12 @@ the `max_tokens=16` approval shape comes back empty — and would not string-mat
 even if non-empty. **Do not point `approval` at it** without the `reasoning_effort: none`
 treatment.
 
-### Tiel-Coder-35B-A3B — evaluated, rejected on speed (2026-10-17)
+### Tiel-Coder-35B-A3B — retired 2026-10-18
+
+*(Replaced by [Gemma 4 26B-A4B](#gemma-4-26b-a4b-on-rtx-5070-8gb--the-main-agent-model-2026-10-18);
+GGUF deleted. It was evaluated and rejected on speed on 2026-10-17 and promoted anyway by
+operator decision the same day — that decision is now superseded. Numbers kept for
+reference.)*
 
 `Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf` (22.75 GB, Q3_K_S MTP head, Sharp v22.5.0 template)
 was benched as the coding-agent candidate against both incumbents, same session, 3 rounds,
@@ -598,13 +715,15 @@ and does nothing on dense models.
 
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
-| `tiel-coder-35b` | 40 | 256 / 8 active | **UD-**Q4_K_XL body + **Q3_K_S** head (22.75 GB) | **35** |
-| `lfm2.5-24b` | 40 | 64 / 4 active | QAD-Q4_0 (13.58 GB) | **24** |
-| `gemma-4-26b` *(retired)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | **30** |
+| `gemma-4-26b-a4b` | 30 | 128 / 8 active | QAT **UD-Q4_K_XL** (14.25 GB) + MTP head + mmproj | **27** |
+| `tiel-coder-35b` *(retired)* | 40 | 256 / 8 active | UD-Q4_K_XL body + Q3_K_S head (22.75 GB) | 35 |
+| `lfm2.5-24b` *(retired)* | 40 | 64 / 4 active | QAD-Q4_0 (13.58 GB) | 24 |
+| `gemma-4-26b` *(retired; the older dense-ish 26B, not the -a4b)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | 30 |
 
-**`lfm2.5-24b` is the only N measured per-layer: ~322 MiB of expert per layer** (N=26 → 6634
-MiB, N=24 → 7278 MiB). Use that ratio to size any future MoE on this card; the other rows'
-`N` values were tuned empirically and never converted to MiB.
+**`gemma-4-26b-a4b` is now the per-layer ratio to use: ~407 MiB of expert per layer** (N=25
+→ 7788 MiB, N=26 → 7382, N=27 → 6974). The 8 GB card's ceiling with the projector resident
+turned out to be **N=27, not the ~22-25 the plan estimated** — see
+[Gemma 4 26B-A4B](#gemma-4-26b-a4b-on-rtx-5070-8gb--the-main-agent-model-2026-10-18).
 
 **The `N` column is the 8GB laptop's value and belongs to this section only.** On the
 24GB desktop the same model runs **no `--n-cpu-moe` at all** — every layer left on the CPU
@@ -809,7 +928,8 @@ an `MTP/` folder — the GGUF itself does not bundle it. Verified by parsing bot
 tensor tables: 658 tensors each, **zero** MTP/draft/assistant tensors. So Gemma needs
 `--model-draft`; Qwen3.6 must not have it.
 
-`mtp-gemma-4-26B-A4B-it-Q8_0.gguf` (462 MB) is `gemma4-assistant`, 4 blocks,
+`mtp-gemma-4-26B-A4B-it.gguf` (252 MB, the current repo) / `mtp-gemma-4-26B-A4B-it-Q8_0.gguf`
+(462 MB, superseded) are `gemma4-assistant`, 4 blocks,
 `embedding_length_out = 2816` — which **must match the target's `n_embd`**, same rule as
 projectors. Check it before assuming a head fits a model.
 
@@ -925,6 +1045,7 @@ llama-swap spawns the subprocess on demand.
 | model | n_embd | projector |
 |---|---|---|
 | qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` |
+| gemma-4-26b-a4b | 2816 | `mmproj-F16.gguf` (from the `gemma-4-26B-A4B-it-qat-GGUF` repo) |
 | gemma-4-26b *(retired)* | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
 | gemma-4-12b *(retired)* | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
 | gemma-4-e4b | — | `gemma-4-e4b-qat-mmproj-F16.gguf` (qat), `gemma-4-e4b-mmproj-F16.gguf` (non-qat) |
@@ -1001,10 +1122,13 @@ b10276 exposes `--spec-type draft-mtp`. For Qwen3.6 the MTP head ships **inside 
 GGUF** (`MTP-UD-Q4_K_M` is 22.66 GB vs 22.13 GB plain, a ~505 MiB head), so **no
 `--model-draft` is needed** — that flag is only for Gemma-style separate heads.
 
-**Counter-example (2026-10-17): a model with no draft head at all now leads this card.**
-`lfm2.5-24b` reaches **37.3 t/s deep** against `qwen3.6-35b`'s 34.6 *with MTP enabled* — see
-[LFM2.5-24B-A2B on RTX 5070 8GB](#lfm25-24b-a2b-on-rtx-5070-8gb--promoted-config-2026-10-17).
+**Counter-example (2026-10-17, model since retired): a model with no draft head at all beat
+the MTP incumbent.** `lfm2.5-24b` reached **37.3 t/s deep** against `qwen3.6-35b`'s 34.6
+*with MTP enabled* — see [LFM2.5-24B-A2B on RTX 5070 8GB](#lfm25-24b-a2b-on-rtx-5070-8gb--retired-2026-10-18).
 MTP is the biggest win **available to a given model**, not a precondition for a fast tier.
+The current main model does carry a head (252 MB): see
+[Gemma 4 26B-A4B](#gemma-4-26b-a4b-on-rtx-5070-8gb--the-main-agent-model-2026-10-18) for its
+n-max sweep.
 
 Measured against the no-MTP control (same file, no `--spec-type`), same session, 3 rounds:
 
@@ -1163,7 +1287,14 @@ and that is where the iGPU is weakest. A second tier is not an obvious win eithe
 
 ## The tiny tier (Arc iGPU)
 
-**`gemma-4-e2b` serves background tasks** — Q4_K_M, 64K, `--ubatch-size
+**Retired 2026-10-18: the iGPU tier is embeddings only.** `gemma-4-e2b` is removed from
+`llama-swap-intel.yaml` (and from the LiteLLM config, Hermes and the opencode picker); only
+`embeddinggemma-2` remains. Background and fire-and-forget work now shares the dGPU's main
+model instead, and vision runs on `gemma-4-26b-a4b`. The GGUF and its projector stay on disk
+but are unreferenced. Everything below is kept because it documents the device, and because
+re-adding E2B is a config edit plus a re-point, not a re-derivation.
+
+**`gemma-4-e2b` served background tasks** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier
 and the fallback for `server-qwen3.8-27b` vision requests.
 
@@ -1334,10 +1465,9 @@ is no longer worth testing: it needs a second entry, and the request field does 
 
 ## Per-device notes
 
-**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. `gemma-4-e2b` and
-`embeddinggemma-2` are pinned resident via `groups:` with `swap: false`, because they back
-**both** background tasks and `server-qwen3.8-27b` vision fallback — a title request and an
-image request must not evict each other. ~3.5 GB each.
+**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. **Since 2026-10-18 it
+serves `embeddinggemma-2` only** (`groups:` with `swap: false` pins it resident, ~3.5 GB);
+`gemma-4-e2b` is removed from the config, the LiteLLM entry and every client.
 
 - **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
   JIT kernel cache. Without it every recreate recompiles all kernels — measured **4m32s**
@@ -1429,15 +1559,17 @@ Direct model names only.
 > repo, and are part of the deferred laptop rewiring — see
 > [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17).
 
-- `model.default: server-qwen3.8-27b`, `delegation.model: server-qwen3.8-27b`.
+- `model.default: gemma-4-26b-a4b`, `delegation.model: gemma-4-26b-a4b` (laptop, 2026-10-18);
+  the desktop's default is `qwen3.8-flash-next`.
 - `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
   `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
   the actual `--ctx-size` KV allocation.
 
 | model | pin | why |
 |---|---|---|
-| `qwen3.8-flash-next` (was `server-qwen3.8-27b`) | **131072** | desktop, 131K ctx. `gemma-4-e2b` fallback only has 64K — an overflow there is a clean rejection, not a blind description |
-| `gemma-4-e2b` | **65536** | laptop iGPU, 64K. Raising this overruns the iGPU. The tier ingests 53K in ~115s at 464 t/s — usable, but still ~2.5x slower than the dGPU |
+| `qwen3.8-flash-next` (was `server-qwen3.8-27b`) | **131072** | desktop, 131K ctx |
+| `gemma-4-26b-a4b` | **131072** | laptop dGPU, 131K ctx. Native window is 262144 — the pin is what stops a 256K advertisement overrunning the KV allocation |
+| `gemma-4-e4b` | **131072** | laptop dGPU, 128K ctx; on-demand only |
 
 **The 131072 pin carries over unchanged.** Strata serves the desktop at `CONTEXT=131072`,
 so the pin stays correct across the engine swap; only the name changes.
@@ -1474,15 +1606,18 @@ Auxiliary tasks split on **critical path vs background**, not prompt size:
 | tier | tasks |
 |---|---|
 | `server-qwen3.8-27b` | `compression`, `web_extract`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge` |
-| `gemma-4-e4b` (laptop dGPU) | `mcp`, `skills_hub`, `approval`* |
-| `gemma-4-e2b` | `title_generation`, `tts_audio_tags` |
+| **`gemma-4-26b-a4b` (laptop dGPU)** | `mcp`, `skills_hub`, `approval`*, `vision`, `title_generation`, `tts_audio_tags` |
 
-\*These three moved from the retired `ornith-1.5-9b` to `gemma-4-e4b` on 2026-10-17 (see
-[Direct naming](#direct-naming-2026-08-25)). `approval` is pinned to `reasoning_effort: none`
-per request, which is what makes it safe, and `gemma-4-e4b`'s LiteLLM entry now carries
+\*These six moved to `gemma-4-26b-a4b` on 2026-10-18, from `gemma-4-e4b` (mcp/skills_hub/
+approval) and from the removed `gemma-4-e2b` (vision/title_generation/tts_audio_tags). **All
+of them must be on the same model as `model.default`** — 13.27 GiB + e4b's 4.2 GiB cannot
+co-reside in 8 GB, so pointing an aux role at e4b or e2b would evict the main agent and cost a
+full ~15 s reload on the next turn. `approval` and `title_generation` are pinned to
+`reasoning_effort: none` per request, which is what makes the `max_tokens=16` shape work on a
+thinking model; `gemma-4-26b-a4b`'s LiteLLM entry carries
 `allowed_openai_params: ["reasoning_effort"]` — without that allowlist the param is dropped
-and the `max_tokens=16` shape returns **empty** (measured). With it: `APPROVE`, `finish: stop`,
-3 tokens.
+silently and the shape returns **empty**. With it, through the gateway: `APPROVE`,
+`finish: stop`, 0 reasoning chars, 16-token budget.
 
 Anything the user waits on goes to `server-qwen3.8-27b` — it is faster *and* reuses the
 loaded model. Fire-and-forget goes to the iGPU so it does **not** evict the large model.
@@ -1502,6 +1637,7 @@ word. On a thinking model the whole budget goes to reasoning:
 |---|---|
 | `server-qwen3.8-27b` (thinking on) | `finish=length`, 64 chars reasoning, **content `''`** |
 | `gemma-4-e2b` (`--reasoning off`) | `finish=stop`, 0 reasoning, **`APPROVE`** |
+| `gemma-4-26b-a4b` + `reasoning_effort: none` (**current**) | `finish=stop`, 0 reasoning, **`APPROVE`** |
 
 Smart approval was silently broken while it pointed at `server-qwen3.8-27b`, then kept there
 by operator decision (2026-08-17). **Resolved 2026-08-24 without moving the task:**
@@ -1586,11 +1722,10 @@ Variants also appear in the model picker as `custom/server-qwen3.8-27b/<variant>
 with both `model` and `variant` set, though that combination hung in testing and is not
 recommended).
 
-**Small models are deliberately absent from `opencode.json` (2026-08-24).** `gemma-4-e2b`
-was removed from the opencode picker only — it remains live in `llama-swap-intel.yaml`, in
-`litellm-config.laptop.yaml`, and as the `gemma-4-e2b` model entry for Hermes'
-`title_generation` / `tts_audio_tags`. Do not "tidy up" the iGPU tier to match opencode;
-the two are intentionally different.
+**Small models are deliberately absent from `opencode.json` (2026-08-24, superseded).**
+`gemma-4-e2b` was removed from the opencode picker first; on 2026-10-18 it was removed from
+`llama-swap-intel.yaml` and `litellm-config.laptop.yaml` as well, so the iGPU tier is now
+embeddings only and there is no small chat model to pick anywhere.
 
 **Declared output caps follow one rule (2026-08-17):** `model_info.max_output_tokens` in the
 LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.desktop.yaml`) and
@@ -1637,11 +1772,10 @@ each rejection costs a full ~18s load.
   verbatim — LiteLLM does no normalization on the value, so `xhigh` survives (unlike
   Bifrost). **Both hops must allowlist it**: a laptop request to `server-qwen3.8-27b`
   crosses the laptop's LiteLLM *and* the desktop's, and either one dropping it loses the
-  param. Deliberately **not** applied to `gemma-4-e2b` — it runs
-  `--reasoning off` as a correctness requirement, and Hermes sends `reasoning_effort` on
-  every request, so the drop there is load-bearing. **Same deliberate drop for `lfm2.5-24b`**
-  (2026-10-17): LFM2.5's template defines no effort vocabulary, so allowlisting it would
-  forward an off-vocabulary value to the server and only risk an error.
+  param. This was deliberately **not** applied to the retired `gemma-4-e2b` and
+  `lfm2.5-24b` — E2B ran `--reasoning off` as a correctness requirement and LFM2.5's template
+  defines no effort vocabulary, so the drop there was load-bearing, not a bug. Both are gone
+  as of 2026-10-18; every local chat model now allowlists the field.
 
 ### Remote outage handling — how the gateway fails over to local (2026-08-25)
 
@@ -1854,8 +1988,8 @@ belong here when they happen.
 ./smoke.py                    # after ANY config edit, container restart, or model swap
 ./smoke.py --quick            # just show what is loaded where (no generation)
 
-./llmbench.py --models tiel-coder-35b gemma-4-e4b --tests perf --rounds 3
-./llmbench.py --models tiel-coder-35b gemma-4-e4b --tests all   # before promoting a config
+./llmbench.py --models gemma-4-26b-a4b gemma-4-e4b --tests perf --rounds 3
+./llmbench.py --models gemma-4-26b-a4b gemma-4-e4b --tests all   # before promoting a config
 ./llmbench.py --models qwen3.8-flash-next --fail-on-regression  # CI gate
 ```
 

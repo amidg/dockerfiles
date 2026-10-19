@@ -27,21 +27,12 @@ model_list:
       max_output_tokens: 32768
       cooldown_time: 0
 
-  - model_name: tiel-coder-35b
+  - model_name: gemma-4-26b-a4b
     litellm_params:
-      model: openai/tiel-coder-35b
+      model: openai/gemma-4-26b-a4b
       api_base: http://llama_swap_nvidia:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
-  - model_name: lfm2.5-24b
-    litellm_params:
-      model: openai/lfm2.5-24b
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
@@ -55,15 +46,6 @@ model_list:
     model_info:
       max_input_tokens: 131072
       max_output_tokens: 32768
-
-  - model_name: gemma-4-e2b
-    litellm_params:
-      model: openai/gemma-4-e2b
-      api_base: http://llama_swap_intel:8080/v1
-      api_key: sk-no-key-required
-    model_info:
-      max_input_tokens: 65536
-      max_output_tokens: 16384
 
   - model_name: embeddinggemma-2
     litellm_params:
@@ -104,7 +86,7 @@ litellm_settings:
   database_type: postgres
   request_timeout: 600
   #fallbacks:
-  #  - server-qwen3.8-27b: ["tiel-coder-35b", "gemma-4-e4b"]
+  #  - server-qwen3.8-27b: ["gemma-4-26b-a4b", "gemma-4-e4b"]
   #  - server-qwen3.6-35b: ["gemma-4-e4b"]
 
 general_settings:
