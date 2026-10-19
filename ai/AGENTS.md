@@ -29,22 +29,23 @@ only what its device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback), `qwen3.6-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, on-demand — text-first) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
-| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**IQ2_XS, Strata**, 131K, `k8v4` KV, vision, arena pinned in 96GB RAM) |
+| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 131K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 
-## Strata on the desktop — promoted 2026-10-17
+## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
 
 The desktop stopped running llama.cpp. It runs **Strata** (git submodule `ai/Strata`,
 pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile server up -d
---build` with `CUDA_ARCHITECTURES=120`) serving **Qwen3.8-Flash-Next GSQ-RCO IQ2_XS** — a
-125B-A6B MoE with a ~51B n-gram (PLE) table and a bundled MTP draft layer.
+--build` with `CUDA_ARCHITECTURES=120`) serving **Swift 1.5 IQ2_XS** — family `swift`
+(`ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF`), a 125B-A6B MoE with a ~51B n-gram
+(PLE) table and a bundled MTP draft layer.
 
 | | |
 |---|---|
 | GPU | 5070 Ti 16GB — the container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
 | 7900 XTX | **display only.** Mixed HIP+CUDA in one Strata run is unsupported (`docs/MULTI_GPU.md`, `docs/AMD_HIP.md`), and the container ships no ROCm |
-| RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel; the arena is page-locked, so `ulimits.memlock: -1` is mandatory |
+| RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
 | SSD | `/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
-| context / KV / vision | `131072` / `k8v4` / `yes` |
+| context / KV / vision | `131072` / `k8v4` / **`cpu`** |
 | gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
 
 **Why Strata and not llama.cpp.** No quant of this model fits 16GB VRAM (the smallest
@@ -52,33 +53,65 @@ published GGUF is 72.5GB), so it only runs tiered, and Strata is built for exact
 partition — hot experts in VRAM, the rest of the arena pinned in RAM, the n-gram table on
 the SSD. llama.cpp has no equivalent residency model.
 
+**Why Swift 1.5 and not the base model (2026-10-18).** UkisAI's post-train of the same
+architecture — ~63% fewer thinking tokens, 1.8× sooner answers, stated <1% quality loss at
+xhigh effort — and its IQ2_XS measures *better* KLD than ISTA's IQ2_XS on 7/8 eval sets at
+the same arena size. For an agentic harness that pays for every thinking token this is the
+best quality/effort trade available, and it costs nothing in memory or speed. Two caveats
+that must not be forgotten: the license is **Swift Open License 1.0** (not Apache-2.0 like
+the ISTA quants), and Swift ships **its own projector** —
+`mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf`; the base model's mmproj is not reused. Swift's
+`Q2_0` is unusable in Strata (its shards split one layer's experts across both files, which
+`tools/iq_pack.py` cannot pack yet — upstream #171); the family menu is IQ2_XS / IQ3_XXS /
+IQ3_S.
+
+**The 40GB pin is the contract, with one documented exception.** `STRATA_ARENA_PIN_GIB=40`
+fits Swift IQ2_XS's ~35.5 GiB arena with margin and keeps the daily-driver desktop free.
+The **only** sanctioned step up is **Swift IQ3_XXS at pin 44** (~42.9 GiB arena, KLD 0.240
+vs IQ2_XS's 0.341, ~15% slower decode) — inside the 48GB worst case. Everything heavier
+(`IQ3_S` 50.3 GiB, Unsloth `UD-Q4_K_XL` 77 GiB, NVFP4 68 GiB) is out of scope: past 48GB
+they stream from the SSD, which on this box is the slow mode measured at 7-9 tok/s on
+12-16GB cards. **Never raise the pin past 48.**
+
+**Vision runs on the CPU.** `VISION=cpu`, because the engine recommends the GPU encoder
+only at ≥23.5GB VRAM (upstream #2406) and this card is 16GB: the CPU encoder frees
+~1.1-1.4GB for the expert cache at a 3-5% decode cost. On a 131K-context `k8v4` setup the
+VRAM is worth more than the encoder speed.
+
+**The name deliberately does not match the weights.** `qwen3.8-flash-next` names **Swift
+1.5** in the desktop LiteLLM config and in every client pin (user decision 2026-10-18).
+This is not drift to be "fixed" — it is the published name of the desktop model, and
+changing it means touching Hermes and opencode configs outside this repo. Do not rename it
+without the user's say-so.
+
 **NVFP4 was evaluated and rejected, despite the 10980XE's AVX-512.** Per `docs/NVFP4.md`
 and issue #2347: the NVFP4 packs are 128GB on disk, carry ~63.3GiB of experts, and want
-**~80GB of RAM** for the arena — over budget at a 40GiB pin. It also decodes *slower* than
-IQ2_XS (114 vs 132 tok/s on a 5090), because FP4 tensor cores accelerate only the prompt
-path (`w4a4`, sm_120a). AVX-512 cleared the CPU-side objection (AVX2-only hosts were
-refused on 0.1.44/44.1), not the RAM one. Upgrade path if RAM ever goes past ~96GB:
+**~80GB of RAM** for the arena — over budget at a 40GiB pin twice over. It also decodes
+*slower* than IQ2_XS (114 vs 132 tok/s on a 5090), because FP4 tensor cores accelerate only
+the prompt path (`w4a4`, sm_120a). AVX-512 cleared the CPU-side objection (AVX2-only hosts
+were refused on 0.1.44/44.1), not the RAM one. Upgrade path if RAM ever goes past ~96GB:
 `--family nvfp4 --model NVFP4` — and note decode, not prefill, is what that trade costs.
 
-**Quant: IQ2_XS, the largest that fits the budget.** The project's own 16GB-card
-recommendation. GSQ-RCO is the supported family (`Q2_0 | IQ2_XS | IQ3_XXS | IQ3_S`);
-IQ3_XXS lands near the 40GiB arena cap with no margin, so it is the first thing to try
-after a RAM increase — not before. KV is `k8v4`; step down to `int8` then `q4_0` only if a
-131K prompt OOMs.
+**Quant mechanics worth keeping.** GSQ-RCO is a family tag, not the only one: `swift` is
+the current one, `qwen` the base, `nvfp4` the packs, `coder` the pruned variant. KV is
+`k8v4` (fine with Swift packs, and KV streaming works with it from v0.1.40); step down to
+`int8` then `q4_0` only if a 131K prompt OOMs — from 64K context up the KV lives in RAM and
+is deducted from the resident expert budget.
 
-**Weights are user-supplied, not downloaded.** `GGUF_DIR=/models` with the IQ2_XS shards
-under their original names plus `mmproj-Qwen3.8-Flash-Next-BF16.gguf`. Strata writes
-`<shard>.done` checksum markers next to them, so the models dir is mounted writable (this
-is also why it is not `:ro` here while every llama-swap mount is). The MTP draft is the
-only file Strata fetches itself, into `/data`; the engine is never re-downloaded after the
-image build.
+**Weights are user-supplied, not downloaded.** `GGUF_DIR=/models` with the Swift IQ2_XS
+shards under their original names plus `mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf`. Strata
+writes `<shard>.done` checksum markers next to them, so the models dir is mounted writable
+(this is also why it is not `:ro` here while every llama-swap mount is). The MTP draft is
+the only file Strata fetches itself, into `/data`; the engine is never re-downloaded after
+the image build.
 
-**Not yet verified anywhere — the migration was delivered dry.** Three first-boot checks
-live in the README: (1) podman CDI wiring — upstream documents `--gpus all` for Docker and
-never mentions podman, so `base_nvidia`'s reservation is the first thing to prove or
-replace with `nvidia-ctk cdi generate` + `--device nvidia.com/gpu=all`; (2) the arena
-actually pinning ~36-40GiB while the desktop stays responsive; (3) the model id Strata
-advertises on `/v1/models`, which must match the LiteLLM `model:` field.
+**Not yet verified anywhere — the migration was delivered dry, and rollout is manual on
+the remote desktop.** The README carries the runbook and the checks: (1) podman CDI wiring
+— upstream documents `--gpus all` for Docker and never mentions podman, so
+`base_nvidia`'s reservation is the first thing to prove or replace with `nvidia-ctk cdi
+generate` + `--device nvidia.com/gpu=all`; (2) the arena actually pinning ~36-40GiB while
+the desktop stays responsive; (3) the model id Strata advertises on `/v1/models`, which
+must match the LiteLLM `model:` field.
 
 **Known risk, accepted:** port 8080 is published with **no API key**, so anything on the
 LAN can reach an unauthenticated OpenAI endpoint. LiteLLM :4000 (master key) is the

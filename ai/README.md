@@ -14,7 +14,7 @@ export LLAMA_MODELS_DIR=/mnt/data/llama/models     # where the GGUFs live
 # laptop: RTX 5070 + Arc iGPU, both at once
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
 
-# desktop: 5070 Ti 16GB — builds and runs Strata (Qwen3.8-Flash-Next)
+# desktop: 5070 Ti 16GB — builds and runs Strata (Swift 1.5 IQ2_XS)
 podman-compose -f ai/llama-cpp.yml --profile server up -d --build
 ```
 
@@ -37,46 +37,92 @@ curl -s localhost:4000/health/liveliness
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
-## Desktop: Strata + Qwen3.8-Flash-Next
+## Desktop: Strata + Swift 1.5 (Qwen3.8-Flash-Next)
 
-The desktop runs **Strata** (`ai/Strata`, pinned to its release tag) instead of
-llama.cpp: a 125B-A6B MoE that never fits in VRAM, run as a GPU expert cache (5070 Ti
-16GB) + page-locked expert arena in system RAM + the n-gram table on the SSD. The
-7900 XTX is the display card and is **not** used for inference — Strata cannot mix
-HIP and CUDA in one run, and its container is CUDA-only.
+The desktop runs **Strata** (`ai/Strata`, pinned to its release tag) instead of llama.cpp:
+a 125B-A6B MoE that never fits in VRAM, run as a GPU expert cache (5070 Ti 16GB) +
+page-locked expert arena in system RAM + the n-gram table on the SSD. The 7900 XTX is the
+display card and is **not** used for inference — Strata cannot mix HIP and CUDA in one run,
+and its container is CUDA-only.
+
+The weights are **Swift 1.5** (`ukisai/Swift-1.5-Qwen3.8-Flash-Next-…`, Strata family
+`swift`) — UkisAI's post-train of the same model, tuned for ~63% fewer thinking tokens and
+1.8× sooner answers at stated <1% quality loss. Its IQ2_XS measures better than the base
+model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open License 1.0
+(not Apache-2.0).
 
 | | |
 |---|---|
 | GPU | 5070 Ti 16GB (`--vram-reserve` default) |
-| RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB |
+| RAM | expert arena capped at `STRATA_ARENA_PIN_GIB=40` of 96GB — **40GB is the maximum**, 48GB only for the documented worst case below |
 | SSD | `/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, caches) |
 | context | 131072 |
 | KV | `k8v4` |
-| vision | yes |
-| model name | `qwen3.8-flash-next` (LiteLLM → `http://strata:8080/v1`) |
+| vision | **cpu** — the engine only recommends the GPU encoder at ≥23.5GB VRAM (upstream #2406); on 16GB the CPU encoder frees ~1.1-1.4GB for the expert cache at a 3-5% decode cost |
+| model name | `qwen3.8-flash-next` (LiteLLM → `http://strata:8080/v1`) — deliberately names the Swift weights |
 
 ### Weights to download (manual, into `$LLAMA_MODELS_DIR`)
 
-- GSQ-RCO **IQ2_XS** GGUF shards, original filenames — Strata matches the first shard by
-  the canonical `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-…` name, or any `*-00001-of-*.gguf`
-  whose name contains the model name
-- `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (~0.9GB) — vision
+```bash
+export LLAMA_MODELS_DIR=/mnt/data/llama/models
+cd $LLAMA_MODELS_DIR
+hf download ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF \
+  --include "*IQ2_XS*" --include "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf" \
+  --local-dir .
+```
 
-The MTP draft (~6GB) is **not** downloaded by hand: Strata's setup fetches it into
-`/data` on first start. Strata also writes `<shard>.done` checksum markers next to the
-GGUFs, which is why the models dir is mounted writable.
+- Swift **IQ2_XS** GGUF shards, **original filenames** — Strata matches the first shard by
+  the canonical `*-00001-of-*.gguf` name containing the model name; roughly 68GB
+- `mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf` (~0.91GB) — **Swift ships its own projector**;
+  the base model's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` is not reused
+- **Do not download**: the base ISTA shards (not needed, ~28GB wasted), Swift `Q2_0`
+  (Strata's packer cannot handle its shard split — upstream #171), or any MTP file
+  (Strata fetches the draft, ~6GB, into `/data` on first start)
+
+Strata writes `<shard>.done` checksum markers next to the GGUFs, which is why the models
+dir is mounted writable.
+
+### Roll out on the desktop (manual)
+
+```bash
+cd ~/Projects/dockerfiles
+git pull --ff-only
+git submodule update --init --checkout ai/Strata
+
+export LLAMA_MODELS_DIR=/mnt/data/llama/models
+hf download ukisai/... # the two lines above
+mkdir -p /mnt/data/llama/strata
+
+podman-compose -f ai/llama-cpp.yml --profile server build strata
+podman-compose -f ai/llama-cpp.yml --profile server up -d
+podman logs -f strata        # minutes of expected silence: pack unpack, draft fetch, arena load
+```
 
 ### First-boot checklist
 
-1. **GPU wiring** — confirm the container sees the 5070 Ti (`podman logs strata`, Strata's
-   `/v1/status`). If it does not, the CDI route is
-   `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml` plus a
-   `--device nvidia.com/gpu=all` device entry instead of `base_nvidia`'s reservation.
-2. **Arena** — `grep VmLck /proc/$(podman inspect -f '{{.State.Pid}}' strata)/status`;
+1. **Health** — `curl -s 127.0.0.1:8080/health`.
+2. **GPU wiring** — the engine must report the 5070 Ti (`podman logs strata | head -50`,
+   Strata's `/v1/status`). If not, `sudo nvidia-ctk cdi generate
+   --output=/etc/cdi/nvidia.yaml` and replace the `extends: base_nvidia` block with
+   `devices: ["nvidia.com/gpu=all"]` on the `strata` service.
+3. **Arena** — `grep VmLck /proc/$(podman inspect -f '{{.State.Pid}}' strata)/status`;
    expect ~36-40 GiB pinned, and confirm the desktop stays responsive.
-3. **Model id** — `curl -s 127.0.0.1:8080/v1/models`; if Strata advertises a different id
+4. **Model id** — `curl -s 127.0.0.1:8080/v1/models`; if Strata advertises a different id
    than `qwen3.8-flash-next`, change the `model:` field in
-   `ai/litellm-config.desktop.yaml` to match (one line).
+   `ai/litellm-config.desktop.yaml` to match (one line), then `podman restart litellm_server`.
+5. **Gateway** — after ~30-60s, `curl -s localhost:4000/health/liveliness`, then a real
+   completion with `model: qwen3.8-flash-next` through `:4000/v1`.
+
+### Quant ladder (only step down this path if IQ2_XS disappoints)
+
+| step | env | arena | cost |
+|---|---|---|---|
+| **default** | `MODEL=IQ2_XS FAMILY=swift STRATA_ARENA_PIN_GIB=40` | ~35.5 GiB | — |
+| worst case | `MODEL=IQ3_XXS FAMILY=swift STRATA_ARENA_PIN_GIB=44` | ~42.9 GiB | ~15% slower decode, KLD 0.341 → 0.240 |
+| out of scope | `IQ3_S` (50.3), Unsloth `UD-Q4_K_XL` (77), `NVFP4` (68) | — | exceeds the 48GB worst case |
+
+**Never raise the pin past 48GB**, and the base-model rollback is `FAMILY=qwen` plus the
+base mmproj (same `MODEL=IQ2_XS`).
 
 ## Whisper ASR (Intel NPU)
 
@@ -192,7 +238,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 
 | name | machine | engine | for |
 |---|---|---|---|
-| `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K | main agent, delegation, vision, anything user-facing |
+| `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
 | `qwen3.6-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand text-first model (39.9 t/s deep, 1533 t/s prefill); image turns work but cost ~40 s |
@@ -237,7 +283,7 @@ Only **one** dGPU model is resident at a time — requesting another costs a ~15
 
 | device | port | model | role |
 |---|---|---|---|
-| 5070 Ti 16GB | 8080 | `qwen3.8-flash-next` (Strata, 131K, vision, `k8v4` KV) | everything — the only inference engine on the box |
+| 5070 Ti 16GB | 8080 | `qwen3.8-flash-next` (Strata, Swift 1.5 IQ2_XS, 131K, vision on CPU, `k8v4` KV) | everything — the only inference engine on the box |
 | 7900 XTX 24GB | — | — | display only; Strata's container is CUDA-only and cannot mix vendors |
 
 Strata never swaps models: the expert arena is page-locked in RAM and stays there, which

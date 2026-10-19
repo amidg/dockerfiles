@@ -125,9 +125,9 @@ services:
     environment:
       - no_proxy=localhost,127.0.0.1
       - MODEL=IQ2_XS
-      - FAMILY=qwen
+      - FAMILY=swift
       - CONTEXT=131072
-      - VISION=yes
+      - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
       - STRATA_ARENA_PIN_GIB=40
