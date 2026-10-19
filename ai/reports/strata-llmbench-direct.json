@@ -1,0 +1,63 @@
+{
+  "qwen3.8-flash-next": {
+    "thinking": {
+      "reasoning_chars": 406,
+      "completion_tokens": 134,
+      "content": "Postgres container OOMing after 1 hour",
+      "leaked_into_content": null,
+      "thinking_on": true
+    },
+    "approval": {
+      "content": "APPROVE",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "pass": true
+    },
+    "perf": {
+      "prefill_tps": 2036.1,
+      "decode_tps": 111.7,
+      "decode_deep_tps": 113.5,
+      "accept_shallow": 0.5277777777777778,
+      "accept_deep": 0.7068062827225131,
+      "prompt_tokens": 8695,
+      "rounds": 3
+    },
+    "tools": {
+      "single": true,
+      "select": true,
+      "roundtrip": true,
+      "no_tool": true,
+      "score": "4/4"
+    },
+    "quality": {
+      "arithmetic": {
+        "pass": true,
+        "got": "68"
+      },
+      "extract_json": {
+        "pass": true,
+        "got": "{\"port\": 5432}"
+      },
+      "classify": {
+        "pass": true,
+        "got": "BUG"
+      },
+      "terse_title": {
+        "pass": true,
+        "got": "Postgres container keeps OOMing"
+      },
+      "score": "4/4"
+    },
+    "longctx": {
+      "found": true,
+      "empty": false,
+      "ctx_tokens": 49998,
+      "prefill_tps": 2392.2,
+      "prefill_s": 20.9
+    },
+    "vision": {
+      "vision": "yes",
+      "detail": "Red"
+    }
+  }
+}

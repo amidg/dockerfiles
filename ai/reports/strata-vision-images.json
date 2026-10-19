@@ -1,0 +1,50 @@
+[
+ {
+  "image": "word-1280.png",
+  "bytes": 42928,
+  "s": 3.18,
+  "content": "STRATA",
+  "reasoning_chars": 364,
+  "finish": "stop",
+  "usage": {
+   "completion_tokens": 92,
+   "prompt_tokens": 358,
+   "total_tokens": 450,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ {
+  "image": "shapes-1280.png",
+  "bytes": 27491,
+  "s": 3.17,
+  "content": "Red circle\nBlue square\nGreen triangle",
+  "reasoning_chars": 423,
+  "finish": "stop",
+  "usage": {
+   "completion_tokens": 111,
+   "prompt_tokens": 349,
+   "total_tokens": 460,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ },
+ {
+  "image": "textcard-1280.png",
+  "bytes": 57268,
+  "s": 3.02,
+  "content": "gateway port: 4000\nmodel: qwen3.8-flash-next",
+  "reasoning_chars": 325,
+  "finish": "stop",
+  "usage": {
+   "completion_tokens": 108,
+   "prompt_tokens": 346,
+   "total_tokens": 454,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  }
+ }
+]

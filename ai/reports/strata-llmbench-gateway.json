@@ -1,0 +1,52 @@
+{
+  "qwen3.8-flash-next": {
+    "perf": {
+      "prefill_tps": 2039.35,
+      "decode_tps": 110.25,
+      "decode_deep_tps": 111.75,
+      "accept_shallow": 0.5126570563366726,
+      "accept_deep": 0.6784322033898305,
+      "prompt_tokens": 8695,
+      "rounds": 2
+    },
+    "tools": {
+      "single": true,
+      "select": true,
+      "roundtrip": true,
+      "no_tool": true,
+      "score": "4/4"
+    },
+    "quality": {
+      "arithmetic": {
+        "pass": true,
+        "got": "68"
+      },
+      "extract_json": {
+        "pass": true,
+        "got": "{\"port\": 5432}"
+      },
+      "classify": {
+        "pass": true,
+        "got": "BUG"
+      },
+      "terse_title": {
+        "pass": true,
+        "got": "Postgres Container OOMs After Hour"
+      },
+      "score": "4/4"
+    },
+    "thinking": {
+      "reasoning_chars": 227,
+      "completion_tokens": 68,
+      "content": "Postgres container OOMs after hour",
+      "leaked_into_content": null,
+      "thinking_on": true
+    },
+    "approval": {
+      "content": "APPROVE",
+      "reasoning_chars": 0,
+      "finish": "stop",
+      "pass": true
+    }
+  }
+}

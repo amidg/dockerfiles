@@ -62,6 +62,13 @@ model's IQ2_XS on 7/8 eval sets at the same arena size. License: Swift Open Lice
 | vision | **cpu** — the engine only recommends the GPU encoder at ≥23.5GB VRAM (upstream #2406); on 16GB the CPU encoder frees ~1.1-1.4GB for the expert cache at a 3-5% decode cost |
 | model name | `qwen3.8-flash-next` (LiteLLM → `http://strata:8080/v1`) — deliberately names the Swift weights |
 
+**Measured 2026-10-18** (first real run; full write-up in
+[`reports/strata-report-2026-10-18.md`](reports/strata-report-2026-10-18.md)):
+**2036 t/s prefill, 113.5 t/s deep decode**, tools 4/4, quality 4/4, a 50K-token needle in
+20.9 s, vision correct on real 1280px images (~3 s each) — roughly **3× the laptop's main
+model on deep decode**, with LiteLLM adding no measurable cost. Arena 33.0 GiB of the
+40 GiB pin; warm restart 20 s.
+
 ### Weights to download (manual, into `$LLAMA_MODELS_DIR`)
 
 ```bash

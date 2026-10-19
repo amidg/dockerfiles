@@ -454,7 +454,36 @@ Secondary deltas, all survivable, none worth the above: no config-level cross-ti
 **Do not re-attempt without first checking whether `normalizeOpenAIReasoningEffort()`
 still rewrites non-GPT-5 efforts.** That single function is the whole blocker.
 
-## Measured performance (laptop)
+## Measured performance — desktop Strata (2026-10-18)
+
+First real run of the desktop tier; full write-up in
+[`reports/strata-report-2026-10-18.md`](reports/strata-report-2026-10-18.md). Measured with
+`llm-benchmarking` (`smoke.py --profile desktop`, `llmbench.py --tests all --rounds 3`),
+single model, so the harness's cache-flushing alternation does not apply — rounds agreed
+here (prefill 2036/2055/2036 t/s), so it did not bite.
+
+| model | prefill | decode | **deep** | acc s/d | tools | quality | think | approval |
+|---|---|---|---|---|---|---|---|---|
+| `qwen3.8-flash-next` (direct `:8080`, r3) | **2036 t/s** | **111.7 t/s** | **113.5 t/s** | 53%/71% | 4/4 | 4/4 | on | PASS |
+| `qwen3.8-flash-next` (through LiteLLM `:4000`, r2) | 2039 t/s | 110.2 t/s | 111.8 t/s | 51%/68% | 4/4 | 4/4 | — | PASS |
+
+- **LiteLLM costs nothing measurable** (deep 111.8 vs 113.5 t/s, inside round noise).
+- **≈3.2× the laptop's main agent model on deep decode** (113.5 vs `gemma-4-26b-a4b`'s 35.0),
+  with `quality` 4/4 including the `terse_title` case that has failed elsewhere.
+- `longctx`: needle found in **49 998 tokens**, 2392 t/s prefill, 20.9 s.
+- Engine totals over the session: 64.7% MTP draft acceptance (4678 offered / 3027 accepted);
+  short turns 96-154 t/s at **82.8-91.2% expert-cache hit** (+2.5-5.1% of routed experts
+  over PCIe).
+- Resources: `arena_mib` **33 812** (33.0 GiB — the 40 GiB pin is a ceiling, not the working
+  size), expert cache 9775 MiB / 7127 slots, **418 MiB VRAM free**, 41.7 GB cgroup, 51.7/94
+  GiB host RAM, zram 3 GB in use. Host stayed responsive; the engine's own Swap stayed 0.
+- **Startup:** first boot ≈6.5 min (1.5 min pack + 5 min MTP fetch/pack + load); warm restart
+  **20 s** wall, experts 33.02 GiB at **10.18 GiB/s**.
+- **Vision on real 1280px images** (not the harness's 1×1 PNG): read `STRATA`, listed
+  `Red circle / Blue square / Green triangle`, and transcribed a text card exactly — ~3 s
+  each, with the encoder on the CPU.
+
+### Measured performance (laptop)
 
 Absolute values drift 20-30% with load and thermals — **only compare models measured in
 the same session.** Ratios have been stable across every repetition.
@@ -1948,6 +1977,15 @@ each rejection costs a full ~18s load.
 
 ## LiteLLM
 
+- **`main-latest` drifts, and a stale one breaks the upstream hop (2026-10-18).** With the
+  image pulled three months earlier, every gateway request to `qwen3.8-flash-next` failed
+  after ~34s with `litellm.InternalServerError … OpenAIException - Connection error`
+  (underlying `httpx.ConnectError`), while the same `strata:8080` answered `200` to both
+  `urllib` and `httpx` *from inside the LiteLLM container*. `podman pull
+  ghcr.io/berriai/litellm:main-latest` (a 25-hour-old build) plus
+  `podman-compose … up -d --force-recreate litellm_server` fixed it — same config, same
+  network. **When the gateway alone fails and the upstream is provably reachable, refresh
+  the image before debugging the network.**
 - **Takes ~30-60s to become ready** after `up`/`restart`. Requests before then return an
   empty body that looks like a model failure. Poll `/health/liveliness`.
 - **`request_timeout: 600`** — local inference trips the default; a cold load plus vision
@@ -2197,10 +2235,10 @@ of `smoke.py`, or use `llmbench.py --endpoint http://localhost:8080/v1`. The gat
 are unaffected — LiteLLM is on 4000 on both machines, and going through the gateway is the
 better test anyway.
 
-**No Strata numbers exist yet.** Every performance figure in this file is llama.cpp, on the
-laptop. The desktop's Strata tier has not been benchmarked — there was nothing to measure
-against, since the migration was delivered without a running deployment. First measurements
-belong here when they happen.
+**Strata numbers now exist — see the desktop section below.** Every other performance
+figure in this file is llama.cpp, on the laptop. The desktop's Strata tier was first
+measured 2026-10-18 (`ai/reports/strata-report-2026-10-18.md`); the numbers and their
+caveats live in [Measured performance — desktop Strata](#measured-performance--desktop-strata-2026-10-18).
 
 ### When to run what
 
