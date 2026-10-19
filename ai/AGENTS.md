@@ -27,7 +27,7 @@ only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback), `qwen3.6-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, on-demand — text-first) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback), `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, on-demand — the coding slot) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 131K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 
@@ -377,7 +377,8 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27, ttl 0) | **main agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
-| `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | on-demand text-first model (deep 39.9 t/s, 1533 t/s prefill); image turns work but cost ~40 s |
+| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | on-demand coding model (deep 40.1 t/s); won the Q3_K_XL A/B against Qwen3.6-35B |
+| ~~`qwen3.6-35b`~~ (Q3_K_XL) | *GGUF + projector kept on disk, unwired — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
@@ -460,7 +461,8 @@ the same session.** Ratios have been stable across every repetition.
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
 | RTX 5070 | `gemma-4-26b-a4b` **(promoted 2026-10-18; MTP, vision, 131K, N=27, ttl 0)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
-| RTX 5070 | `qwen3.6-35b` **(on-demand; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | **1533 t/s** | **39.9 t/s** (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image (~40 s image turn) |
+| RTX 5070 | `tiel-coder-35b` **(on-demand coding slot; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | 1442 t/s | **40.1 t/s** (31.7 shallow), acc 47%/81% | ~7262 MiB at load, 7316 after a 1280px image |
+| RTX 5070 | `qwen3.6-35b` **(Q3_K_XL; retained on disk, unwired)** | 1533 t/s | 39.9 t/s (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image |
 | RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
 | RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
 | RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
@@ -602,9 +604,66 @@ weight repacking is default-enabled and measured **~6% slower** for these Q4/Q4_
 experts (`-nr` 49.4 vs 46.3 t/s); the promoted entry leaves the default because that A/B did
 not cover this model with MTP and a projector — re-measure before adding `--no-repack`.
 
-### Qwen3.6-35B-A3B Q3_K_XL + CPU projector — on-demand (2026-10-18)
+### Tiel-Coder vs Qwen3.6-35B at Q3_K_XL — A/B, Tiel wins the slot (2026-10-18)
 
-Re-added as an **on-demand** third dGPU entry (`ttl: 600`), not a main-agent candidate:
+Both are 35B-A3B, Q3_K_XL, MTP bundled, 17.2 GB within 7 MB of each other, and run the
+**identical flag set** (N=35, ub2048, n-max 2, CPU projector, temp 0.6 row). Tiel is
+`peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP` — the same repo the retired Q4_K_XL tiel came
+from; Qwen is the Unsloth repo. All rows same-session, interleaved.
+
+| | **tiel** | qwen |
+|---|---|---|
+| deep | **40.1** (39.2-40.2) | 39.9 |
+| prefill | 1442 | 1533 |
+| decode (shallow) | 31.7 | 33.3 |
+| acc s/d | 47%/81% | 56%/84% |
+| 50K longctx | 50,173 @ 1458 t/s (34.4 s) | 49,968 @ 1513 (33.0 s) |
+| tools / quality / approval | 4/4 / 4/4 / PASS | 4/4 / 4/4 / PASS |
+| 1280px image | works, but reads `PLAYYUUS` | reads `PLATYPUS` |
+| VRAM after image | 7316 MiB (835 free) | 7424 MiB (727 free) |
+| scripted coding task | **1 attempt, 30.8 s** | 1 attempt, 61.6 s |
+
+**Decision: tiel takes the on-demand slot; qwen's GGUF and projector stay on disk, unwired.**
+The rule was pre-committed: tiel within 10% on deep with 4/4 correctness → tiel wins on the
+agentic quality it was liked for, plus 2x the task speed. Deep is a 0.5% tie; qwen's +6%
+prefill and +5% shallow are real but small.
+
+**The old tiel speed penalty is gone, cause not isolated.** The retired Q4_K_XL tiel accepted
+drafts at 47%/55% on an identical flag set and lost to Qwen's 68%/78%; this Q3_K_XL build
+accepts **47%/81%** and ties on deep. Head revision, body quant, or both — do not assume it
+is the head, the old follow-up already showed head precision was worth ~2 points.
+
+**Where tiel is measurably worse: image OCR.** It reads the synthetic word as `PLAYYUUS`
+deterministically (three runs) where qwen reads `PLATYPUS`. The projector matches and vision
+works (1831 prompt tokens, `finish: stop`), but keep image work on `gemma-4-26b-a4b`.
+
+**Spec knobs swept on tiel** (3 rounds each, interleaved with `gemma-4-e4b` so the 34 GB
+two-model churn does not repeat):
+
+| arm | deep | acc s/d | quality |
+|---|---|---|---|
+| **n-max 2, p-min default (promoted)** | **40.1** | 47%/81% | 4/4 |
+| n-max 3 | 34.9 | 34%/59% | 4/4 |
+| n-max 2 + `--spec-draft-p-min 0.8` | 28.8 | **87%/98%** | 4/4 |
+
+`p-min 0.8` is the sharpest demonstration yet that acceptance and speed come apart: **98%
+acceptance, 28% slower.** Same lesson as `n-max 3` — never promote a spec setting on its
+acceptance number.
+
+**Scripted task (fixed, reproducible):** a two-bug `stats.py` plus a hidden pytest suite,
+identical prompt, up to 3 repair attempts. Both passed on attempt 1; tiel 30.8 s vs qwen
+61.6 s. The difference is verbosity: on the thinking probe qwen spent 1386 reasoning chars
+and returned empty content at 400 tokens, tiel answered in 188 chars / 58 tokens. That
+terseness is the Sharp template doing what it is for.
+
+### Qwen3.6-35B-A3B Q3_K_XL + CPU projector — the projector work (2026-10-18)
+
+*(Qwen lost the slot to [tiel-coder-35b](#tiel-coder-vs-qwen36-35b-at-q3_k_xl--ab-tiel-wins-the-slot-2026-10-18);
+its GGUF stays on disk. This section is kept because the projector-placement measurements are
+what make either model fit on this card, and tiel inherits the same flags.)*
+
+Originally added as an **on-demand** third dGPU entry (`ttl: 600`), not a main-agent candidate;
+it has since lost the slot to tiel and is unwired. Files:
 `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2 GB) + `qwen3.6-35b-mmproj-F16.gguf` (899 MB),
 MTP n-max 2, N=35, 131072 ctx, q4_0 KV, `--batch-size 2048 --ubatch-size 2048`,
 `--no-mmproj-offload`.

@@ -241,7 +241,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
-| `qwen3.6-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand text-first model (39.9 t/s deep, 1533 t/s prefill); image turns work but cost ~40 s |
+| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand coding model (40.1 t/s deep, 1442 t/s prefill); won the Q3_K_XL A/B |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 
@@ -258,7 +258,7 @@ curl -s localhost:4000/v1/chat/completions \
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand), `qwen3.6-35b` (MTP, vision on CPU, 131K, on-demand) | everything the user waits on |
+| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand), `tiel-coder-35b` (MTP, vision on CPU, 131K, on-demand) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
@@ -272,9 +272,12 @@ Only **one** dGPU model is resident at a time — requesting another costs a ~15
   downloading; a truncated GGUF fails at load, not at download.
 - `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` + `gemma-4-e4b-qat-mmproj-F16.gguf` +
   `mtp-gemma-4-E4B-it.gguf` — the on-demand fallback.
-- `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2GB) + `qwen3.6-35b-mmproj-F16.gguf` (899MB, from the
-  same `Qwen3.6-35B-A3B-MTP-GGUF` repo) — the on-demand text-first model. The projector runs
-  on the CPU (`--no-mmproj-offload`) so it does not compete with experts for VRAM.
+- `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB) + `tiel-coder-35b-mmproj-BF16.gguf`
+  (903MB, from the same `peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP` repo) — the on-demand
+  coding model. Projector on the CPU (`--no-mmproj-offload`) like the Qwen below.
+- `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2GB) + `qwen3.6-35b-mmproj-F16.gguf` (899MB) —
+  **kept on disk, unwired**: lost the 2026-10-18 A/B to tiel (agentic task time, image OCR).
+  To re-test, add a llama-swap entry; nothing else needs to change.
 - `embeddinggemma-2-Q8_0.gguf` — embeddings, the only iGPU model.
 - Deleted 2026-10-18 (re-downloadable if ever wanted back): the Tiel-Coder-35B and both
   LFM2.5-24B GGUFs.
@@ -349,7 +352,7 @@ export LITELLM_ENV=~/Projects/dockerfiles/ai/litellm.env
 ./smoke.py          # every tier, every model, vision, approval shape
 ./smoke.py --quick  # just show what is loaded where
 
-./llmbench.py --models qwen3.6-35b gemma-4-26b --tests all
+./llmbench.py --models tiel-coder-35b gemma-4-26b-a4b --tests all
 ```
 
 On the **desktop**, llama-swap is not on :8081 — the local model is Strata on :8080, so

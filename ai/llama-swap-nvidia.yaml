@@ -37,11 +37,11 @@ models:
     ttl: 600
     disableKeepAlives: true
 
-  "qwen3.6-35b":
+  "tiel-coder-35b":
     cmd: |
       /app/llama-server \
-        --model /models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf \
-        --mmproj /models/qwen3.6-35b-mmproj-F16.gguf \
+        --model /models/Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf \
+        --mmproj /models/tiel-coder-35b-mmproj-BF16.gguf \
         --no-mmproj-offload \
         --host 127.0.0.1 --port ${PORT} \
         --n-gpu-layers 99 --n-cpu-moe 35 --ctx-size 131072 --parallel 1 \
