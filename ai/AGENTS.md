@@ -486,6 +486,21 @@ the harness's 1×1 PNG. VRAM 7544 MiB at load with `vram_free_mib: 255` (the ela
 cache owns that margin), system RAM ~29 GB in use. First boot ~30 s (engine is prebuilt in
 the image); warm reload after an unload ~4 s.
 
+**Qwen3.6-35B-A3B UD-Q3_K_XL on the same engine (tested 2026-10-19, not installed).** The
+`qwen36` family is supported by strata-poly, but its size menu is **UD-Q3_K_M / UD-Q2_K_XL /
+UD-Q4_K_M** — UD-Q3_K_XL is **not** a supported size, and setup hard-fails on its pinned
+size/SHA-256. The file already on disk was tested through the supported path by aliasing it
+to the Q3_K_M size in a throwaway models dir (`.done` marker; the engine reads the real
+tensors, and the Q3_K_M budget numbers are effectively identical to Tiel's). Same card,
+same session, same suite: **prefill 1682 t/s, shallow 88.2, deep 72.7 / 76.9 / 82.3 t/s**,
+accept 82%/94%, 49,968-token needle @ 1375 t/s (36.3 s), tools 4/4, quality 4/4 (including
+`terse_title`), approval PASS, real-1280px vision reads `PLATYPUS` in 6.1 s. That is
+**~20-30% faster at depth than Tiel on the same engine** (63-65), with slightly better draft
+acceptance and OCR. It was a test only: the service still runs Tiel, no config changed, no
+size was added to the pinned submodule, and the test dirs were deleted. Making it real
+means installing the supported **UD-Q3_K_M** (17.1GB) or adding UD-Q3_K_XL's size and
+SHA-256 to PolyStrata's `qwen36` family.
+
 **Known risks, accepted:** the submodule is pinned to a **tag**, not main, because
 PolyStrata has active churn; podman is undocumented upstream (same CDI fallback as the
 desktop); the image build runs on the machine it runs on, and the entrypoint warns on a
