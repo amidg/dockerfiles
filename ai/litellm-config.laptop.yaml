@@ -76,6 +76,16 @@ model_list:
     model_info:
       mode: audio_transcription
 
+  - model_name: qwen3.8-flash-next
+    litellm_params:
+      model: openai/qwen3.8-flash-next
+      api_base: https://api.gusev.tech/v1
+      api_key: os.environ/SERVER_API_KEY
+      allowed_openai_params: ["reasoning_effort"]
+    model_info:
+      max_input_tokens: 131072
+      max_output_tokens: 32768
+
 router_settings:
   retry_after: 15
   model_group_retry_policy:
