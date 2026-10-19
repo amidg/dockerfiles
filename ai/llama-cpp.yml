@@ -131,6 +131,7 @@ services:
       - KV=k8v4
       - GGUF_DIR=/models
       - STRATA_ARENA_PIN_GIB=40
+      - STRATA_ALLOWED_HOSTS=strata
 
   base_litellm: &base_litellm
     profiles:

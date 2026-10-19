@@ -2156,6 +2156,19 @@ only affect the two remote entries.
   container starts without a GPU.
 - **The container is CUDA-only.** There is no ROCm path in the image, and a mixed
   HIP+CUDA run is unsupported upstream — do not try to bring the 7900 XTX in.
+- **`STRATA_ALLOWED_HOSTS=strata` is required for the gateway hop.** Strata's DNS-rebinding
+  protection answers only to the names it knows (loopback, the host, LAN addresses) and
+  rejects anything else with `403 Host 'strata:8080' is not allowed`. LiteLLM reaches it by
+  the compose service name, so the name must be allow-listed: `allowed_hosts` in the
+  generated `strata-<model>.json`, or `$STRATA_ALLOWED_HOSTS` (comma-separated; the port is
+  dropped, so `strata` is right). Setting an API key also turns the check off — the env var
+  is the smaller change and keeps :8080 keyless.
+- **`grep VmLck` does NOT verify the arena on this engine version.** The arena is pinned with
+  `cudaHostRegister(... | cudaHostRegisterMapped)` (`src/core/pinned.cu`), not `mlock`, so
+  `/proc/<pid>/status` reports `VmLck: 0` and `smaps_rollup` `Locked: 0` while the whole
+  arena is registered. Read `/metrics` instead — `arena_mib` is the arena, and the expert
+  cache is `expert_cache_mib`/`expert_slots` — and sanity-check that the engine process has
+  the arena as *anonymous* RSS (`RssAnon`) with `Swap: 0`.
 
 ## Benchmarking
 

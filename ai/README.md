@@ -105,16 +105,21 @@ podman logs -f strata        # minutes of expected silence: pack unpack, draft f
 
 1. **Health** — `curl -s 127.0.0.1:8080/health`.
 2. **GPU wiring** — the engine must report the 5070 Ti (`podman logs strata | head -50`,
-   Strata's `/v1/status`). If not, `sudo nvidia-ctk cdi generate
-   --output=/etc/cdi/nvidia.yaml` and replace the `extends: base_nvidia` block with
-   `devices: ["nvidia.com/gpu=all"]` on the `strata` service.
-3. **Arena** — `grep VmLck /proc/$(podman inspect -f '{{.State.Pid}}' strata)/status`;
-   expect ~36-40 GiB pinned, and confirm the desktop stays responsive.
-4. **Model id** — `curl -s 127.0.0.1:8080/v1/models`; if Strata advertises a different id
-   than `qwen3.8-flash-next`, change the `model:` field in
-   `ai/litellm-config.desktop.yaml` to match (one line), then `podman restart litellm_server`.
+   Strata's `/v1/status`). `base_nvidia` works under podman: podman-compose turns the
+   reservation into explicit device mounts *and* adds `security-opt label=disable` itself.
+   Only if the log shows no GPU: `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`
+   and swap the `extends: base_nvidia` block for `devices: ["nvidia.com/gpu=all"]`.
+3. **Arena** — `curl -s 127.0.0.1:8080/metrics | jq '.engine.arena_mib'` (IQ2_XS ≈ 33 GiB,
+   under the 40 GiB `STRATA_ARENA_PIN_GIB` cap). **Not `VmLck`** — this build pins with
+   `cudaHostRegister`, which leaves `/proc/<pid>/status` at `VmLck: 0`. Confirm the desktop
+   stays responsive.
+4. **Model id** — `curl -s 127.0.0.1:8080/v1/models` advertises Strata's own id
+   (`swift-1.5-iq2_xs`), which is **not** the gateway name. Leave the LiteLLM `model_name`
+   as `qwen3.8-flash-next`; Strata accepts the forwarded name. The gateway would only need
+   a change if Strata rejected it (it would 404/400, not silently misroute).
 5. **Gateway** — after ~30-60s, `curl -s localhost:4000/health/liveliness`, then a real
-   completion with `model: qwen3.8-flash-next` through `:4000/v1`.
+   completion with `model: qwen3.8-flash-next` through `:4000/v1`. A `403 Host 'strata:8080'
+   is not allowed` here means `STRATA_ALLOWED_HOSTS` lost its `strata` entry.
 
 ### Quant ladder (only step down this path if IQ2_XS disappoints)
 
