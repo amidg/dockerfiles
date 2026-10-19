@@ -146,13 +146,13 @@ services:
       args:
         CUDA_ARCHITECTURES: 120
     image: localhost/strata-poly:0.1.45-poly.1
-    container_name: strata_laptop
+    container_name: strata
     restart: unless-stopped
     networks:
       - llama-swap-network
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - ${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}:/data:z
+      - ${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}:/data:z
     ports:
       - 8080:8080
     ulimits:
@@ -165,7 +165,7 @@ services:
       - CONTEXT=131072
       - VISION=cpu
       - GGUF_DIR=/models
-      - STRATA_ALLOWED_HOSTS=strata_laptop
+      - STRATA_ALLOWED_HOSTS=strata
       - REINSTALL=${STRATA_REINSTALL:-0}
 
   base_litellm: &base_litellm

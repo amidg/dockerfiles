@@ -37,8 +37,12 @@ Dockerfile extension (below).
 - **Deployment: containerized**, mirroring the desktop — new submodule `ai/PolyStrata`
   (VecSzn/PolyStrata, pinned to a release **tag**, not main; the repo has active churn),
   compose service in `ai/llama-cpp.yml` under the `laptop` profile.
-- **Service name: `strata_laptop`** (compose service + container name). LiteLLM reaches it
-  at `http://strata_laptop:8080/v1`; `STRATA_ALLOWED_HOSTS=strata_laptop`.
+- **Container: `strata`** — the desktop's name, deliberately (user decision 2026-10-19,
+  after the first commit): the container name and podman DNS name are `strata` on both
+  machines, and the data dir is `/var/mnt/data/llama/strata` on both. The compose **service
+  key** is `strata_laptop` only because the shared `llama-cpp.yml` cannot hold two services
+  of the same name. LiteLLM reaches it at `http://strata:8080/v1`;
+  `STRATA_ALLOWED_HOSTS=strata`.
 - **Model: Tiel Coder 35B-A3B UD-Q3_K_XL** — the same file the llama.cpp incumbent reads.
 - **Context: 131072** — matches every existing client pin (Hermes, opencode
   `limit.context`, LiteLLM `max_input_tokens`); no client rewiring.
@@ -101,13 +105,13 @@ skipping it halves the build.
       args:
         CUDA_ARCHITECTURES: 120
     image: localhost/strata-poly:0.1.45-poly.1
-    container_name: strata_laptop
+    container_name: strata
     restart: unless-stopped
     networks:
       - llama-swap-network
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
-      - ${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}:/data:z
+      - ${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}:/data:z
     ports:
       - 8080:8080
     ulimits:
@@ -120,22 +124,26 @@ skipping it halves the build.
       - CONTEXT=131072
       - VISION=cpu
       - GGUF_DIR=/models
-      - STRATA_ALLOWED_HOSTS=strata_laptop
+      - STRATA_ALLOWED_HOSTS=strata
       - REINSTALL=${STRATA_REINSTALL:-0}
 ```
 
 Carried-over desktop rules: `/models` mounted **writable** (`:z`, not `:z,ro` — setup
 writes `.done` checksum markers); both mounts need `:z` for SELinux Enforcing; data dir
-under `/var/mnt/data` on Fedora Atomic. The desktop's data dir default is
-`/var/mnt/data/llama/strata` — the laptop default above is deliberately separate
-(`strata-poly`) so the machines' volumes never alias; both use `$STRATA_DATA_DIR` override.
+under `/var/mnt/data` on Fedora Atomic. The data dir default is **the desktop's path**
+(`/var/mnt/data/llama/strata`) — separate hosts, separate disks, so the shared name never
+aliases; `$STRATA_DATA_DIR` overrides on both.
 
-Note on file naming: compose service and container are `strata_laptop`; the engine inside
-remains strata-poly. In YAML configs (no comments by repo rule), the name is the only record.
+Note on naming: the container is `strata`, as on the desktop; the compose **service key**
+is `strata_laptop` because the shared `llama-cpp.yml` cannot hold two services of the same
+name, so `podman-compose` commands take the key while `podman` commands, the podman DNS
+name and the LiteLLM URL take `strata`. The engine inside remains strata-poly; the image
+keeps the descriptive `localhost/strata-poly` tag. In YAML configs (no comments by repo
+rule), the name is the only record.
 
 ### A4. `ai/litellm-config.laptop.yaml` — landed
 
-- `tiel-coder-35b` entry: `api_base: http://strata_laptop:8080/v1`; `model:` field and
+- `tiel-coder-35b` entry: `api_base: http://strata:8080/v1`; `model:` field and
   everything else unchanged (`allowed_openai_params: ["reasoning_effort"]`,
   `max_input_tokens: 131072`, `max_output_tokens: 32768`).
 - All other entries unchanged (`gemma-4-26b-a4b`, `gemma-4-e4b` still on
@@ -186,45 +194,46 @@ git submodule update --init --checkout ai/PolyStrata
 **B2. Data dir**
 
 ```bash
-mkdir -p /var/mnt/data/llama/strata-poly
+mkdir -p /var/mnt/data/llama/strata
 ```
 
 **B3. Build and start**
 
 ```bash
 export LLAMA_MODELS_DIR=/mnt/data/llama/models        # laptop path per AGENTS.md
-export STRATA_DATA_DIR=/var/mnt/data/llama/strata-poly
-podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata
+podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop   # compose takes the service key
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d strata_laptop
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d   # rest of the laptop stack
 ```
 
 First start: setup pass (tokenizer dir, run config; no model download — `GGUF_DIR=/models`)
-then model load. Minutes of logged silence is normal; watch `podman logs -f strata_laptop`.
+then model load. Minutes of logged silence is normal; watch `podman logs -f strata`.
 If the setup pass needs to re-run after a settings change: `STRATA_REINSTALL=1` on the next
 `up -d` (same mechanism as the desktop).
 
 **B4. First-boot checks (in order, stop on first failure)**
 1. `curl -s 127.0.0.1:8080/health` — up.
-2. **GPU wiring:** `podman logs strata_laptop | head -50` — engine must report the RTX 5070.
+2. **GPU wiring:** `podman logs strata | head -50` — engine must report the RTX 5070.
    Podman CDI fallback (same as desktop): `sudo nvidia-ctk cdi generate
    --output=/etc/cdi/nvidia.yaml`, then replace `extends: base_nvidia` with
    `devices: ["nvidia.com/gpu=all"]` (+ `security_opt: label=disable` if SELinux blocks).
 3. **Model id:** `curl -s 127.0.0.1:8080/v1/models | jq -r '.data[].id'` — expect
    `tiel-coder-35b-a3b-ud-q3_k_xl`. It is informational: the server answers any requested
    model name, and the LiteLLM entry keeps `openai/tiel-coder-35b`.
-4. **Host-header gate:** a completion through `http://strata_laptop:8080/v1` from inside the
+4. **Host-header gate:** a completion through `http://strata:8080/v1` from inside the
    LiteLLM container. If poly's server answers `403 ... not allowed` (its DNS-rebinding
-   check), confirm `STRATA_ALLOWED_HOSTS=strata_laptop` survived into the container env;
+   check), confirm `STRATA_ALLOWED_HOSTS=strata` survived into the container env;
    fallback is `API_KEY` (turns the check off) — decide before exposing anything.
 5. **Vision:** a real 1280px image (not the harness's 1×1 PNG — twice bitten on this card).
    CPU encoder: seconds per image, not instant.
 6. **Gateway:** wait 30-60s, `curl -s localhost:4000/health/liveliness`, then a real
    completion through `:4000/v1` with `model: tiel-coder-35b`.
-7. **RAM:** `free -h` — expect ~22GB in use with the model resident; confirm the desktop
-   stack (llama-swap containers, whisper) is not starved. Pinned memory check: read the
-   engine's `/metrics` or log; `grep VmLck /proc/<pid>/status` may read 0 if poly pins via
-   `cudaHostRegister` like the desktop engine (same lesson — do not trust VmLck alone).
+7. **RAM:** `free -h` — expect ~22GB in use with the model resident; confirm the rest of
+   the laptop stack (llama-swap containers, whisper) is not starved. Pinned memory check:
+   read the engine's `/metrics` or log; `grep VmLck /proc/<pid>/status` may read 0 if poly
+   pins via `cudaHostRegister` like the desktop engine (same lesson — do not trust VmLck
+   alone).
 
 **B5. A/B gate before the switch is called done**
 

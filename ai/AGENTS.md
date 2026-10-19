@@ -30,7 +30,7 @@ resident Strata process. Each advertises only what its device can run.
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
-| `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata_laptop` | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
+| `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
 
@@ -236,14 +236,14 @@ anti-thinking system messages with `chat_template_kwargs` for `reasoning_effort:
 
 Host ports: **8081 primary GPU (llama-swap), 8082 secondary, 8083 whisper (Intel NPU),
 8080 strata-poly** on the laptop; the desktop's **Strata is on 8080** (no Open WebUI
-anywhere since 2026-10-17). Both machines run their gateway on 4000 — they are separate
-hosts, so there is no conflict, and the 8080 overlap between the two machines is the same
-kind of non-conflict.
+anywhere since 2026-10-17). Both machines run their gateway on 4000, and both run their
+resident Strata container as `strata` on 8080 — they are separate hosts, so neither the
+port, the name, nor the `/var/mnt/data/llama/strata` path conflicts.
 
 Container-internal ports are always 8080, which is why `litellm-config.*.yaml` points at
-`http://llama_swap_*:8080/v1` (laptop), `http://strata_laptop:8080/v1` (laptop poly), or
-`http://strata:8080/v1` (desktop) regardless of the host mapping. Changing a host port
-does not require a LiteLLM change.
+`http://llama_swap_*:8080/v1` (laptop llama-swap) or `http://strata:8080/v1` (both
+machines' resident engine) regardless of the host mapping. Changing a host port does not
+require a LiteLLM change.
 
 **The laptop runs nvidia + intel concurrently.** They used to share a container name and
 port via the `base_llama_swap` anchor, which made them mutually exclusive. `container_name`,
@@ -382,20 +382,28 @@ llama-swap's cold loads cheaper. Untested — do not assume either way.
 
 ## Strata-poly on the laptop — Tiel Coder 35B-A3B (added 2026-10-19, rollout pending)
 
-The laptop gained a second engine: the **`strata_laptop`** service (submodule
-`ai/PolyStrata`, pinned to **`v0.1.45-poly.1`** = `d0cd84dc`; image
-`localhost/strata-poly:0.1.45-poly.1`), running `FAMILY=tiel MODEL=UD-Q3_K_XL
-CONTEXT=131072 VISION=cpu GGUF_DIR=/models` on the RTX 5070 8GB. LiteLLM's
-`tiel-coder-35b` entry points at `http://strata_laptop:8080/v1`. The full plan and the
+The laptop gained a second engine: the **`strata_laptop`** compose service running the
+container **`strata`** (submodule `ai/PolyStrata`, pinned to **`v0.1.45-poly.1`** =
+`d0cd84dc`; image `localhost/strata-poly:0.1.45-poly.1`), running `FAMILY=tiel
+MODEL=UD-Q3_K_XL CONTEXT=131072 VISION=cpu GGUF_DIR=/models` on the RTX 5070 8GB.
+LiteLLM's `tiel-coder-35b` entry points at `http://strata:8080/v1`. The full plan and the
 user's rollout runbook are `ai/plans/strata-laptop-tiel.md`.
+
+**The name is the desktop's name on purpose.** The desktop's resident container is also
+`strata`, and the data dir on both machines is `/var/mnt/data/llama/strata` — same name,
+same path, separate hosts, two different engines. The laptop's compose **service key** is
+`strata_laptop` only because the shared `llama-cpp.yml` cannot hold two services with the
+same name: `podman-compose` commands take the key, `podman` commands and the podman DNS
+name take `strata`. `STRATA_ALLOWED_HOSTS=strata` matches the desktop's precedent.
 
 **Two engines, and the difference is not cosmetic.** `ai/Strata` (Niko1221/Strata) serves
 the `qwen4exp` architecture only — it cannot run Tiel at all. Tiel is `qwen35moe` (the
 Qwen3.6-35B shape: 40 layers, 256 experts, 8 to a token) and runs on PolyStrata's
 **`strata-poly`** engine, which reads the GGUF **in place** with a VRAM expert cache and a
-system-RAM working set. The desktop `strata` service is untouched by this addition, and the
-two engines share nothing at runtime: different repos, different binaries, different
-configs. Do not look for a `strata` env var that applies to `strata_laptop`.
+system-RAM working set. The desktop `strata` container is untouched by this addition, and
+the two engines share nothing at runtime: different repos, different binaries, different
+configs. **Do not copy env settings between the two `strata` containers** — the two images
+take different variables, and the same name means nothing to the other image.
 
 **The upstream Dockerfile gap.** PolyStrata's own `Dockerfile` builds only the Qwen
 `strata` engine and `strata-vision`; its header scopes the container to Qwen3.8, and
@@ -449,8 +457,9 @@ and `mmproj-BF16.gguf` (0.9GB) — **original repo filenames**; setup.py matches
 exactly and verifies SHA-256 against its pinned revision `bbe9e566`. The llama.cpp entry
 mounts the same projector under `tiel-coder-35b-mmproj-BF16.gguf`. The models dir is
 mounted **writable** (`.done` markers), both mounts carry the SELinux `:z` label, and the
-data dir default is `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}` — deliberately
-not the desktop's `strata` path, so the two machines' volumes never alias.
+data dir default is `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}` — **the desktop's path
+name on purpose**: the two boxes are separate hosts with separate disks, so a shared name
+never aliases, and the same `$STRATA_DATA_DIR` override works on both.
 
 **Expected gain, gate not run.** PolyStrata's reference laptop (RTX 4070 8GB, 32GB RAM,
 the same file) reads **~83 t/s writes / ~1,700 t/s prompt reads**. The llama.cpp incumbent
@@ -491,7 +500,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | resolved name | source | use |
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
-| `tiel-coder-35b` | laptop dGPU, **strata-poly** (`strata_laptop`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata_laptop:8080` from 2026-10-19; the A/B against the llama.cpp baseline is not run yet |
+| `tiel-coder-35b` | laptop dGPU, **strata-poly** (container `strata`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata:8080` from 2026-10-19; the A/B against the llama.cpp baseline is not run yet |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
 | `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
@@ -529,7 +538,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   `ttl: 0` means tiel never *idle*-unloads, but that does not exempt it from a
   cross-model swap.
 - **The rule is now across engines, not just models: one resident engine on the card.**
-  `strata_laptop` (strata-poly) holds ~7-8GB while resident, and llama-swap cannot unload
+  `strata` (strata-poly) holds ~7-8GB while resident, and llama-swap cannot unload
   it — free it first with `curl -s -X POST 127.0.0.1:8080/api/models/unload` before any
   `:8081` load, and unload `:8081` before a request to `:8080`. LiteLLM has no fallback
   path between the engines by design (see

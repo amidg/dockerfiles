@@ -9,9 +9,8 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 ## Run it
 
 ```bash
-export LLAMA_MODELS_DIR=/var/mnt/data/llama/models     # where the GGUFs live
-export STRATA_DATA_DIR=/var/mnt/data/llama/strata      # desktop: Strata's /data
-export STRATA_DATA_DIR=/var/mnt/data/llama/strata-poly # laptop: strata-poly's /data
+export LLAMA_MODELS_DIR=/var/mnt/data/llama/models   # where the GGUFs live
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata    # same path on both machines: the engine's /data
 
 # laptop: RTX 5070 + Arc iGPU, both at once — builds strata-poly from ai/PolyStrata on first use
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d --build
@@ -146,24 +145,26 @@ podman logs -f strata        # minutes of expected silence: pack unpack, draft f
 **Never raise the pin past 48GB**, and the base-model rollback is `FAMILY=qwen` plus the
 base mmproj (same `MODEL=IQ2_XS`).
 
-## Laptop: strata-poly + Tiel Coder 35B (`strata_laptop`)
+## Laptop: strata-poly + Tiel Coder 35B (`strata`)
 
 The laptop's second inference engine: **strata-poly** (`ai/PolyStrata`, pinned to
 `v0.1.45-poly.1`), PolyStrata's engine for models that read their GGUF in place with a
 VRAM expert cache. It runs **Tiel Coder 35B-A3B UD-Q3_K_XL** — the same GGUF and projector
-the llama.cpp entry uses — as a resident service, and the gateway name `tiel-coder-35b`
-routes to it. The desktop's `strata` service is a **different engine** (Niko1221/Strata,
-which serves `qwen4exp` only) and is untouched.
+the llama.cpp entry uses — as a resident container named **`strata`**, and the gateway name
+`tiel-coder-35b` routes to it. **The desktop's container is `strata` too** — the same name,
+the same data path, on a different machine and a **different engine** (Niko1221/Strata,
+which serves `qwen4exp` only); the two never meet, and the laptop's compose **service key**
+is `strata_laptop` because one compose file cannot hold two services of the same name.
 
 | | |
 |---|---|
 | GPU | RTX 5070 Laptop 8GB (`CUDA_ARCHITECTURES=120`) |
 | RAM | ~21 GB expert working set of 62GB — no arena pin; the engine pins memory, so `ulimits.memlock: -1` is mandatory |
-| SSD | `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}` → `/data:z` (tokenizer pack, expert profile, config) |
+| SSD | `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata}` → `/data:z` (tokenizer pack, expert profile, config) — the same path name as the desktop |
 | context | 131072 |
 | KV | setup.py's default (`int8`) |
 | vision | **cpu** — setup puts the encoder on the CPU below 16GB VRAM; seconds per image |
-| model name | `tiel-coder-35b` (LiteLLM → `http://strata_laptop:8080/v1`); the engine advertises `tiel-coder-35b-a3b-ud-q3_k_xl` and serves any requested name |
+| model name | `tiel-coder-35b` (LiteLLM → `http://strata:8080/v1`); the engine advertises `tiel-coder-35b-a3b-ud-q3_k_xl` and serves any requested name |
 
 Upstream's own image builds only the Qwen `strata` engine, so the in-repo
 `ai/polystrata.Dockerfile` adds the `strata-poly` + CPU-`strata-vision` builds using
@@ -179,10 +180,10 @@ inside the GGUF) — it exists for the llama.cpp fallback entry.
 cd ~/Projects/dockerfiles
 git pull --ff-only
 git submodule update --init --checkout ai/PolyStrata
-mkdir -p /var/mnt/data/llama/strata-poly
-podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop
+mkdir -p /var/mnt/data/llama/strata
+podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop   # compose takes the service key
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d
-podman logs -f strata_laptop   # minutes of expected silence: tokenizer pack, config, model load
+podman logs -f strata   # minutes of expected silence: tokenizer pack, config, model load
 ```
 
 First-boot checks, in order: `curl -s 127.0.0.1:8080/health`; the log reports the RTX 5070
@@ -323,7 +324,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | name | machine | engine | for |
 |---|---|---|---|
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 262K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
-| `tiel-coder-35b` | laptop | **strata-poly** (resident), RTX 5070, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** — LiteLLM routes it to `strata_laptop:8080` from 2026-10-19; the llama.cpp entry on `:8081` (MTP, N=35, 40.1 t/s deep, 1442 t/s prefill) stays as the manual fallback |
+| `tiel-coder-35b` | laptop | **strata-poly** (resident), RTX 5070, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** — LiteLLM routes it to `strata:8080` from 2026-10-19; the llama.cpp entry on `:8081` (MTP, N=35, 40.1 t/s deep, 1442 t/s prefill) stays as the manual fallback |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
@@ -499,15 +500,15 @@ runs llama.cpp — there is no `--n-cpu-moe`, `--ubatch-size` or `--threads` to 
 Strata's memory model (VRAM expert cache + 40GiB pinned RAM arena + n-gram table on the
 SSD) is not llama.cpp's. Laptop flags are laptop flags.
 
-**Strata is silent for a long time on first start** (`strata` on the desktop,
-`strata_laptop` on the laptop). The setup pass fetches/unpacks what it needs (the desktop's
-MTP draft and pack; the laptop's tokenizer pack) and loads the model before the port opens
-— minutes, not seconds. Watch `podman logs -f strata` / `podman logs -f strata_laptop`;
-both images' healthcheck allows a `--start-period=600s` for exactly this reason.
+**Strata is silent for a long time on first start** (`strata` on both machines). The setup
+pass fetches/unpacks what it needs (the desktop's MTP draft and pack; the laptop's tokenizer
+pack) and loads the model before the port opens — minutes, not seconds. Watch
+`podman logs -f strata`; both images' healthcheck allows a `--start-period=600s` for
+exactly this reason.
 
 **Strata dies with a memlock error.** Both services must run with `ulimits.memlock: -1` —
 the desktop arena and the laptop's poly working set are both pinned. `podman inspect
-strata_laptop --format '{{.HostConfig.Ulimits}}'` confirms it.
+strata --format '{{.HostConfig.Ulimits}}'` confirms it.
 
 **"Unable to start: database is locked" on `podman-compose up` with `--build`.** A build
 and a running container race on the same image tag; `podman-compose build strata` first,
@@ -516,8 +517,8 @@ then `up -d`.
 **iGPU model will not load.** Check `free -h` — the Arc allocates against `MemFree`, not
 reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
 
-**llama-swap loads fail while `strata_laptop` is resident.** Not a bug — two engines, one
-8GB card. Unload strata-poly (`curl -s -X POST 127.0.0.1:8080/api/models/unload`) before
+**llama-swap loads fail while `strata` (strata-poly) is resident.** Not a bug — two engines,
+one 8GB card. Unload strata-poly (`curl -s -X POST 127.0.0.1:8080/api/models/unload`) before
 any llama-swap model loads, and unload llama-swap (`POST 127.0.0.1:8081/api/models/unload`)
 before a request to `:8080`.
 
@@ -525,7 +526,6 @@ before a request to `:8080`.
 podman ps
 podman logs --tail 30 llama_swap_nvidia
 podman logs --tail 30 strata
-podman logs --tail 30 strata_laptop
 curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
 curl -s 127.0.0.1:8080/health
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
