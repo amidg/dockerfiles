@@ -195,6 +195,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 131K | main agent, delegation, vision, anything user-facing |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | **main agent, delegation, vision, auxiliary tasks** |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
+| `qwen3.6-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | on-demand text-first model (39.8 t/s deep); image turns work but cost ~41 s |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 
@@ -211,7 +212,7 @@ curl -s localhost:4000/v1/chat/completions \
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | everything the user waits on |
+| RTX 5070 8GB | 8081 | `gemma-4-26b-a4b` (default, MTP, vision, 131K, ttl 0), `gemma-4-e4b` (MTP, vision, 128K, on-demand), `qwen3.6-35b` (MTP, vision on CPU, 131K, on-demand) | everything the user waits on |
 | Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
@@ -225,6 +226,9 @@ Only **one** dGPU model is resident at a time — requesting another costs a ~15
   downloading; a truncated GGUF fails at load, not at download.
 - `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` + `gemma-4-e4b-qat-mmproj-F16.gguf` +
   `mtp-gemma-4-E4B-it.gguf` — the on-demand fallback.
+- `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2GB) + `qwen3.6-35b-mmproj-F16.gguf` (899MB, from the
+  same `Qwen3.6-35B-A3B-MTP-GGUF` repo) — the on-demand text-first model. The projector runs
+  on the CPU (`--no-mmproj-offload`) so it does not compete with experts for VRAM.
 - `embeddinggemma-2-Q8_0.gguf` — embeddings, the only iGPU model.
 - Deleted 2026-10-18 (re-downloadable if ever wanted back): the Tiel-Coder-35B and both
   LFM2.5-24B GGUFs.

@@ -27,7 +27,7 @@ only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, ttl 0 — the main agent model), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback), `qwen3.6-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, on-demand — text-first) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**IQ2_XS, Strata**, 131K, `k8v4` KV, vision, arena pinned in 96GB RAM) |
 
@@ -344,6 +344,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 131K, vision) | main agent, delegation, vision, anything user-facing |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27, ttl 0) | **main agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
+| `qwen3.6-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, vision via CPU projector) | on-demand text-first model (deep 39.8 t/s); image turns work but cost ~41 s |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
@@ -371,9 +372,10 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   `qwen3.8-flash-next` and nothing else. **The dotted form survives only as the laptop's
   stale remote entry** and dies with the deferred laptop rewiring.
 - **Only one dGPU model is resident at a time (~15-30 s swap).** The RTX 5070 carries
-  `gemma-4-26b-a4b` (default, `ttl: 0`) and `gemma-4-e4b` (on-demand); requesting the other
-  evicts the loaded model. Both run 131K/128K. `ttl: 0` means the 26B never *idle*-unloads,
-  but that does not exempt it from a cross-model swap.
+  `gemma-4-26b-a4b` (default, `ttl: 0`), `gemma-4-e4b` (on-demand) and `qwen3.6-35b`
+  (on-demand, `ttl: 600`); requesting another evicts the loaded model. All run 131K/128K.
+  `ttl: 0` means the 26B never *idle*-unloads, but that does not exempt it from a
+  cross-model swap.
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
   MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
@@ -425,6 +427,7 @@ the same session.** Ratios have been stable across every repetition.
 | device | model | prefill | decode (deep) | VRAM |
 |---|---|---|---|---|
 | RTX 5070 | `gemma-4-26b-a4b` **(promoted 2026-10-18; MTP, vision, 131K, N=27, ttl 0)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
+| RTX 5070 | `qwen3.6-35b` **(on-demand; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35)** | 1213 t/s | **39.8 t/s** (36.2 shallow), acc 65%/79% | ~7040 MiB at load, 6746 after a 1280px image (~41 s image turn) |
 | RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
 | RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
 | RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
@@ -565,6 +568,65 @@ this file promoted it from. `--threads 6` alone is correct at long context. Rela
 weight repacking is default-enabled and measured **~6% slower** for these Q4/Q4_K CPU-resident
 experts (`-nr` 49.4 vs 46.3 t/s); the promoted entry leaves the default because that A/B did
 not cover this model with MTP and a projector — re-measure before adding `--no-repack`.
+
+### Qwen3.6-35B-A3B Q3_K_XL + CPU projector — on-demand (2026-10-18)
+
+Re-added as an **on-demand** third dGPU entry (`ttl: 600`), not a main-agent candidate:
+`Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2 GB) + `qwen3.6-35b-mmproj-F16.gguf` (899 MB),
+MTP n-max 2, N=35, 131072 ctx, q4_0 KV, `--no-mmproj-offload`.
+
+**The GPU-resident projector is what cost the decode, not the quant or the file size.**
+Three arms, same session, 3 rounds each, gemma control stable at 34.0-35.1 deep:
+
+| arm | N | deep | prefill | acc s/d | VRAM @load | 1280px image |
+|---|---|---|---|---|---|---|
+| projector on GPU | 37 | 36.0 | 1197 | 59%/78% | 7784 MiB | PASS, 519 MiB free |
+| no projector (`--no-mmproj`) | 35 | 38.0 | 1210 | 56%/79% | 7040 MiB | rejected (clean) |
+| **projector on CPU (`--no-mmproj-offload`)** | **35** | **39.8** | **1213** | **65%/79%** | **7040 MiB** | **PASS, 1405 MiB free, ~40 s** |
+
+**The mechanism is the N it forces, not the 900 MB of weights.** With the projector on the
+GPU, N=35 loads at 7784 MiB and dies on the first inference; one layer further (N=37) fits,
+and those two CPU-resident expert layers cost **3.8 t/s** — N is the MTP-expensive axis on
+this card. Moving only the projector's *execution device* to the CPU recovers that and keeps
+vision in the same entry: no second model, no `--no-mmproj`, no cross-model swap.
+
+**N=35 is the promoted value, and lower N buys nothing.** With the CPU projector the encoder
+no longer needs GPU memory at all, so the usual "buy headroom by lowering N" has room to run:
+
+| N | deep | VRAM after a 1280px image | free |
+|---|---|---|---|
+| **35 (promoted)** | **39.8** | 6746 MiB | **1405 MiB** |
+| 34 | 38.7 | 7152 MiB | 999 MiB |
+| 33 | 39.9 | 7482 MiB | 669 MiB |
+
+Decode is flat inside noise (38.7-39.9) while headroom collapses — same conclusion as the
+LFM2.5 tier: **N is a headroom dial here, not a speed dial.** N=35 keeps the largest margin.
+
+**n-max 3 is still not lossless, and the verdict is config-dependent, not build-dependent.**
+At N=37/GPU-projector on b11641 it scored `quality` 4/4 and deep 39.4 (vs 37.6 at n-max 2,
+non-overlapping bands) — it looked promotable. At the final config (N=35/CPU projector) it
+scored **`quality` 3/4** with deep 40.5. So "re-check n-max 3 after a llama.cpp upgrade" is
+too weak a rule: **re-check it on the exact promoted flag set**, and treat any 3/4 as final.
+Keep 2.
+
+**Q3_K_XL is 17% slower than Q4_K_M — the floor rule survives.** 39.8 deep against the
+retired Q4_K_M build's 46.3 is the biggest quant cost measured on this tier. It was accepted
+anyway because the alternative was no vision on this entry, and the projector placement (not
+the quant) is what makes vision affordable. Do not read this entry as evidence that 3-bit
+K-quants are viable for CPU-offloaded MoE.
+
+**What it is for: text-first work at +15% deep over the main agent.** Against
+`gemma-4-26b-a4b` in the same run it is 39.8 vs 34.7 deep and 1213 vs 1361 prefill, equal on
+`tools` 4/4 and `quality` 4/4, and longctx 49,968 tokens at 1125 t/s (44.4 s). Its image turn
+is the trade: **~40 s vs a few seconds** with a GPU projector, because the encoder runs on the
+laptop CPU. For interactive image work the main agent remains the right target
+(`auxiliary.vision` still points at `gemma-4-26b-a4b`); qwen3.6-35b is for text-heavy
+sessions that want the extra t/s and do not want a 13.27 GiB swap to get it.
+
+**Flag placement trap:** `--no-mmproj-offload` is only meaningful next to `--mmproj`. Put it
+after the `--mmproj` line; with no `--mmproj` at all the entry is text-only and returns
+`image input is not supported - hint: ... you may need to provide the mmproj` — a clean
+error, which is the correct behaviour for a projector-less entry.
 
 ### LFM2.5-24B-A2B on RTX 5070 8GB — retired 2026-10-18
 
@@ -716,6 +778,7 @@ and does nothing on dense models.
 | model | layers | experts | quant | N |
 |---|---|---|---|---|
 | `gemma-4-26b-a4b` | 30 | 128 / 8 active | QAT **UD-Q4_K_XL** (14.25 GB) + MTP head + mmproj | **27** |
+| `qwen3.6-35b` | 40 | 256 / 8 active | **UD-Q3_K_XL** (17.2 GB) + MTP head, projector on CPU | **35** |
 | `tiel-coder-35b` *(retired)* | 40 | 256 / 8 active | UD-Q4_K_XL body + Q3_K_S head (22.75 GB) | 35 |
 | `lfm2.5-24b` *(retired)* | 40 | 64 / 4 active | QAD-Q4_0 (13.58 GB) | 24 |
 | `gemma-4-26b` *(retired; the older dense-ish 26B, not the -a4b)* | 30 | 128 / 8 active | UD-Q4_K_M (16.9 GB) + MTP head | 30 |
@@ -1019,6 +1082,16 @@ with reworked Q3_K/i-quant CPU kernels, or a CPU with AVX-512/AMX.
 At 128K, Q4_K_M also stays ahead (36.4 vs 33.7 deep), so Q3_K_XL wins on no axis. Both
 Q3_K_XL files (~34 GB) can be deleted.
 
+**Re-confirmed 2026-10-18 on b11641, for a new reason, and it still loses.** Q3_K_XL was
+re-introduced on the hypothesis that a smaller file would leave room for a GPU-resident
+projector at N=35. It did not fit at N=35, and text-only it measures **38.0 deep against the
+Q4_K_M build's 46.3 — a 17% quant cost**, worse than the 9% originally recorded. The entry
+was kept anyway because vision was made affordable by moving the projector to the CPU, not by
+the smaller quant — see
+[Qwen3.6-35B-A3B Q3_K_XL + CPU projector](#qwen36-35b-a3b-q3_k_xl--cpu-projector--on-demand-2026-10-18).
+The floor rule stands: do not cite that entry as licence for 3-bit K-quants on CPU-offloaded
+MoE.
+
 **File size alone does not predict VRAM.** Non-expert tensors are always GPU-resident, and
 quant recipes differ in how they treat them. Unsloth's Q4_K_XL and Q4_K_M both keep
 `attn_qkv`/`ssm_out` at Q8_0 (2.68 vs 2.56 GB non-expert), but a third-party Q4_K_M of the
@@ -1044,7 +1117,7 @@ llama-swap spawns the subprocess on demand.
 
 | model | n_embd | projector |
 |---|---|---|
-| qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` |
+| qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` (run with `--no-mmproj-offload`: CPU projector, ~40 s/image) |
 | gemma-4-26b-a4b | 2816 | `mmproj-F16.gguf` (from the `gemma-4-26B-A4B-it-qat-GGUF` repo) |
 | gemma-4-26b *(retired)* | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
 | gemma-4-12b *(retired)* | 3840 | `gemma-4-12b-mmproj-F16.gguf` |
@@ -1523,7 +1596,9 @@ The images (`:rocm`, `:cuda`, `:intel`, `:vulkan`) track upstream and agree on:
 - Available and used: `--cache-reuse`, `--batch-size`/`--ubatch-size`, `--cache-type-k/v`,
   `--n-cpu-moe`, `-ot/--override-tensor`, `--threads`/`--cpu-range`/`--cpu-strict`,
   `--reasoning`, `--pooling`, `--embedding`, `--spec-type`, `--spec-draft-n-max`,
-  `--load-mode`, `--no-mmproj`.
+  `--load-mode`, `--no-mmproj`, `--no-mmproj-offload` (verified present on `:cuda`,
+  2026-10-18: keeps `--mmproj` loaded but runs the projector's weights and encoder on the
+  CPU — the vision-capable way to free VRAM, see the qwen3.6-35b entry).
 - **Available, not used, verified present on `:cuda` 2026-08-09** (`podman exec
   llama_swap_nvidia /app/llama-server --help`): `-kvu/--kv-unified`, `-cram/--cache-ram`
   (default **8192** MiB), `--cache-idle-slots` (default enabled, **requires cache-ram**),
