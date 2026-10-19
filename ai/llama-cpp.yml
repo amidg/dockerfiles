@@ -134,6 +134,40 @@ services:
       - STRATA_ALLOWED_HOSTS=strata
       - REINSTALL=${STRATA_REINSTALL:-0}
 
+  strata_laptop:
+    profiles:
+      - laptop
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    build:
+      context: ./PolyStrata
+      dockerfile: ../polystrata.Dockerfile
+      args:
+        CUDA_ARCHITECTURES: 120
+    image: localhost/strata-poly:0.1.45-poly.1
+    container_name: strata_laptop
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}:/data:z
+    ports:
+      - 8080:8080
+    ulimits:
+      memlock: -1
+    stop_grace_period: 90s
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - FAMILY=tiel
+      - MODEL=UD-Q3_K_XL
+      - CONTEXT=131072
+      - VISION=cpu
+      - GGUF_DIR=/models
+      - STRATA_ALLOWED_HOSTS=strata_laptop
+      - REINSTALL=${STRATA_REINSTALL:-0}
+
   base_litellm: &base_litellm
     profiles:
       - null_profile

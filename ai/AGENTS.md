@@ -22,14 +22,15 @@ value, update the table here in the same commit.
 ## Architecture
 
 Two machines. The laptop runs llama-swap (one config per device, one `llama-server`
-subprocess per model); the desktop runs a single resident Strata process. Each advertises
-only what its device can run.
+subprocess per model) **plus one resident strata-poly process**; the desktop runs a single
+resident Strata process. Each advertises only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **the default agent model** since 2026-10-18), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
+| `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata_laptop` | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
 
@@ -233,21 +234,25 @@ reduces reasoning to ~83 chars for tool/quality tests.
 llama.cpp puts it in `usage`. Fixed `timings()` to merge `usage` fields. Replaced
 anti-thinking system messages with `chat_template_kwargs` for `reasoning_effort: "low"`.
 
-Host ports: **8081 primary GPU, 8082 secondary, 8083 whisper (Intel NPU)** on the laptop;
-the desktop's **Strata is on 8080** (no Open WebUI anywhere since 2026-10-17). Both
-machines run their gateway on 4000 — they are separate hosts, so there is no conflict.
+Host ports: **8081 primary GPU (llama-swap), 8082 secondary, 8083 whisper (Intel NPU),
+8080 strata-poly** on the laptop; the desktop's **Strata is on 8080** (no Open WebUI
+anywhere since 2026-10-17). Both machines run their gateway on 4000 — they are separate
+hosts, so there is no conflict, and the 8080 overlap between the two machines is the same
+kind of non-conflict.
 
 Container-internal ports are always 8080, which is why `litellm-config.*.yaml` points at
-`http://llama_swap_*:8080/v1` (laptop) or `http://strata:8080/v1` (desktop) regardless of
-the host mapping. Changing a host port does not require a LiteLLM change.
+`http://llama_swap_*:8080/v1` (laptop), `http://strata_laptop:8080/v1` (laptop poly), or
+`http://strata:8080/v1` (desktop) regardless of the host mapping. Changing a host port
+does not require a LiteLLM change.
 
 **The laptop runs nvidia + intel concurrently.** They used to share a container name and
 port via the `base_llama_swap` anchor, which made them mutually exclusive. `container_name`,
 `ports` and the config mount are per-service now — do not move them back into the anchor.
 
 Request flow: agents → LiteLLM (`:4000`) → llama-swap (`:8081`/`:8082`) → a `llama-server`
-subprocess per model, **on the laptop only**. The desktop's flow is agents → LiteLLM →
-Strata (`:8080`) → one long-resident process (no per-model spawn, no TTL). GGUFs live in
+subprocess per model, **on the laptop only**; and agents → LiteLLM → strata-poly
+(`:8080`) → one long-resident process, also on the laptop. The desktop's flow is agents →
+LiteLLM → Strata (`:8080`) → one long-resident process (no per-model spawn, no TTL). GGUFs live in
 `${LLAMA_MODELS_DIR:-~/.llama/models}`, mounted at `/models` (this laptop:
 `/mnt/data/llama/models`).
 
@@ -375,17 +380,121 @@ CPU-resident* and mmap indirection sat on the expert-gather path. No expert is C
 here, so that rationale no longer applies and plain mmap may cost nothing while making
 llama-swap's cold loads cheaper. Untested — do not assume either way.
 
+## Strata-poly on the laptop — Tiel Coder 35B-A3B (added 2026-10-19, rollout pending)
+
+The laptop gained a second engine: the **`strata_laptop`** service (submodule
+`ai/PolyStrata`, pinned to **`v0.1.45-poly.1`** = `d0cd84dc`; image
+`localhost/strata-poly:0.1.45-poly.1`), running `FAMILY=tiel MODEL=UD-Q3_K_XL
+CONTEXT=131072 VISION=cpu GGUF_DIR=/models` on the RTX 5070 8GB. LiteLLM's
+`tiel-coder-35b` entry points at `http://strata_laptop:8080/v1`. The full plan and the
+user's rollout runbook are `ai/plans/strata-laptop-tiel.md`.
+
+**Two engines, and the difference is not cosmetic.** `ai/Strata` (Niko1221/Strata) serves
+the `qwen4exp` architecture only — it cannot run Tiel at all. Tiel is `qwen35moe` (the
+Qwen3.6-35B shape: 40 layers, 256 experts, 8 to a token) and runs on PolyStrata's
+**`strata-poly`** engine, which reads the GGUF **in place** with a VRAM expert cache and a
+system-RAM working set. The desktop `strata` service is untouched by this addition, and the
+two engines share nothing at runtime: different repos, different binaries, different
+configs. Do not look for a `strata` env var that applies to `strata_laptop`.
+
+**The upstream Dockerfile gap.** PolyStrata's own `Dockerfile` builds only the Qwen
+`strata` engine and `strata-vision`; its header scopes the container to Qwen3.8, and
+`docker-entrypoint.sh` accepts `FAMILY=tiel` while assuming the engine is already in the
+image. `ai/polystrata.Dockerfile` adds the missing build, reusing setup.py's own helpers
+with setup.py's exact definitions (`build_engine_poly`):
+`cmake_build(ROOT, "build-poly", "strata-poly", -DSTRATA_ENABLE_CUDA=ON
+-DSTRATA_BUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=<nvcc>
+-DSTRATA_GGML_DIR=<llama>)`, the encoder with `-DLLAMA_DIR=<vision llama.cpp>
+-DSTRATA_VISION_CUDA=OFF`, then `engine-poly/{strata-poly, strata-vision, BUILD.json}`.
+The `BUILD.json` fields are the ones `build_engine_poly` stamps (`source: local`,
+`toolkit: 13`, `archs: [120]`, matching `src`/`vision_src`, `vision: cpu`), so
+`get_poly_prebuilt` and `build_engine_poly` find the engine current on first start and
+skip the compile. The Qwen `strata` engine is deliberately **not** built — tiel never
+calls it, and skipping it halves the build. **This is adapted, not upstream-documented:**
+expect a debugging session on the first real image build.
+
+**The name deliberately does not match the engine's registry name.** `tiel-coder-35b`
+names the **strata-poly** weights now, exactly as `qwen3.8-flash-next` names Swift
+weights on the desktop. The engine advertises `tiel-coder-35b-a3b-ud-q3_k_xl`
+(`fam["name"]` + quant) on `/v1/models`, and PolyStrata's server answers any requested
+model name (`model_for` in `serve/server.py` — *"Other names are still served, as
+before"*), which is why the LiteLLM `model:` field stays `openai/tiel-coder-35b` and no
+client pin changes. Do not rename the gateway, and do not treat the advertised id as a
+rename prompt.
+
+**The separate MTP head file is not used by poly.** Tiel's draft block ships **inside**
+the GGUF (`"draft": "own"` in setup's family table). The downloaded head stays on disk
+for the llama.cpp fallback entry only. Do not wire it into the poly config.
+
+**Memory contract: ~21 GB working set, no arena pin.** setup.py's own family entry for
+UD-Q3_K_XL says `ram_gb: 21`, `vram_beside_gb: 4.7` on an 8GB card, and the reference
+laptop measured 21.8 GiB in use on 32GB. There is **no `STRATA_ARENA_PIN_GIB`** for poly
+and none should be invented: poly has no packed arena. `ulimits.memlock: -1` is still
+mandatory — poly pins its RAM the same way as the desktop engine, with
+`cudaHostRegister`, so `grep VmLck` reads 0 and means nothing; read the engine's
+`/metrics` instead (same lesson as the desktop).
+
+**Co-residency is the standing failure mode, and the unload-first rule is not optional.**
+While strata-poly is resident it holds ~7-8GB of the 8GB card. **Any** llama-swap load on
+`:8081` — `gemma-4-26b-a4b`, `gemma-4-e4b`, or the llama.cpp `tiel-coder-35b` fallback —
+must be preceded by `curl -s -X POST 127.0.0.1:8080/api/models/unload`; llama-swap has no
+way to call that endpoint, so it is a human (or harness) step. The reverse is symmetric:
+unload `:8081` before a request to `:8080`. There is **no LiteLLM `fallbacks:` block**
+between the two backends, deliberately: the repo rejected fallbacks for this card because
+every escalation is a full reload, and the fallback path would thrash every turn of a
+long session. Switchover is a runbook step, not routing.
+
+**Weights, names, and the model id.** `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB)
+and `mmproj-BF16.gguf` (0.9GB) — **original repo filenames**; setup.py matches them
+exactly and verifies SHA-256 against its pinned revision `bbe9e566`. The llama.cpp entry
+mounts the same projector under `tiel-coder-35b-mmproj-BF16.gguf`. The models dir is
+mounted **writable** (`.done` markers), both mounts carry the SELinux `:z` label, and the
+data dir default is `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}` — deliberately
+not the desktop's `strata` path, so the two machines' volumes never alias.
+
+**Expected gain, gate not run.** PolyStrata's reference laptop (RTX 4070 8GB, 32GB RAM,
+the same file) reads **~83 t/s writes / ~1,700 t/s prompt reads**. The llama.cpp incumbent
+measures **deep 40.1 t/s / prefill 1442 t/s** (2026-10-18, same-session baseline). The
+A/B is `llmbench.py --endpoint http://localhost:8080/v1 --models
+tiel-coder-35b-a3b-ud-q3_k_xl --tests all --rounds 3` against the `:8081` arm, strata-poly
+unloaded for the incumbent arm. Gate as everywhere: `tools` 4/4, `quality` no worse, vision
+on a real 1280px image, approval PASS. Record numbers in README + AGENTS.md in the same
+commit. Until then, every poly number in this file is *expected*, not measured.
+
+**Known risks, accepted:** `STRATA_ALLOWED_HOSTS` is a *Strata-engine* env var and poly's
+server may not honor it — check the gateway hop on first boot, `API_KEY` is the fallback
+(it also disables the check); the submodule is pinned to a **tag**, not main, because
+PolyStrata has active churn; podman is undocumented upstream (same CDI fallback as the
+desktop); the image build runs on the machine it runs on, and the entrypoint warns on a
+CPU without AVX2 (the Ultra 9 285H has AVX2 — fine).
+
+### Strata-poly (laptop) gotchas
+
+- **`ulimits.memlock: -1`** — poly pins memory; the container fails at startup without it.
+- **First start is minutes of silence, not a hang** — the setup pass writes the tokenizer
+  pack, the expert profile and the run config before `:8080` opens. No model download
+  happens: the GGUFs are bind-mounted. The healthcheck's `--start-period=600s` covers it.
+- **`REINSTALL=1`** re-runs the setup pass after a settings change (context, vision, host),
+  same mechanism as the desktop's `STRATA_REINSTALL`.
+- **The models dir is writable, both mounts are `:z`** — same rules as the desktop service,
+  same reasons.
+- **`stop_grace_period: 90s`**, not the repo default 5s — releasing pinned memory on
+  SIGTERM is slow on this engine family too.
+- **No `KV` setting is pinned** — poly runs setup.py's default (`int8`). Step down only if
+  a long prompt OOMs, and say so here with the measurement.
+
 ## Direct naming (2026-08-25)
+
 
 Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 
 | resolved name | source | use |
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
-| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector, ttl 0) | **default agent model, delegation, vision, auxiliary tasks** (promoted 2026-10-18) |
+| `tiel-coder-35b` | laptop dGPU, **strata-poly** (`strata_laptop`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata_laptop:8080` from 2026-10-19; the A/B against the llama.cpp baseline is not run yet |
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
-| `tiel-coder-35b` | laptop dGPU (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | on-demand coding model (deep 40.1 t/s); won the Q3_K_XL A/B against Qwen3.6-35B |
+| `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *GGUF + projector kept on disk, unwired — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
@@ -419,6 +528,12 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
   (on-demand); requesting another evicts the loaded model. All run 131K/128K.
   `ttl: 0` means tiel never *idle*-unloads, but that does not exempt it from a
   cross-model swap.
+- **The rule is now across engines, not just models: one resident engine on the card.**
+  `strata_laptop` (strata-poly) holds ~7-8GB while resident, and llama-swap cannot unload
+  it — free it first with `curl -s -X POST 127.0.0.1:8080/api/models/unload` before any
+  `:8081` load, and unload `:8081` before a request to `:8080`. LiteLLM has no fallback
+  path between the engines by design (see
+  [Strata-poly on the laptop](#strata-poly-on-the-laptop--tiel-coder-35ba3b-2026-10-19-rollout-pending)).
 - **`gemma-4-e4b` runs the QAT variant** (`gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf`) with its own
   projector (`gemma-4-e4b-qat-mmproj-F16.gguf`). KV cache: `q8_0` (7432 MiB total).
   MTP head is shared with the non-QAT variant (`mtp-gemma-4-E4B-it.gguf`).
@@ -2279,6 +2394,12 @@ of `smoke.py`, or use `llmbench.py --endpoint http://localhost:8080/v1`. The gat
 are unaffected — LiteLLM is on 4000 on both machines, and going through the gateway is the
 better test anyway.
 
+The same applies to **strata-poly on the laptop**: drive it with
+`llmbench.py --endpoint http://localhost:8080/v1 --models tiel-coder-35b-a3b-ud-q3_k_xl`,
+and free the card with `POST :8080/api/models/unload` (the poly server has its own
+unload endpoint; llama-swap's `:8081` endpoint cannot free it). `smoke.py`'s laptop tier
+probe will not see `:8080` — it probes `:8081`/`:8082`.
+
 **Strata numbers now exist — see the desktop section below.** Every other performance
 figure in this file is llama.cpp, on the laptop. The desktop's Strata tier was first
 measured 2026-10-18 (`ai/reports/strata-report-2026-10-18.md`); the numbers and their
@@ -2303,8 +2424,9 @@ was found, and it is the one failure mode a "does it respond" check misses.
 tier: `tools` 4/4, `quality` no worse than the incumbent, and `vision` passing on a real
 image. On the desktop, the equivalent gate runs against `qwen3.8-flash-next` — and note
 `smoke.py`/`llmbench.py` speak OpenAI, so they need `--endpoint http://localhost:8080/v1`
-(there is no llama-swap `/api/models/unload` endpoint to free the GPU with; Strata is
-resident by design).
+(the desktop's Strata has no unload endpoint; it is resident by design). The laptop's
+strata-poly is resident too, but it **does** answer `POST :8080/api/models/unload`, which is
+how the card is handed back to llama-swap for the incumbent arm of the A/B.
 
 ### Reading its output against this stack
 

@@ -2,7 +2,7 @@ model_list:
   - model_name: tiel-coder-35b
     litellm_params:
       model: openai/tiel-coder-35b
-      api_base: http://llama_swap_nvidia:8080/v1
+      api_base: http://strata_laptop:8080/v1
       api_key: sk-no-key-required
       allowed_openai_params: ["reasoning_effort"]
     model_info:

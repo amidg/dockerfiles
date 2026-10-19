@@ -1,4 +1,4 @@
-# Local LLM stack — llama.cpp + llama-swap (laptop) / Strata (desktop) + LiteLLM
+# Local LLM stack — llama.cpp + llama-swap (laptop) / Strata (desktop) + strata-poly (laptop) + LiteLLM
 
 Self-hosted inference for the Hermes agent across two machines. One OpenAI-compatible
 endpoint, stable model names, per-machine engine behind them.
@@ -10,18 +10,20 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 
 ```bash
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models     # where the GGUFs live
-export STRATA_DATA_DIR=/var/mnt/data/llama/strata      # desktop only: Strata's /data
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata      # desktop: Strata's /data
+export STRATA_DATA_DIR=/var/mnt/data/llama/strata-poly # laptop: strata-poly's /data
 
-# laptop: RTX 5070 + Arc iGPU, both at once
-podman-compose -f ai/llama-cpp.yml --profile laptop up -d
+# laptop: RTX 5070 + Arc iGPU, both at once — builds strata-poly from ai/PolyStrata on first use
+podman-compose -f ai/llama-cpp.yml --profile laptop up -d --build
 
 # desktop: 5070 Ti 16GB — builds and runs Strata (Swift 1.5 IQ2_XS)
 podman-compose -f ai/llama-cpp.yml --profile server up -d --build
 ```
 
-The desktop's `--build` compiles the Strata engine from the `ai/Strata` submodule on
-first use (and after any submodule bump). LiteLLM needs ~30-60s. Poll before sending
-traffic:
+Both `--build` flags compile their engine from the pinned submodule on first use (and
+after any submodule bump): `ai/Strata` for the desktop, `ai/PolyStrata` for the laptop
+(the in-repo `polystrata.Dockerfile` adds the `strata-poly` build upstream's own image
+lacks). LiteLLM needs ~30-60s. Poll before sending traffic:
 
 ```bash
 curl -s localhost:4000/health/liveliness
@@ -34,7 +36,7 @@ curl -s localhost:4000/health/liveliness
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
 | `localhost:8083` | whisper-pro ASR (Intel NPU) — STT |
-| `localhost:8080` | desktop Strata (5070 Ti), direct — **no auth, LAN-reachable** |
+| `localhost:8080` | desktop Strata (5070 Ti) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
@@ -144,6 +146,65 @@ podman logs -f strata        # minutes of expected silence: pack unpack, draft f
 **Never raise the pin past 48GB**, and the base-model rollback is `FAMILY=qwen` plus the
 base mmproj (same `MODEL=IQ2_XS`).
 
+## Laptop: strata-poly + Tiel Coder 35B (`strata_laptop`)
+
+The laptop's second inference engine: **strata-poly** (`ai/PolyStrata`, pinned to
+`v0.1.45-poly.1`), PolyStrata's engine for models that read their GGUF in place with a
+VRAM expert cache. It runs **Tiel Coder 35B-A3B UD-Q3_K_XL** — the same GGUF and projector
+the llama.cpp entry uses — as a resident service, and the gateway name `tiel-coder-35b`
+routes to it. The desktop's `strata` service is a **different engine** (Niko1221/Strata,
+which serves `qwen4exp` only) and is untouched.
+
+| | |
+|---|---|
+| GPU | RTX 5070 Laptop 8GB (`CUDA_ARCHITECTURES=120`) |
+| RAM | ~21 GB expert working set of 62GB — no arena pin; the engine pins memory, so `ulimits.memlock: -1` is mandatory |
+| SSD | `${STRATA_DATA_DIR:-/var/mnt/data/llama/strata-poly}` → `/data:z` (tokenizer pack, expert profile, config) |
+| context | 131072 |
+| KV | setup.py's default (`int8`) |
+| vision | **cpu** — setup puts the encoder on the CPU below 16GB VRAM; seconds per image |
+| model name | `tiel-coder-35b` (LiteLLM → `http://strata_laptop:8080/v1`); the engine advertises `tiel-coder-35b-a3b-ud-q3_k_xl` and serves any requested name |
+
+Upstream's own image builds only the Qwen `strata` engine, so the in-repo
+`ai/polystrata.Dockerfile` adds the `strata-poly` + CPU-`strata-vision` builds using
+setup.py's own build helpers; the first start finds `engine-poly/BUILD.json` current and
+goes straight to loading the model.
+
+**Weights are already on disk** — `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB) and
+`mmproj-BF16.gguf` (0.9GB), **original filenames**; setup verifies SHA-256 against its
+pinned revision. The separate MTP head file is **not** used by poly (its draft block ships
+inside the GGUF) — it exists for the llama.cpp fallback entry.
+
+```bash
+cd ~/Projects/dockerfiles
+git pull --ff-only
+git submodule update --init --checkout ai/PolyStrata
+mkdir -p /var/mnt/data/llama/strata-poly
+podman-compose -f ai/llama-cpp.yml --profile laptop build strata_laptop
+podman-compose -f ai/llama-cpp.yml --profile laptop up -d
+podman logs -f strata_laptop   # minutes of expected silence: tokenizer pack, config, model load
+```
+
+First-boot checks, in order: `curl -s 127.0.0.1:8080/health`; the log reports the RTX 5070
+(same podman CDI fallback as the desktop); `/v1/models` (informational — the LiteLLM entry
+keeps `tiel-coder-35b`); a completion from inside the LiteLLM container (a `403 ... not
+allowed` means `STRATA_ALLOWED_HOSTS` lost its entry); a **real 1280px image**; the gateway
+after ~30-60s; `free -h` ≈ 22GB in use with the model resident.
+
+**Co-residency: unload strata-poly before any llama-swap load.** While strata-poly is
+resident it holds ~7-8GB of the card, so `gemma-4-26b-a4b`, `gemma-4-e4b`, and the
+llama.cpp `tiel-coder-35b` fallback all need `curl -s -X POST 127.0.0.1:8080/api/models/unload`
+first; llama-swap cannot call it. The reverse direction is the same: unload `:8081` before
+a request to `:8080`. The llama.cpp tiel entry stays wired as the manual fallback, reachable
+direct on `:8081/v1`.
+
+**The A/B gate against the llama.cpp incumbent is not run yet.** Incumbent baseline (llama.cpp,
+2026-10-18): **deep 40.1 t/s, prefill 1442 t/s**. PolyStrata's reference laptop (RTX 4070 8GB,
+same file) reads ~83 t/s writes / ~1,700 t/s prompt reads. Run
+`llmbench.py --endpoint http://localhost:8080/v1 --models tiel-coder-35b-a3b-ud-q3_k_xl --tests all
+--rounds 3` against the `:8081` arm in one session, and record the numbers in this file and
+`AGENTS.md` in the same commit.
+
 ## Whisper ASR (Intel NPU)
 
 Local speech-to-text on `ventura8/whisper-pro-asr:intel`, running **whisper-small-int4** on
@@ -243,13 +304,16 @@ agents ──> LiteLLM :4000 ──┬──> llama-swap :8081 ──> llama-ser
            (model names,    │
             routing)        └──> llama-swap :8082 ──> llama-server (laptop iGPU)
 
+agents ──> LiteLLM :4000 ──> strata-poly :8080       (laptop, RTX 5070, resident)
 agents ──> LiteLLM :4000 ──────> Strata :8080        (desktop, 5070 Ti)
 ```
 
 LiteLLM forwards a requested model name to whichever engine owns it. On the laptop,
 llama-swap spawns and kills one `llama-server` per model on demand and unloads after an
-idle TTL. On the desktop, Strata is a single long-resident process — there is nothing to
-swap, and the desktop's gateway exposes exactly one local model.
+idle TTL; strata-poly is one long-resident process, as on the desktop. **The 8GB card is
+shared: only one of the two dGPU engines can hold it at a time** — unload strata-poly
+(`POST :8080/api/models/unload`) before llama-swap loads anything, and unload llama-swap
+(`POST :8081/api/models/unload`) before a request to strata-poly.
 
 ## Use the model names
 
@@ -259,7 +323,7 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | name | machine | engine | for |
 |---|---|---|---|
 | `qwen3.8-flash-next` | desktop | Strata, 5070 Ti, 262K, Swift 1.5 weights | main agent, delegation, vision (CPU encoder), anything user-facing |
-| `tiel-coder-35b` | laptop | llama-swap, RTX 5070, MTP, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** (40.1 t/s deep, 1442 t/s prefill) |
+| `tiel-coder-35b` | laptop | **strata-poly** (resident), RTX 5070, 131K, Q3_K_XL, vision on CPU | **default agent, delegation, aux tasks, vision** — LiteLLM routes it to `strata_laptop:8080` from 2026-10-19; the llama.cpp entry on `:8081` (MTP, N=35, 40.1 t/s deep, 1442 t/s prefill) stays as the manual fallback |
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
@@ -278,11 +342,14 @@ curl -s localhost:4000/v1/chat/completions \
 
 | device | port | models | role |
 |---|---|---|---|
-| RTX 5070 8GB | 8081 | `tiel-coder-35b` (default, MTP, vision on CPU, 131K, ttl 0), `gemma-4-26b-a4b` (MTP, vision, 131K, on-demand), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | everything the user waits on |
+| RTX 5070 8GB | 8080 | `strata-poly` → `tiel-coder-35b` (resident, 131K, UD-Q3_K_XL, vision on CPU) | the default agent path, from 2026-10-19 |
+| RTX 5070 8GB | 8081 | llama-swap: `tiel-coder-35b` (MTP, vision on CPU, 131K, ttl 0 — **manual fallback**), `gemma-4-26b-a4b` (MTP, vision, 131K, on-demand), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | the llama.cpp tier; everything the user waits on while strata-poly is unloaded |
 | Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
 | Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
 
-Only **one** dGPU model is resident at a time — requesting another costs a ~15-30s swap.
+Only **one** dGPU engine is resident at a time: strata-poly holds the card until
+`POST :8080/api/models/unload`, and any llama-swap load evicts everything else (~15-30s
+swap, which llama-swap cannot initiate against strata-poly).
 
 ### Weights on the laptop (manual, into `$LLAMA_MODELS_DIR`)
 
@@ -292,9 +359,12 @@ Only **one** dGPU model is resident at a time — requesting another costs a ~15
   downloading; a truncated GGUF fails at load, not at download.
 - `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` + `gemma-4-e4b-qat-mmproj-F16.gguf` +
   `mtp-gemma-4-E4B-it.gguf` — the on-demand fallback.
-- `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB) + `tiel-coder-35b-mmproj-BF16.gguf`
-  (903MB, from the same `peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP` repo) — the on-demand
-  coding model. Projector on the CPU (`--no-mmproj-offload`) like the Qwen below.
+- `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf` (17.2GB) + `mmproj-BF16.gguf` (903MB, from the
+  `peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP` repo) — **strata-poly's model**: setup
+  matches these names exactly and verifies SHA-256 against its pinned revision, so keep
+  them as downloaded. The GGUF carries its own draft block, so no separate MTP file is
+  used by poly. `tiel-coder-35b-mmproj-BF16.gguf` is the same projector under the name
+  the llama.cpp fallback entry mounts.
 - `Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf` (17.2GB) + `qwen3.6-35b-mmproj-F16.gguf` (899MB) —
   **kept on disk, unwired**: lost the 2026-10-18 A/B to tiel (agentic task time, image OCR).
   To re-test, add a llama-swap entry; nothing else needs to change.
@@ -390,6 +460,8 @@ is :4000 on both machines).
 | `litellm-config.laptop.yaml` | laptop gateway: local + remote model names |
 | `litellm-config.desktop.yaml` | desktop gateway: `qwen3.8-flash-next` → Strata only |
 | `Strata/` | git submodule — the desktop inference engine (pinned release tag) |
+| `PolyStrata/` | git submodule — the laptop's strata-poly engine (pinned release tag) |
+| `polystrata.Dockerfile` | the in-repo PolyStrata image: adds the `strata-poly` + CPU-encoder builds upstream's image lacks |
 | `litellm.env` | secrets (gitignored) |
 | `AGENTS.md` | **rules, rationale, learnings — read before editing any config** |
 
@@ -427,14 +499,15 @@ runs llama.cpp — there is no `--n-cpu-moe`, `--ubatch-size` or `--threads` to 
 Strata's memory model (VRAM expert cache + 40GiB pinned RAM arena + n-gram table on the
 SSD) is not llama.cpp's. Laptop flags are laptop flags.
 
-**Strata is silent for a long time on first start.** The setup pass downloads the MTP
-draft, unpacks it and loads the arena before the port opens — minutes, not seconds. Watch
-`podman logs -f strata`; the image's own healthcheck allows a `--start-period=600s` for
-exactly this reason.
+**Strata is silent for a long time on first start** (`strata` on the desktop,
+`strata_laptop` on the laptop). The setup pass fetches/unpacks what it needs (the desktop's
+MTP draft and pack; the laptop's tokenizer pack) and loads the model before the port opens
+— minutes, not seconds. Watch `podman logs -f strata` / `podman logs -f strata_laptop`;
+both images' healthcheck allows a `--start-period=600s` for exactly this reason.
 
-**Strata dies with a memlock error.** The compose service must run with
-`ulimits.memlock: -1` — the arena is page-locked. `podman inspect strata --format
-'{{.HostConfig.Ulimits}}'` confirms it.
+**Strata dies with a memlock error.** Both services must run with `ulimits.memlock: -1` —
+the desktop arena and the laptop's poly working set are both pinned. `podman inspect
+strata_laptop --format '{{.HostConfig.Ulimits}}'` confirms it.
 
 **"Unable to start: database is locked" on `podman-compose up` with `--build`.** A build
 and a running container race on the same image tag; `podman-compose build strata` first,
@@ -443,10 +516,16 @@ then `up -d`.
 **iGPU model will not load.** Check `free -h` — the Arc allocates against `MemFree`, not
 reclaimable `MemAvailable`, so a full page cache looks like exhaustion.
 
+**llama-swap loads fail while `strata_laptop` is resident.** Not a bug — two engines, one
+8GB card. Unload strata-poly (`curl -s -X POST 127.0.0.1:8080/api/models/unload`) before
+any llama-swap model loads, and unload llama-swap (`POST 127.0.0.1:8081/api/models/unload`)
+before a request to `:8080`.
+
 ```bash
 podman ps
 podman logs --tail 30 llama_swap_nvidia
 podman logs --tail 30 strata
+podman logs --tail 30 strata_laptop
 curl -s 127.0.0.1:8081/v1/models | jq '[.data[]|{id,status:.status.value}]'
 curl -s 127.0.0.1:8080/health
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
