@@ -564,6 +564,16 @@ short-name resolution fail (no TTY) before the build starts.
   SIGTERM is slow on this engine family too.
 - **No `KV` setting is pinned** — poly runs setup.py's default (`int8`). Step down only if
   a long prompt OOMs, and say so here with the measurement.
+- **CPU is by design; `--threads` is the knob (2026-10-20).** The engine computes every
+  expert not in VRAM on the CPU. `--threads N` in the config `args` sets the expert worker
+  count (metrics `pool_workers`); without it, all usable cores. Same session, `perf --rounds 3`,
+  deep: **16 workers 63-65 t/s (~88% CPU)**, 5 workers unpinned 53-56 (~52%), 5 workers on
+  P cores 0-5 54-56 (~60%), 5 workers on E cores 6-13 45-46 (~44%), 10 workers on P + half
+  E (0-10) 56-57 (~67%). **The laptop is promoted to `--threads 5`** for the CPU headroom;
+  the 16-worker default is ~13% faster at depth. Rootless podman cannot use `cpuset:` here —
+  the cpuset controller is not delegated to the user slice and the container fails to start
+  (`controller 'cpuset' is not available under ... user.slice`). Live per-thread affinity
+  works but is lost on restart; a persistent pin needs a wrapper or system-level delegation.
 
 ## Direct naming (2026-08-25)
 
@@ -2395,6 +2405,13 @@ only affect the two remote entries.
 - **Thinking models return empty `content` on small budgets.** A 9B asked to "reply with
   just OK" spent 176 tokens reasoning first, and returned empty at `max_tokens: 16`.
   Give local models 400+, and 1200+ if the test must see an answer.
+- **opencode hides reasoning unless the custom model declares it (2026-10-20).** Poly
+  streams thinking as OpenAI-style `delta.reasoning_content`, and opencode 2.0.29's bundled
+  `@ai-sdk/openai-compatible` maps that field to reasoning parts — but a custom model with
+  no models.dev entry defaults to non-reasoning, so the TUI stays in its pre-content
+  "prefill"/working state for the whole thinking phase and then drops the trace.
+  `"reasoning": true` in `provider.custom.models.<id>` (restart opencode) makes it render.
+  LiteLLM passes the field through unchanged; it is not the blocker.
 - **Only one dGPU model is resident.** `groups: swap: false` keeps multiple resident on the
   iGPU but the 8GB card cannot co-locate the large models — switching is an inherent
   ~15-30s swap.
