@@ -4,3 +4,6 @@
 [submodule "ai/PolyStrata"]
 	path = ai/PolyStrata
 	url = https://github.com/VecSzn/PolyStrata
+[submodule "ai/Whisper-Pro-ASR"]
+	path = ai/Whisper-Pro-ASR
+	url = https://github.com/ventura8/Whisper-Pro-ASR

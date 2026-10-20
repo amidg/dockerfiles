@@ -29,25 +29,6 @@ services:
       - no_proxy=localhost,127.0.0.1
     command: /app/llama-swap -config /app/config.yaml -listen 0.0.0.0:8080
 
-  base_whisper: &base_whisper
-    profiles:
-      - null_profile
-    image: docker.io/ventura8/whisper-pro-asr:intel
-    container_name: whisper_server
-    restart: unless-stopped
-    environment:
-      - no_proxy=localhost,127.0.0.1
-      - ASR_ENGINE=INTEL-WHISPER
-      - ASR_DEVICE=NPU
-      - VERIFY_RUNTIME=false
-      - MODEL_IDLE_TIMEOUT=0
-      - ENABLE_VOCAL_SEPARATION=false
-      - ENABLE_LD_PREPROCESSING=false
-    volumes:
-      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}/whisper-small-int4-ov:/models/whisper-openvino:ro
-    ports:
-      - 9000:9000
-
   nvidia_llama_swap:
     <<: [*base_llama_swap]
     profiles:
@@ -86,17 +67,6 @@ services:
     environment:
       - no_proxy=localhost,127.0.0.1
       - ZES_ENABLE_SYSMAN=1
-
-  intel_npu_whisper:
-    <<: [*base_whisper]
-    profiles:
-      - laptop
-      - whisper
-    extends:
-      file: ../base.yml
-      service: base_npu
-    ports:
-      - 8083:9000
 
   strata:
     profiles:

@@ -35,7 +35,7 @@ curl -s localhost:4000/health/liveliness
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap — only with `--profile nvidia_llama_cpp` |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
-| `localhost:8083` | whisper-pro ASR (Intel NPU) — STT |
+| `localhost:8083` | whisper-pro ASR (Intel iGPU) — STT |
 | `localhost:8080` | desktop Strata (5070 Ti) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
@@ -154,9 +154,8 @@ VRAM expert cache. It runs **Tiel Coder 35B-A3B UD-Q3_K_XL** — the same GGUF a
 the llama.cpp entry uses — as a resident container named **`strata`**, and the gateway name
 `tiel-coder-35b` routes to it. **Since 2026-10-20 the `laptop` profile starts strata-poly +
 the Arc iGPU + LiteLLM only**: the RTX 5070 llama-swap (tiel fallback, gemma) is manual
-(`--profile nvidia_llama_cpp`), and the gemma-4-26b/e4b entries were removed from
-`litellm-config.laptop.yaml` for now. The Arc iGPU also serves **`gemma-4-e2b` at 32K**,
-pinned resident, for titles and other small auxiliary tasks. **The desktop's container is `strata` too** — the same name,
+(`--profile nvidia_llama_cpp`), and the gemma entries were removed from
+`litellm-config.laptop.yaml` for now. **The desktop's container is `strata` too** — the same name,
 the same data path, on a different machine and a **different engine** (Niko1221/Strata,
 which serves `qwen4exp` only); the two never meet, and the laptop's compose **service key**
 is `strata_laptop` because one compose file cannot hold two services of the same name.
@@ -236,27 +235,30 @@ and long-context ingest is ~8% slower. Absolute values drift 20-30% with thermal
 within one session only (the incumbent's 2026-10-18 baseline was 40.1 deep; today's same-run
 number is 33.5). VRAM 7544 MiB at load, ~29GB system RAM, first boot ~30s.
 
-## Whisper ASR (Intel NPU)
+## Whisper ASR (Intel iGPU + diarization)
 
-Local speech-to-text on `ventura8/whisper-pro-asr:intel`, running **whisper-small-int4** on
-the **Intel NPU**. Runs **inside** `llama-cpp.yml` as the `intel_npu_whisper` service
-(profiles `laptop` + `whisper`) — not a separate stack. Host `:8083` → container `:9000`.
+Local speech-to-text on a **locally built** Intel-only image
+(`localhost/whisper-pro-asr:intel-whisperx`), running **large-v3-turbo** on the **iGPU** with
+speaker diarization via WhisperX/PyAnnote. It lives in its own stack, `ai/whisper.yml`
+(service `whisper_igpu`), joined to the llama-swap network. Host `:8083` → container `:9000`.
+
+The image is `ai/Containerfile.whisper_intel` built against the pinned upstream checkout
+`ai/Whisper-Pro-ASR` (submodule): upstream's `intel` target plus the WhisperX libs, minus the
+CUDA/ROCm stages and NVIDIA/AMD ONNX Runtime wheels that make their `full` target ~30 GB.
+The build is **4.7 GB on disk** (measured) and is a superset of the old `intel` image.
 
 ```bash
-# already up under the laptop profile:
-podman-compose -f ai/llama-cpp.yml --profile laptop up -d
-
-# whisper only:
-podman-compose -f ai/llama-cpp.yml --profile laptop --profile whisper up -d intel_npu_whisper
+podman-compose -f ai/whisper.yml --profile whisper_igpu up -d --build
 ```
 
-Weights are not downloaded by the container — they are bind-mounted read-only from
-`$LLAMA_MODELS_DIR/whisper-small-int4-ov` to `/models/whisper-openvino`, which whisper-pro
-loads when present (otherwise it fetches its own default, large-v3). Fetch them with:
+Weights are not downloaded by the container — the large-v3-turbo OpenVINO IR is bind-mounted
+read-only from `$LLAMA_MODELS_DIR/whisper-openvino` to `/app/system_models/whisper-openvino`,
+which whisper-pro prefers when present (otherwise it downloads its own OpenVINO large-v3 and
+the first start waits in the queue). Fetch it with:
 
 ```bash
-hf download anubhav200/openai-whisper-small-openvino-int4 \
-  --local-dir /mnt/data/llama/models/whisper-small-int4-ov
+hf download OpenVINO/whisper-large-v3-turbo-fp16-ov \
+  --local-dir /mnt/data/llama/models/whisper-openvino
 ```
 
 | endpoint | what |
@@ -264,24 +266,37 @@ hf download anubhav200/openai-whisper-small-openvino-int4 \
 | `localhost:8083` | whisper-pro ASR server (direct, no auth) |
 | `localhost:4000/v1`, model `whisper` | via LiteLLM — **what Hermes STT uses** |
 
-Direct (no auth, `response_format` = `json` / `srt` / `segments`):
+Direct (no auth, `response_format` = `json` / `srt` / `segments`; add `diarize=true` for
+speaker labels):
 
 ```bash
 curl -s http://localhost:8083/v1/audio/transcriptions \
-  -F "file=@/path/to/audio.mp3" -F "model=whisper-large-v3" -F "response_format=json"
+  -F "file=@/path/to/audio.mp3" -F "model=whisper-large-v3" -F "response_format=json" \
+  -F "diarize=true"
 ```
 
-LiteLLM maps alias `whisper` → `http://whisper_server:9000/v1`
+LiteLLM maps alias `whisper` → `http://whisper_server_igpu:9000/v1`
 (`model_info: mode: audio_transcription`, container-internal port — **not** the host
 `:8083`). Hermes is wired to it via `stt.provider: openai`,
 `stt.openai.base_url: http://localhost:4000/v1`, `stt.openai.model: whisper`.
 
+**Diarization needs `DIARIZATION_HF_TOKEN`** in `ai/whisper.env` (gitignored, mounted by
+`whisper_igpu`). The account must have accepted all three gated pyannote repos listed in that
+file's header. Empty/missing = diarization is skipped gracefully and plain transcription runs.
+PyAnnote runs on the CPU torch build in this image; the ASR itself is on the iGPU.
+
+**NPU is available but not the ASR device.** `base_npu` also maps `/dev/accel`, and
+`ASR_PREPROCESS_DEVICE=NPU` sends vocal isolation there; `ASR_DEVICE=GPU` keeps Whisper on the
+Arc. Turbo on the iGPU is both faster and more accurate than small-int4 on the NPU, which is
+why the old NPU service was retired. `VERIFY_RUNTIME=false` is kept for the NPU paths (the
+gate rejects every dynamic OpenVINO IR, which OpenVINO 2026.3.1 executes fine).
+
 **UVR is the trap.** UVR = **Ultimate Vocal Remover** — a source-separation model
 (MDX-NET) that strips background music/noise and keeps only the vocals *before*
-transcription. whisper-pro runs it on the iGPU, and by default it ran **twice** per
-request (once in the main pipeline, once inside language-detection preprocessing),
-adding ~25 s each. That, not the NPU, was the slowness — the whisper inference itself
-is ~1 s. For clean voice input UVR buys nothing, so both passes are off:
+transcription. whisper-pro can run it on the iGPU/NPU, and by default it ran **twice** per
+request (once in the main pipeline, once inside language-detection preprocessing), adding
+~25 s each. That, not the ASR, was the slowness. For clean voice input UVR buys nothing, so
+both passes are off:
 
 | env | default | here | controls |
 |---|---|---|---|
@@ -290,43 +305,38 @@ is ~1 s. For clean voice input UVR buys nothing, so both passes are off:
 
 Re-enable both only for music-heavy source material.
 
-### Model, and why the NPU (research)
+### Model, and why the iGPU (research)
 
-**whisper-small-int4 on the Intel NPU.** whisper-pro-asr ships a conservative gate: before
-using the NPU it reads the OpenVINO IR and refuses it if any input is dynamically shaped.
-Every optimum-produced Whisper export is dynamic, so the gate forces ASR onto the CPU — but
-**OpenVINO 2026.3.1 executes those IRs on the NPU fine**, so the gate is set aside with
-`VERIFY_RUNTIME=false` (which only skips that probe, the engine's NPU warm-up, and a startup
-ONNX-diagnostics log). `ASR_DEVICE=NPU` then pins the device.
+**large-v3-turbo on the iGPU.** Turbo is a distilled large-v3 (4 decoder layers), so it is
+both faster and noticeably more accurate than the int4 small model the NPU used to serve.
+The NPU gate is bypassed with `VERIFY_RUNTIME=false` (it only skips the static-shape probe,
+the engine's NPU warm-up, and a startup ONNX-diagnostics log); `ASR_DEVICE=GPU` pins the iGPU.
 
-Measured on a 60 s clip (laptop; the iGPU now runs embeddings only):
+Measured on a 60 s clip (laptop):
 
 | model | device | build | inference (60 s) |
 |---|---|---|---|
-| **small-int4** | **NPU** | 21.5 s | **4.8 s** |
+| small-int4 | NPU | 21.5 s | 4.8 s |
 | small-int4 | iGPU | 6.5 s | 7.0 s |
 | small-int4 | CPU | 0.7 s | 6.7 s |
 | large-v3-turbo-fp16 | NPU | 179 s | 8.2 s |
-| large-v3-turbo-fp16 | iGPU | 6.2 s | 4.4 s |
+| **large-v3-turbo-fp16** | **iGPU** | 6.2 s | **4.4 s** |
 | large-v3-turbo-fp16 | CPU | 0.6 s | 26.8 s |
 
-End-to-end through the service (warm): **~5.1 s per 60 s clip** on the NPU (inference
-~4.2 s) and **54 s for the full 10-minute video**; the first request after a container
-recreate adds the ~21 s NPU compile. small-int4 is the faster of the two on the NPU (turbo
-pays a ~179 s compile and is still slower per clip). It is a **small int4** model, so it is
-less accurate than large-v3-turbo — put turbo back on the iGPU if accuracy matters more
-than the NPU.
+End-to-end through the service (warm): **~5.1 s per 60 s clip** on the former NPU setup
+(inference ~4.2 s) and **54 s for the full 10-minute video**; the first request after a
+container recreate adds the NPU compile. On the iGPU the same clip takes **4.4 s** and
+turbo's compile is ~6.2 s — that is why the iGPU is now the ASR device.
 
 ### Residency and cold starts
 
-By default the model is unloaded **300 s after the last request** (`MODEL_IDLE_TIMEOUT=300`),
-and the NPU **recompiles on every (re)load** — the compiled blob is never cached to disk
-(the ASR pipeline is built with no `cache_dir`; the banner's "Binary Cache Status" is a
-false positive that just sees the `temp/` subdir). So the service sets
-**`MODEL_IDLE_TIMEOUT=0`**, which makes the model permanently resident in NPU memory for the
-container's lifetime, plus **`restart: unless-stopped`** so a reboot/crash does not need a
-manual `up`. Only an actual container recreate (config edit, image update) pays the compile
-again: **~21 s for small-int4**, ~179 s for large-v3-turbo.
+By default the model is unloaded **300 s after the last request** (`MODEL_IDLE_TIMEOUT=300`).
+The service sets **`MODEL_IDLE_TIMEOUT=0`**, keeping the model resident for the container's
+lifetime, plus **`restart: unless-stopped`** so a reboot/crash does not need a manual `up`.
+Only an actual container recreate (config edit, image update) pays the model compile again:
+**~6 s** for large-v3-turbo on the iGPU. On the NPU the same reload costs ~21 s (small-int4)
+to ~179 s (turbo), because the NPU never caches its compiled blob — another reason the ASR
+device moved to the iGPU.
 
 ## Architecture
 
@@ -377,7 +387,7 @@ curl -s localhost:4000/v1/chat/completions \
 | RTX 5070 8GB | 8080 | `strata-poly` → `tiel-coder-35b` (resident, 131K, UD-Q3_K_XL, vision on CPU) | the default agent path, from 2026-10-19 |
 | RTX 5070 8GB | 8081 | llama-swap: `tiel-coder-35b` (MTP, vision on CPU, 131K, ttl 0 — **manual fallback**), `gemma-4-26b-a4b` (MTP, vision, 131K, on-demand), `gemma-4-e4b` (MTP, vision, 128K, on-demand) | the llama.cpp tier; everything the user waits on while strata-poly is unloaded |
 | Arc Pro iGPU | 8082 | `embeddinggemma-2` (embeddings) | embeddings |
-| Intel NPU | 8083 | `whisper-small-int4` (whisper-pro ASR) | STT — NPU inference, UVR off |
+| Intel iGPU | 8083 | `large-v3-turbo-fp16` (whisper-pro ASR) | STT — iGPU inference + diarization, UVR off |
 
 Only **one** dGPU engine is resident at a time: strata-poly holds the card until
 `POST :8080/api/models/unload`, and any llama-swap load evicts everything else (~15-30s

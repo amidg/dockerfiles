@@ -1,0 +1,50 @@
+name: whisper
+
+services:
+  whisper_igpu:
+    profiles:
+      - whisper_igpu
+    extends:
+      file: ../base.yml
+      service: base_npu
+    image: localhost/whisper-pro-asr:intel-whisperx
+    build:
+      context: ./Whisper-Pro-ASR
+      dockerfile: ../Containerfile.whisper_intel
+    container_name: whisper_server_igpu
+    restart: unless-stopped
+    env_file:
+      - path: ./whisper.env
+        required: false
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - HOME=/app/data
+      - ASR_ENGINE=INTEL-WHISPER
+      - ASR_DEVICE=GPU
+      - ASR_PREPROCESS_DEVICE=NPU
+      - VERIFY_RUNTIME=false
+      - MODEL_IDLE_TIMEOUT=0
+      - ENABLE_VOCAL_SEPARATION=false
+      - ENABLE_LD_PREPROCESSING=false
+      - XDG_CACHE_HOME=/app/model_cache/kernel_cache/xdg
+      - SYCL_CACHE_PERSISTENT=1
+      - SYCL_CACHE_DIR=/app/model_cache/kernel_cache/sycl
+      - NEO_CACHE_DIR=/app/model_cache/kernel_cache/neo
+      - cl_cache_dir=/app/model_cache/kernel_cache/neo
+      - NUMBA_CACHE_DIR=/app/model_cache/kernel_cache/numba
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}/whisper-openvino:/app/system_models/whisper-openvino:ro
+      - whisper_model_cache:/app/model_cache
+    networks:
+      - llama-swap-network
+    ports:
+      - 8083:9000
+
+volumes:
+  whisper_model_cache:
+    name: whisper_model_cache
+
+networks:
+  llama-swap-network:
+    external: true
+    name: ai_llama-swap-network

@@ -29,7 +29,7 @@ Each advertises only what its device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (resident, 32K, titles + small auxiliary tasks) |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
@@ -235,7 +235,7 @@ reduces reasoning to ~83 chars for tool/quality tests.
 llama.cpp puts it in `usage`. Fixed `timings()` to merge `usage` fields. Replaced
 anti-thinking system messages with `chat_template_kwargs` for `reasoning_effort: "low"`.
 
-Host ports: **8081 primary GPU (llama-swap), 8082 secondary, 8083 whisper (Intel NPU),
+Host ports: **8081 primary GPU (llama-swap), 8082 secondary, 8083 whisper (Intel iGPU),
 8080 strata-poly** on the laptop; the desktop's **Strata is on 8080** (no Open WebUI
 anywhere since 2026-10-17). Both machines run their gateway on 4000, and both run their
 resident Strata container as `strata` on 8080 — they are separate hosts, so neither the
@@ -592,7 +592,6 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
-| `gemma-4-e2b` | laptop iGPU (Arc, 32K, resident, `ttl: 0`, projector loaded) | `title_generation`, `memory_query_rewrite`, `tts_audio_tags`, `profile_describer` since 2026-10-20 |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
@@ -741,7 +740,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3114 t/s** | **134.8 t/s** (143.5 shallow), acc 50%/66% | ~7432 MiB |
 | Arc iGPU | `gemma-4-e2b` *(retired 2026-10-18; entry removed)* | 713 t/s | 14.4 t/s (17.4 shallow) | ~3.5 GB RAM |
 | Arc iGPU | `embeddinggemma-2` | embeddings only | — | ~3.5 GB RAM |
-| Intel NPU | `whisper-small-int4` (ASR, not an LLM) | — | ~4.2 s / 60 s clip | RAM |
+| Arc iGPU | `large-v3-turbo-fp16` (ASR, not an LLM) | — | ~4.4 s / 60 s clip | RAM |
 
 ### Decode is two numbers, and mixing them wastes days
 
@@ -1746,13 +1745,12 @@ and that is where the iGPU is weakest. A second tier is not an obvious win eithe
 
 ## The tiny tier (Arc iGPU)
 
-**Back on the iGPU for auxiliary tasks (2026-10-20).** `gemma-4-e2b` is re-added to
-`llama-swap-intel.yaml` at **32K**, pinned resident in the `igpu` group (`ttl: 0`), and the
-LiteLLM entry `gemma-4-e2b` routes to it. Hermes sends `title_generation`,
-`memory_query_rewrite`, `tts_audio_tags` and `profile_describer` there; everything else
-stays on the dGPU's `tiel-coder-35b`. The larger `gemma-4-26b-a4b` / `gemma-4-e4b` entries
-stay out of the laptop profile and LiteLLM. The notes below still describe the device; the
-entry now runs 32K instead of 64K.
+**Retired 2026-10-18: the iGPU tier is embeddings only.** `gemma-4-e2b` is removed from
+`llama-swap-intel.yaml` (and from the LiteLLM config, Hermes and the opencode picker); only
+`embeddinggemma-2` remains. Background and fire-and-forget work now shares the dGPU's main
+model instead, and vision runs on `gemma-4-26b-a4b`. The GGUF and its projector stay on disk
+but are unreferenced. Everything below is kept because it documents the device, and because
+re-adding E2B is a config edit plus a re-point, not a re-derivation.
 
 **`gemma-4-e2b` served background tasks** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier
@@ -1943,29 +1941,76 @@ serves `embeddinggemma-2` only** (`groups:` with `swap: false` pins it resident,
 - **Bandwidth-bound, and that is why MTP loses here.** The device has no batching slack for
   speculative verification to exploit — the opposite of the CPU-offloaded dGPU.
 
-**Intel NPU — whisper ASR now, not an LLM.** The experimental `intel_npu_llama_cpp` profile
-and its OpenVINO `llama-server` (`Qwen3-1.7B`, 0.61 t/s decode, port 8083) are **gone**.
-Port 8083 now serves `whisper-small-int4` through `whisper-pro-asr` for local STT. The
-build recipe that used to live here is no longer used.
+**Intel iGPU — whisper ASR now, not an LLM.** The experimental `intel_npu_llama_cpp`
+profile and its OpenVINO `llama-server` (`Qwen3-1.7B`, 0.61 t/s decode, port 8083) are
+**gone**. Port 8083 now serves **large-v3-turbo on the iGPU** through a locally built
+whisper-pro-asr, with speaker diarization. The old NPU `intel_npu_whisper` service and the
+`ventura8/whisper-pro-asr:intel` image it pulled are retired (2026-10-19).
 
-- **The NPU runs dynamic IRs; the app's gate is wrong.** whisper-pro-asr refuses the NPU
-  unless the OpenVINO IR has static input shapes, and *every* optimum Whisper export is
-  dynamic — so out of the box it silently decodes on the CPU. On OpenVINO 2026.3.1 the NPU
-  executes those IRs fine (verified directly with `WhisperPipeline`, not just the probe), so
-  the service sets `VERIFY_RUNTIME=false` to skip the gate (`ASR_DEVICE=NPU` pins the
-  device). That flag only skips the probe, the NPU warm-up, and a startup ONNX-diagnostics
-  log — and it also disables the safety check, so if a future model/driver breaks on the NPU
-  there is no automatic CPU fallback.
-- **Model choice: `whisper-small-int4`** (`anubhav200/openai-whisper-small-openvino-int4`),
-  mounted read-only from `$LLAMA_MODELS_DIR/whisper-small-int4-ov`. Measured on a 60 s clip
-  in one session: small-int4 NPU 4.8 s, large-v3-turbo NPU 8.2 s (and turbo needed a ~179 s
-  NPU compile vs ~21 s). Turbo on the iGPU is faster still (4.4 s) and far more accurate —
-  small-int4 trades accuracy for the NPU.
+- **Why the iGPU, not the NPU.** `small-int4` on the NPU measured 4.8 s per 60 s clip;
+  `large-v3-turbo` on the iGPU measured 4.4 s and is far more accurate (turbo is a distilled
+  large-v3, not a 4-bit small model). The NPU also recompiles turbo for ~179 s on every cold
+  load and never caches the blob, so the iGPU wins on both axes. Its `ASR_DEVICE=GPU` path
+  needs no gate workaround.
+- **The NPU gate still exists and is still wrong.** whisper-pro-asr refuses the NPU unless
+  the OpenVINO IR has static input shapes, and *every* optimum Whisper export is dynamic.
+  On OpenVINO 2026.3.1 the NPU executes those IRs fine, so `VERIFY_RUNTIME=false` stays in
+  the env for the NPU-capable paths (`ASR_PREPROCESS_DEVICE=NPU`, optional UVR). That flag
+  only skips the probe, the NPU warm-up, and a startup ONNX-diagnostics log — it also
+  disables the safety check, so a broken NPU/driver there has no automatic CPU fallback.
+- **The image is local, not pulled.** `ai/Containerfile.whisper_intel` builds upstream
+  `ventura8/Whisper-Pro-ASR` **v1.5.0** (submodule `ai/Whisper-Pro-ASR`, pinned `e5a8a18`)
+  as `localhost/whisper-pro-asr:intel-whisperx`: their `intel` target plus the `whisperx-libs`
+  stage and `WHISPERX_LIB_PATH`, **without** the CUDA/ROCm stages or the NVIDIA/AMD ONNX
+  Runtime wheels. That is **4.7 GB on disk (measured)** instead of their `full` target's
+  ~29.8 GB, and it is a superset of the old `intel` image (3.5 GB, no diarization). Re-diff
+  `Containerfile.whisper_intel` against the
+  upstream Dockerfile before bumping the submodule — stages cannot be imported across files,
+  so the file is a deliberate copy, not an overlay.
+- **Weights come from the existing OpenVINO IR.** `$LLAMA_MODELS_DIR/whisper-openvino` is
+  mounted read-only to `/app/system_models/whisper-openvino` (`OV_MODEL_BAKED`, preferred
+  over the `/models/whisper-openvino` legacy path). It is the large-v3-turbo fp16 export
+  measured above; with no mount, provisioning downloads its default OpenVINO large-v3
+  (non-turbo) into the `whisper_model_cache` volume.
+- **Diarization needs `DIARIZATION_HF_TOKEN`** in `ai/whisper.env` (gitignored, mounted by
+  the service; the account must have accepted the three gated pyannote repos named in that
+  file's header). Missing token = graceful plain transcription. WhisperX/PyAnnote run on the
+  **CPU torch build** in this image — the ASR is on the iGPU, diarization is not; if it ever
+  becomes the bottleneck, upstream's `install_xpu_torch.sh` path is the escape hatch (+~6 GB).
+- **Diarization is CPU-only and slowly linear in duration — do not run it on long files
+  (measured 2026-10-20).** `_get_whisperx_device()` maps every non-CUDA unit to `cpu`, and
+  this image ships CPU torch, so the iGPU accelerates ASR only. On the 26-minute
+  `Video_2026-10-15_18-04-14.mkv`: ASR **117.6 s** (11.9× realtime), wav2vec2 alignment
+  **70 s**, then pyannote `speaker-diarization-community-1` ran **>15 min without finishing**
+  and was killed — the worker sat at **~345% CPU (~3.5 cores)** the whole time, i.e. roughly
+  0.4-0.5× realtime. Budget about a minute of diarization per two minutes of audio, plus
+  alignment. Three traps: (a) a client disconnect does **not** cancel the server-side worker —
+  two killed curl runs left it burning CPU for 15+ minutes; (b) SIGTERM did not stop it either,
+  the container needed SIGKILL (`podman restart`); (c) whisperx 1.5.0 hardcodes
+  `community-1` and the app never passes `model_name`, so there is **no env knob** — the older
+  `speaker-diarization-3.1` would need a one-line patch and a rebuild. **Policy: diarize
+  clips/short recordings only; for long media use the Hermes sherpa-onnx engine**, whose ONNX
+  diarization is the intended path. Short files are fine: an 8 s clip is **2.9 s warm** total.
 - **`MODEL_IDLE_TIMEOUT=0` keeps it resident.** The default 300 s unloads the model after
-  five idle minutes, and the NPU **recompiles on every reload** (the compiled blob is never
-  cached — the ASR pipeline is built with no `cache_dir`; the banner's "Binary Cache Status"
-  is a false positive off the `temp/` dir). With 0 it stays in NPU memory for the container's
-  life; only an actual recreate pays the ~21 s compile again.
+  five idle minutes. With 0 it stays loaded for the container's life; only an actual
+  recreate pays the ~6 s iGPU compile again.
+- **Container-user landmines, both fixed in the image/compose rather than by running as root.**
+  The service runs as `nobody` (`HOME=/nonexistent`), so (a) diarization's WhisperX worker died
+  with `PermissionError: /nonexistent` until compose set `HOME=/app/data`, and (b) NLTK refused
+  the alignment model's data directory because `/app/data` is world-writable
+  (`Security Violation`) — the image ships `/app/nltk_data` (owned by `nobody`, mode 0755) as
+  `NLTK_DATA`, with `punkt_tab` **downloaded at build time**. A runtime fetch fails NLTK's
+  proxy/SSRF check even though the container has only `no_proxy`; `NLTK_ALLOW_PROXIED_URLOPEN=1`
+  is baked in as well for any future resource. Do not "fix" any of this with `user: root`.
+- **Keep the JIT caches on the volume.** Compose redirects `XDG_CACHE_HOME`, `SYCL_CACHE_DIR`,
+  `NEO_CACHE_DIR` and `NUMBA_CACHE_DIR` into `/app/model_cache/kernel_cache/` (upstream's
+  recommendation — on Arc the cold SYCL compile was measured at 535 s against 11 s warm).
+  Without them every recreate recompiles the iGPU kernels.
+- **It is a separate compose stack.** `ai/whisper.yml` (service `whisper_igpu`) is its own
+  project, so it joins `llama-swap-network` as an **external** network (`ai_llama-swap-network`)
+  — that is what lets LiteLLM resolve `whisper_server_igpu:9000`. The `whisper` entry in
+  `litellm-config.laptop.yaml` keeps its name and timeouts; only `api_base` moved. As always,
+  `podman restart litellm` after the change (LiteLLM caches the parsed config).
 
 The iGPU and NPU share the LPDDR5x bus with the CPU — running both concurrently slows
 both. **They are not independent throughput adders.**
@@ -2583,7 +2628,7 @@ actually bitten this stack:
   depressed** tiel/qwen to 28/27 t/s; the same tiel read **40.5** against 13.6 GB LFM2.5
   (36 GB total). Every large-fileset run re-reads 13-23 GB per swap and kernel reclaim
   throttles the decode that follows. Check `cut -d' ' -f1 /proc/loadavg` and `free -h`
-  first, and remember `whisper_server` can run away at 300%+ CPU — see the Tiel entry above.
+  first, and remember `whisper_server_igpu` can run away at 300%+ CPU — see the Tiel entry above.
 - **Long runs belong in the background.** `--tests all` across two 35B models takes 20-40
   minutes; model swaps (~15-30s each) dominate. Poll the output file rather than blocking.
 - **Watch `free -h`, not just `nvidia-smi`.** `--n-cpu-moe` puts ~20 GB in system RAM, and

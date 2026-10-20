@@ -30,7 +30,7 @@ model_list:
   - model_name: whisper
     litellm_params:
       model: openai/whisper-large-v3
-      api_base: http://whisper_server:9000/v1
+      api_base: http://whisper_server_igpu:9000/v1
       api_key: sk-no-key-required
       timeout: 2400
       stream_timeout: 2400
