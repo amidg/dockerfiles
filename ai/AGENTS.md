@@ -496,10 +496,33 @@ same session, same suite: **prefill 1682 t/s, shallow 88.2, deep 72.7 / 76.9 / 8
 accept 82%/94%, 49,968-token needle @ 1375 t/s (36.3 s), tools 4/4, quality 4/4 (including
 `terse_title`), approval PASS, real-1280px vision reads `PLATYPUS` in 6.1 s. That is
 **~20-30% faster at depth than Tiel on the same engine** (63-65), with slightly better draft
-acceptance and OCR. It was a test only: the service still runs Tiel, no config changed, no
-size was added to the pinned submodule, and the test dirs were deleted. Making it real
-means installing the supported **UD-Q3_K_M** (17.1GB) or adding UD-Q3_K_XL's size and
-SHA-256 to PolyStrata's `qwen36` family.
+acceptance and OCR. **UD-Q3_K_M was then downloaded from the pinned revision** (`5bc3e238`,
+17.10GB, SHA-256 `8966dd0c…` verified) and `Qwen3.6-35B-A3B-UD-Q3_K_M.gguf` sits in
+`$LLAMA_MODELS_DIR`; it is not wired to anything.
+
+**Coding A/B, Qwen3.6 Q3_K_M vs Tiel Q3_K_XL (2026-10-19).** Five small tasks with hidden
+pytest suites — 2 bug fixes (`stats.py`, a CSV line parser) and 3 implementations
+(`merge_intervals`, `parse_duration` with strict validation, an `LRUCache` with capacity 0
+and MRU-on-update) — same 131072 context, temperature 0, up to 3 repair attempts. **Both
+models passed 5/5 on the first attempt**, so this suite cannot separate their quality:
+
+| | Tiel Q3_K_XL (17.2GB) | Qwen3.6 Q3_K_M (17.1GB) |
+|---|---|---|
+| pass@1 | **5/5** | **5/5** |
+| wall time, all 5 | **71 s** | 338 s |
+| completion tokens | **4,256** | 25,853 |
+| per-task time | 3-29 s | 20-86 s |
+
+Qwen's thinking traces alone ran 1.4-6.6k tokens on tasks Tiel answered in 185-1.8k
+(294 vs 6,564 for the LRU). **Quality is a tie here; Tiel is ~4.7x faster and ~6x leaner, so
+it stays the default.** The suite saturates, so it does not test deep agentic coding — Tiel's
+own card claims 12/25 on SWE-bench-Live against 8/25 for stock Qwen3.6-35B-A3B, which this
+harness cannot reproduce. Keep the Tiel choice on efficiency and the user's prior experience,
+not on a quality win measured here.
+
+The Q3_K_XL and Q3_K_M test containers used throwaway data dirs and the Q3_K_XL file is
+still not a supported `qwen36` size; only Q3_K_M is. Qwen3.6-35B-A3B UD-Q3_K_XL remains
+"add the size + SHA-256 to the family" work if that file is ever wanted.
 
 **Known risks, accepted:** the submodule is pinned to a **tag**, not main, because
 PolyStrata has active churn; podman is undocumented upstream (same CDI fallback as the
