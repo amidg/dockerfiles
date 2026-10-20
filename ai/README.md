@@ -12,7 +12,8 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models   # where the GGUFs live
 export STRATA_DATA_DIR=/var/mnt/data/llama/strata    # same path on both machines: the engine's /data
 
-# laptop: RTX 5070 + Arc iGPU, both at once — builds strata-poly from ai/PolyStrata on first use
+# laptop: strata-poly + Arc iGPU + LiteLLM (the RTX 5070 llama-swap is manual:
+# --profile nvidia_llama_cpp; it is no longer part of the laptop profile)
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d --build
 
 # desktop: 5070 Ti 16GB — builds and runs Strata (Swift 1.5 IQ2_XS)
@@ -32,7 +33,7 @@ curl -s localhost:4000/health/liveliness
 |---|---|
 | `localhost:4000/v1` | LiteLLM gateway — **point agents here** |
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
-| `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap |
+| `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap — only with `--profile nvidia_llama_cpp` |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
 | `localhost:8083` | whisper-pro ASR (Intel NPU) — STT |
 | `localhost:8080` | desktop Strata (5070 Ti) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
@@ -151,7 +152,10 @@ The laptop's second inference engine: **strata-poly** (`ai/PolyStrata`, pinned t
 `v0.1.45-poly.1`), PolyStrata's engine for models that read their GGUF in place with a
 VRAM expert cache. It runs **Tiel Coder 35B-A3B UD-Q3_K_XL** — the same GGUF and projector
 the llama.cpp entry uses — as a resident container named **`strata`**, and the gateway name
-`tiel-coder-35b` routes to it. **The desktop's container is `strata` too** — the same name,
+`tiel-coder-35b` routes to it. **Since 2026-10-20 the `laptop` profile starts strata-poly +
+the Arc iGPU + LiteLLM only**: the RTX 5070 llama-swap (tiel fallback, gemma) is manual
+(`--profile nvidia_llama_cpp`), and the gemma entries were removed from
+`litellm-config.laptop.yaml` for now. **The desktop's container is `strata` too** — the same name,
 the same data path, on a different machine and a **different engine** (Niko1221/Strata,
 which serves `qwen4exp` only); the two never meet, and the laptop's compose **service key**
 is `strata_laptop` because one compose file cannot hold two services of the same name.

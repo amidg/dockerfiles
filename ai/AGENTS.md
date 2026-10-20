@@ -21,13 +21,14 @@ value, update the table here in the same commit.
 
 ## Architecture
 
-Two machines. The laptop runs llama-swap (one config per device, one `llama-server`
-subprocess per model) **plus one resident strata-poly process**; the desktop runs a single
-resident Strata process. Each advertises only what its device can run.
+Two machines. The laptop's `laptop` profile runs the Arc iGPU llama-swap, LiteLLM and **one
+resident strata-poly process**; the RTX 5070 llama-swap is manual (`--profile
+nvidia_llama_cpp`) since 2026-10-20. The desktop runs a single resident Strata process.
+Each advertises only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
-| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) |
+| `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
@@ -584,9 +585,9 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 |---|---|---|
 | `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
 | `tiel-coder-35b` | laptop dGPU, **strata-poly** (container `strata`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **default agent model, delegation, vision, auxiliary tasks** — LiteLLM routes the name to `strata:8080`, and the 2026-10-19 A/B promoted it: deep 63-65 vs llama.cpp's 33-34 t/s, tools/quality/approval equal |
-| `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
-| `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
-| `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
+| `gemma-4-26b-a4b` | ~~laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27)~~ | **not exposed by LiteLLM since 2026-10-20**; the llama-swap entry remains for a manual `--profile nvidia_llama_cpp` start |
+| `gemma-4-e4b` | ~~laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision)~~ | **not exposed by LiteLLM since 2026-10-20**; the llama-swap entry remains for a manual `--profile nvidia_llama_cpp` start |
+| `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; **not in the `laptop` profile since 2026-10-20** (`--profile nvidia_llama_cpp`). Needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *deleted 2026-10-19 — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |

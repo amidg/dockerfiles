@@ -9,26 +9,6 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
-  - model_name: gemma-4-26b-a4b
-    litellm_params:
-      model: openai/gemma-4-26b-a4b
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-      allowed_openai_params: ["reasoning_effort"]
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
-  - model_name: gemma-4-e4b
-    litellm_params:
-      model: openai/gemma-4-e4b
-      api_base: http://llama_swap_nvidia:8080/v1
-      api_key: sk-no-key-required
-      allowed_openai_params: ["reasoning_effort"]
-    model_info:
-      max_input_tokens: 131072
-      max_output_tokens: 32768
-
   - model_name: embeddinggemma-2
     litellm_params:
       model: openai/embeddinggemma-2
@@ -73,8 +53,6 @@ litellm_settings:
     admin_only: true
   database_type: postgres
   request_timeout: 600
-  #fallbacks:
-  #  - qwen3.8-flash-next: ["gemma-4-26b-a4b", "gemma-4-e4b"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
