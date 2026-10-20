@@ -6,8 +6,25 @@ groups:
     exclusive: false
     members:
       - embeddinggemma-2
+      - gemma-4-e2b
 
 models:
+  "gemma-4-e2b":
+    cmd: |
+      /app/llama-server \
+        --model /models/gemma-4-E2B-it-Q4_K_M.gguf \
+        --mmproj /models/gemma-4-e2b-mmproj-F16.gguf \
+        --host 127.0.0.1 --port ${PORT} \
+        --n-gpu-layers 99 --ctx-size 32768 --parallel 1 \
+        --flash-attn on --cache-type-k f16 --cache-type-v f16 \
+        --batch-size 2048 --ubatch-size 2048 \
+        --cache-reuse 256 \
+        --reasoning off \
+        --temp 0.7 --top-k 20 --top-p 0.8 --presence-penalty 0.5
+    proxy: "http://127.0.0.1:${PORT}"
+    ttl: 0
+    disableKeepAlives: true
+
   "embeddinggemma-2":
     cmd: |
       /app/llama-server \

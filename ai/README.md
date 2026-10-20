@@ -154,8 +154,9 @@ VRAM expert cache. It runs **Tiel Coder 35B-A3B UD-Q3_K_XL** — the same GGUF a
 the llama.cpp entry uses — as a resident container named **`strata`**, and the gateway name
 `tiel-coder-35b` routes to it. **Since 2026-10-20 the `laptop` profile starts strata-poly +
 the Arc iGPU + LiteLLM only**: the RTX 5070 llama-swap (tiel fallback, gemma) is manual
-(`--profile nvidia_llama_cpp`), and the gemma entries were removed from
-`litellm-config.laptop.yaml` for now. **The desktop's container is `strata` too** — the same name,
+(`--profile nvidia_llama_cpp`), and the gemma-4-26b/e4b entries were removed from
+`litellm-config.laptop.yaml` for now. The Arc iGPU also serves **`gemma-4-e2b` at 32K**,
+pinned resident, for titles and other small auxiliary tasks. **The desktop's container is `strata` too** — the same name,
 the same data path, on a different machine and a **different engine** (Niko1221/Strata,
 which serves `qwen4exp` only); the two never meet, and the laptop's compose **service key**
 is `strata_laptop` because one compose file cannot hold two services of the same name.

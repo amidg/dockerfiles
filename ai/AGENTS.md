@@ -29,7 +29,7 @@ Each advertises only what its device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (resident, 32K, titles + small auxiliary tasks) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
@@ -592,6 +592,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
+| `gemma-4-e2b` | laptop iGPU (Arc, 32K, resident, `ttl: 0`, projector loaded) | `title_generation`, `memory_query_rewrite`, `tts_audio_tags`, `profile_describer` since 2026-10-20 |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
@@ -1745,12 +1746,13 @@ and that is where the iGPU is weakest. A second tier is not an obvious win eithe
 
 ## The tiny tier (Arc iGPU)
 
-**Retired 2026-10-18: the iGPU tier is embeddings only.** `gemma-4-e2b` is removed from
-`llama-swap-intel.yaml` (and from the LiteLLM config, Hermes and the opencode picker); only
-`embeddinggemma-2` remains. Background and fire-and-forget work now shares the dGPU's main
-model instead, and vision runs on `gemma-4-26b-a4b`. The GGUF and its projector stay on disk
-but are unreferenced. Everything below is kept because it documents the device, and because
-re-adding E2B is a config edit plus a re-point, not a re-derivation.
+**Back on the iGPU for auxiliary tasks (2026-10-20).** `gemma-4-e2b` is re-added to
+`llama-swap-intel.yaml` at **32K**, pinned resident in the `igpu` group (`ttl: 0`), and the
+LiteLLM entry `gemma-4-e2b` routes to it. Hermes sends `title_generation`,
+`memory_query_rewrite`, `tts_audio_tags` and `profile_describer` there; everything else
+stays on the dGPU's `tiel-coder-35b`. The larger `gemma-4-26b-a4b` / `gemma-4-e4b` entries
+stay out of the laptop profile and LiteLLM. The notes below still describe the device; the
+entry now runs 32K instead of 64K.
 
 **`gemma-4-e2b` served background tasks** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier

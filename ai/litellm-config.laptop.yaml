@@ -9,6 +9,15 @@ model_list:
       max_input_tokens: 131072
       max_output_tokens: 32768
 
+  - model_name: gemma-4-e2b
+    litellm_params:
+      model: openai/gemma-4-e2b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-key-required
+    model_info:
+      max_input_tokens: 32768
+      max_output_tokens: 8192
+
   - model_name: embeddinggemma-2
     litellm_params:
       model: openai/embeddinggemma-2
