@@ -496,12 +496,13 @@ same session, same suite: **prefill 1682 t/s, shallow 88.2, deep 72.7 / 76.9 / 8
 accept 82%/94%, 49,968-token needle @ 1375 t/s (36.3 s), tools 4/4, quality 4/4 (including
 `terse_title`), approval PASS, real-1280px vision reads `PLATYPUS` in 6.1 s. That is
 **~20-30% faster at depth than Tiel on the same engine** (63-65), with slightly better draft
-acceptance and OCR. **UD-Q3_K_M was then downloaded from the pinned revision** (`5bc3e238`,
-17.10GB, SHA-256 `8966dd0c…` verified) and `Qwen3.6-35B-A3B-UD-Q3_K_M.gguf` sits in
-`$LLAMA_MODELS_DIR`; it is not wired to anything.
+acceptance and OCR. **UD-Q3_K_M was downloaded from the pinned revision for the coding A/B
+below** (`5bc3e238`, 17.10GB, SHA-256 `8966dd0c…` verified), then **both Qwen3.6 files and
+the Qwen projector were deleted on 2026-10-19** — see the cleanup note at the end of this
+section.
 
 **Coding A/B, Qwen3.6 Q3_K_M vs Tiel Q3_K_XL (2026-10-19).** Five small tasks with hidden
-pytest suites — 2 bug fixes (`stats.py`, a CSV line parser) and 3 implementations
+`unittest` suites — 2 bug fixes (`stats.py`, a CSV line parser) and 3 implementations
 (`merge_intervals`, `parse_duration` with strict validation, an `LRUCache` with capacity 0
 and MRU-on-update) — same 131072 context, temperature 0, up to 3 repair attempts. **Both
 models passed 5/5 on the first attempt**, so this suite cannot separate their quality:
@@ -520,9 +521,24 @@ own card claims 12/25 on SWE-bench-Live against 8/25 for stock Qwen3.6-35B-A3B, 
 harness cannot reproduce. Keep the Tiel choice on efficiency and the user's prior experience,
 not on a quality win measured here.
 
-The Q3_K_XL and Q3_K_M test containers used throwaway data dirs and the Q3_K_XL file is
-still not a supported `qwen36` size; only Q3_K_M is. Qwen3.6-35B-A3B UD-Q3_K_XL remains
-"add the size + SHA-256 to the family" work if that file is ever wanted.
+**Qwen3.6 removed, Tiel Q3_K_XL is the only model left (2026-10-19).** The two Qwen3.6
+GGUFs (Q3_K_XL 17.23GB, Q3_K_M 17.10GB), `qwen3.6-35b-mmproj-F16.gguf` (899MB) and both
+throwaway test dirs were deleted: **35.24GB freed** (162.41 → 127.17GB used on
+`/var/mnt/data`). No config referenced them — `llama-swap-nvidia.yaml`,
+`llama-swap-intel.yaml`, `litellm-config.laptop.yaml`, `llama-cpp.yml` and
+`strata/config/*.json` all came back clean. Kept: `Tiel-Coder-35B-A3B-MTP-UD-Q3_K_XL.gguf`
+(17.23GB), `tiel-coder-35b-mmproj-BF16.gguf` and its `mmproj-BF16.gguf` hardlink (903MB),
+`strata/config/strata-tiel-ud-q3_k_xl.json` and the tiel pack. The resident `strata`
+container stayed healthy and loaded throughout (`model: tiel-coder-35b-a3b-ud-q3_k_xl`,
+`loaded: true`).
+
+**The coding arm is now in the benchmark repo.** `~/Projects/llm-benchmarking/coding.py` is
+the standalone arm: five tasks, hidden `unittest` suites (stdlib only — the measurement
+above used a pytest prototype), models interleaved task-by-task, `--repair-attempts`,
+`--only`, `--json`, `--fail-on-failure`. Run it against strata-poly with
+`./coding.py --models tiel-coder-35b-a3b-ud-q3_k_xl --endpoint http://127.0.0.1:8080/v1`.
+Re-validated through `coding.py` on 2026-10-19: Tiel 5/5 pass@1, 58.0 s, 2,756 tokens
+(per-task times differ from the table only by session noise).
 
 **Known risks, accepted:** the submodule is pinned to a **tag**, not main, because
 PolyStrata has active churn; podman is undocumented upstream (same CDI fallback as the
@@ -561,7 +577,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | `gemma-4-26b-a4b` | laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27) | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision) | on-demand fallback (135 t/s, native audio); nothing routes to it by default |
 | `tiel-coder-35b` *(llama-swap entry, `:8081`)* | laptop dGPU llama.cpp (RTX 5070, MTP, 131K, UD-Q3_K_XL, N=35, ub2048, vision via CPU projector) | **manual fallback** since 2026-10-19, reachable direct on `:8081/v1`; needs strata-poly unloaded first. Its measured baseline (deep 40.1 / prefill 1442, won the 2026-10-18 Q3_K_XL A/B) is the number the poly arm must beat |
-| ~~`qwen3.6-35b`~~ (Q3_K_XL) | *GGUF + projector kept on disk, unwired — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
+| ~~`qwen3.6-35b`~~ (Q3_K_XL) | *deleted 2026-10-19 — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
@@ -704,7 +720,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | `tiel-coder-35b` **(strata-poly, container `strata`; resident; 131K, UD-Q3_K_XL read in place, vision on CPU)** | **1704 t/s** | **63.3-65.1 t/s** (51.2 round-1 warm-up), shallow 59.7 | ~7544 MiB (elastic expert cache, 255 free) |
 | RTX 5070 | `gemma-4-26b-a4b` **(on-demand since 2026-10-18; MTP, vision, 131K, N=27)** | **1358 t/s** | **35.0 t/s** (34.8 shallow), acc 62%/75% | ~6974 MiB at load, 7418 after a 1280px image |
 | RTX 5070 | `tiel-coder-35b` **(default agent since 2026-10-18; MTP, vision on CPU, 131K, UD-Q3_K_XL, N=35, ub2048)** | 1442 t/s | **40.1 t/s** (31.7 shallow), acc 47%/81% | ~7262 MiB at load, 7316 after a 1280px image |
-| RTX 5070 | `qwen3.6-35b` **(Q3_K_XL; retained on disk, unwired)** | 1533 t/s | 39.9 t/s (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image |
+| RTX 5070 | `qwen3.6-35b` **(Q3_K_XL; deleted 2026-10-19)** | 1533 t/s | 39.9 t/s (33.3 shallow), acc 56%/84% | ~7040 MiB at load, 7424 after a 1280px image |
 | RTX 5070 | `lfm2.5-24b` *(retired 2026-10-18, weights deleted)* | 1804-2032 t/s | 33.9-37.3 t/s (39.6-41.3 shallow) | ~7278 MiB |
 | RTX 5070 | `tiel-coder-35b` *(retired 2026-10-18, weights deleted)* | 897 t/s | 40.5 t/s (38.1 shallow), acc 47%/55% | ~7402 MiB, RSS 18.6 GB |
 | RTX 5070 | `qwen3.6-35b` *(retired 2026-10-17; MTP, 128K)* | 991 t/s | 46.3 t/s (41.2 shallow), 36.9 @118K | ~7275 MiB |
@@ -907,8 +923,9 @@ terseness is the Sharp template doing what it is for.
 ### Qwen3.6-35B-A3B Q3_K_XL + CPU projector — the projector work (2026-10-18)
 
 *(Qwen lost the slot to [tiel-coder-35b](#tiel-coder-vs-qwen36-35b-at-q3_k_xl--ab-tiel-wins-the-slot-2026-10-18);
-its GGUF stays on disk. This section is kept because the projector-placement measurements are
-what make either model fit on this card, and tiel inherits the same flags.)*
+its GGUF and projector were deleted on 2026-10-19. This section is kept because the
+projector-placement measurements are what make either model fit on this card, and tiel
+inherits the same flags.)*
 
 Originally added as an **on-demand** third dGPU entry (`ttl: 600`), not a main-agent candidate;
 it has since lost the slot to tiel and is unwired. Files:
@@ -1473,7 +1490,7 @@ llama-swap spawns the subprocess on demand.
 
 | model | n_embd | projector |
 |---|---|---|
-| qwen3.6-35b | 2048 | `qwen3.6-35b-mmproj-F16.gguf` (run with `--no-mmproj-offload`: CPU projector, ~40 s/image) |
+| ~~qwen3.6-35b~~ *(weights and projector deleted 2026-10-19)* | 2048 | `qwen3.6-35b-mmproj-F16.gguf` — deleted with the model; the row is kept for the n_embd history |
 | tiel-coder-35b | 2048 (Ornith projector; matches — image requests run) | `tiel-coder-35b-mmproj-BF16.gguf` (CPU projector; OCR weaker than the Gemma/Qwen projectors) |
 | gemma-4-26b-a4b | 2816 | `mmproj-F16.gguf` (from the `gemma-4-26B-A4B-it-qat-GGUF` repo) |
 | gemma-4-26b *(retired)* | 2816 | `gemma-4-26b-mmproj-F16.gguf` |
@@ -2437,9 +2454,10 @@ only affect the two remote entries.
 ## Benchmarking
 
 **Every number in this file was produced by
-[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking)** — two stdlib-only
-scripts (`smoke.py`, `llmbench.py`), no dependencies, no venv. It used to live at
-`ai/bench/` and was split out so it can be pointed at any OpenAI-compatible stack.
+[amidg/llm-benchmarking](https://github.com/amidg/llm-benchmarking)** — stdlib-only scripts
+(`smoke.py`, `llmbench.py`, `parallel.py`, `coding.py`), no dependencies, no venv. It used
+to live at `ai/bench/` and was split out so it can be pointed at any OpenAI-compatible
+stack.
 
 Local checkout on this machine: `~/Projects/llm-benchmarking`.
 
@@ -2482,6 +2500,10 @@ caveats live in [Measured performance — desktop Strata](#measured-performance-
 ./llmbench.py --models gemma-4-26b-a4b gemma-4-e4b --tests perf --rounds 3
 ./llmbench.py --models gemma-4-26b-a4b gemma-4-e4b --tests all   # before promoting a config
 ./llmbench.py --models qwen3.8-flash-next --fail-on-regression  # CI gate
+
+./coding.py --models tiel-coder-35b-a3b-ud-q3_k_xl \
+  --endpoint http://127.0.0.1:8080/v1 --json coding.json         # coding arm, strata-poly
+./coding.py --models a b --only lru_cache parse_duration         # subset
 ```
 
 `smoke.py` is the gate after any change to this repo. It replays the exact `max_tokens=16`
