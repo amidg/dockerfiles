@@ -264,7 +264,6 @@ hf download OpenVINO/whisper-large-v3-turbo-fp16-ov \
 | endpoint | what |
 |---|---|
 | `localhost:8083` | whisper-pro ASR server (direct, no auth) |
-| `localhost:4000/v1`, model `whisper` | via LiteLLM — **what Hermes STT uses** |
 
 Direct (no auth, `response_format` = `json` / `srt` / `segments`; add `diarize=true` for
 speaker labels):
@@ -275,10 +274,10 @@ curl -s http://localhost:8083/v1/audio/transcriptions \
   -F "diarize=true"
 ```
 
-LiteLLM maps alias `whisper` → `http://whisper_server_igpu:9000/v1`
-(`model_info: mode: audio_transcription`, container-internal port — **not** the host
-`:8083`). Hermes is wired to it via `stt.provider: openai`,
-`stt.openai.base_url: http://localhost:4000/v1`, `stt.openai.model: whisper`.
+**Whisper is no longer routed through LiteLLM (2026-10-22).** The `whisper` model entry was
+removed from `litellm-config.laptop.yaml`; the service is reachable only on `:8083`. Hermes
+STT keeps working by pointing `stt.openai.base_url` at `http://localhost:8083/v1` (model
+`whisper-large-v3`, any API key), or by using its local sherpa engine.
 
 **Diarization needs `DIARIZATION_HF_TOKEN`** in `ai/whisper.env` (gitignored, mounted by
 `whisper_igpu`). The account must have accepted all three gated pyannote repos listed in that
@@ -369,10 +368,16 @@ Direct names, no aliases. The laptop and the desktop serve different names — a
 | `gemma-4-26b-a4b` | laptop | llama-swap, RTX 5070, MTP, vision, 131K, N=27 | on-demand alternative (GPU vision, 35.0 t/s deep); nothing routes to it by default |
 | `gemma-4-e4b` | laptop | llama-swap, RTX 5070, MTP, 128K | on-demand fallback (fast, vision, audio); nothing routes to it by default |
 | `embeddinggemma-2` | laptop | llama-swap, Arc iGPU | embeddings |
+| `gemma-4-e2b` | laptop | llama-swap, Arc iGPU, 32K, Q4_K_M, `--reasoning off`, vision | titles, vision, TTS tags — live on the iGPU group; LiteLLM fallback `→ mimo-v2.6-flash` |
+| `glm-5.3-flash` | **OpenCode Go** (cloud) | `https://opencode.ai/inference/go/v1`, capped 262K/32K | cloud fallback for `qwen3.8-flash-next` on both machines |
+| `deepseek-v4.1-flash` | **OpenCode Go** (cloud) | same endpoint, capped 262K/32K | fallback for `tiel-coder-35b` (laptop), second hop for `qwen3.8-flash-next` |
+| `mimo-v2.6-flash` | **OpenCode Go** (cloud) | same endpoint, capped 262K/32K | `web_extract` target, `gemma-4-e2b`'s fallback; cheapest Go model |
 | `whisper` | laptop | whisper-pro ASR, Intel NPU | STT |
 
-The desktop's LiteLLM serves **only** `qwen3.8-flash-next` locally now — the cloud
-Anthropic/Gemini entries were dropped with the llama.cpp migration.
+Both LiteLLM configs carry the three OpenCode Go entries; the desktop's LiteLLM serves
+`qwen3.8-flash-next` locally plus the Go entries — the cloud Anthropic/Gemini entries were
+dropped with the llama.cpp migration. Fallback chains live in
+`AGENTS.md § OpenCode Go entries`.
 
 ```bash
 curl -s localhost:4000/v1/chat/completions \

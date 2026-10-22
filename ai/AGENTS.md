@@ -29,7 +29,7 @@ Each advertises only what its device can run.
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
-| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only) |
+| `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, ttl 0, resident in the `igpu` group) — **live again since 2026-10-22**, see [The tiny tier](#the-tiny-tier-arc-igpu) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
@@ -591,8 +591,11 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *deleted 2026-10-19 — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
-| ~~`gemma-4-e2b`~~ | *retired 2026-10-18 — iGPU tier is embeddings only; GGUF kept, unreferenced* | — |
+| `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `vision`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer`; LiteLLM fallback `→ mimo-v2.6-flash` |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
+| `glm-5.3-flash` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), gateway-capped 262K/32K | cloud fallback for `qwen3.8-flash-next` on both machines; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
+| `deepseek-v4.1-flash` | **OpenCode Go**, gateway-capped 262K/32K | cloud fallback for `tiel-coder-35b` (laptop) and second hop for `qwen3.8-flash-next` |
+| `mimo-v2.6-flash` | **OpenCode Go**, gateway-capped 262K/32K | `auxiliary.web_extract` target and `gemma-4-e2b`'s fallback; cheapest Go model ($0.14/$0.28 per 1M) |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
   The old dotted name and `server-qwen3.6-35b` are gone from the desktop; the laptop config
@@ -738,7 +741,7 @@ the same session.** Ratios have been stable across every repetition.
 | RTX 5070 | *no-MTP control* **(arm removed)** | 410 t/s | 29.7 t/s (35.3 shallow) | ~6100 MiB |
 | RTX 5070 | `gemma-4-26b` *(retired; MTP, vision, 128K)* | 1267 t/s | 26.3 t/s (25.3 shallow) | ~7105 MiB |
 | RTX 5070 | `gemma-4-e4b` *(MTP, vision, 128K, qat, q8_0 KV)* | **3114 t/s** | **134.8 t/s** (143.5 shallow), acc 50%/66% | ~7432 MiB |
-| Arc iGPU | `gemma-4-e2b` *(retired 2026-10-18; entry removed)* | 713 t/s | 14.4 t/s (17.4 shallow) | ~3.5 GB RAM |
+| Arc iGPU | `gemma-4-e2b` **(live, iGPU group resident)** | 713 t/s | 14.4 t/s (17.4 shallow) | ~3.5 GB RAM |
 | Arc iGPU | `embeddinggemma-2` | embeddings only | — | ~3.5 GB RAM |
 | Arc iGPU | `large-v3-turbo-fp16` (ASR, not an LLM) | — | ~4.4 s / 60 s clip | RAM |
 
@@ -1745,12 +1748,16 @@ and that is where the iGPU is weakest. A second tier is not an obvious win eithe
 
 ## The tiny tier (Arc iGPU)
 
-**Retired 2026-10-18: the iGPU tier is embeddings only.** `gemma-4-e2b` is removed from
-`llama-swap-intel.yaml` (and from the LiteLLM config, Hermes and the opencode picker); only
-`embeddinggemma-2` remains. Background and fire-and-forget work now shares the dGPU's main
-model instead, and vision runs on `gemma-4-26b-a4b`. The GGUF and its projector stay on disk
-but are unreferenced. Everything below is kept because it documents the device, and because
-re-adding E2B is a config edit plus a re-point, not a re-derivation.
+**Live again since 2026-10-22 — the 2026-10-18 retirement was a doc error.** `gemma-4-e2b`
+was never removed from `llama-swap-intel.yaml` (it sits in the `igpu` group, `swap: false`,
+resident alongside `embeddinggemma-2`), nor from `litellm-config.laptop.yaml`, and Hermes'
+`title_generation` has pointed at it throughout. It now runs **title generation, vision,
+tts_audio_tags, memory_query_rewrite, profile_describer** — work deliberately moved **off**
+the dGPU, which frees the co-residency rule for those roles (an iGPU-resident model never
+evicts tiel, and a cloud fallback never evicts anything). Its LiteLLM fallback is
+`mimo-v2.6-flash`; note the accepted edge: if a *vision* request fails over, mimo may reject
+image input and the request dies outright rather than degrading. Config as it runs today:
+Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, `ttl: 0`.
 
 **`gemma-4-e2b` served background tasks** — Q4_K_M, 64K, `--ubatch-size
 2048`, **`f16` KV**, **no MTP**, `--reasoning off`. It is the only vision model on this tier
@@ -1923,9 +1930,10 @@ is no longer worth testing: it needs a second entry, and the request field does 
 
 ## Per-device notes
 
-**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. **Since 2026-10-18 it
-serves `embeddinggemma-2` only** (`groups:` with `swap: false` pins it resident, ~3.5 GB);
-`gemma-4-e2b` is removed from the config, the LiteLLM entry and every client.
+**Intel iGPU (Arc)** — SYCL via the upstream-tracking `:intel` image. Runs **both**
+`embeddinggemma-2` and `gemma-4-e2b` resident (`groups:` with `swap: false`, ~3.5 GB each).
+The 2026-10-18 "embeddings only, e2b removed" note was wrong: the entry stayed in the config
+and in Hermes all along (see [The tiny tier](#the-tiny-tier-arc-igpu)).
 
 - **Cold-start:** the `intel_sycl_cache` volume (`/root/.cache`) persists the SYCL/Level-Zero
   JIT kernel cache. Without it every recreate recompiles all kernels — measured **4m32s**
@@ -2007,10 +2015,12 @@ whisper-pro-asr, with speaker diarization. The old NPU `intel_npu_whisper` servi
   recommendation — on Arc the cold SYCL compile was measured at 535 s against 11 s warm).
   Without them every recreate recompiles the iGPU kernels.
 - **It is a separate compose stack.** `ai/whisper.yml` (service `whisper_igpu`) is its own
-  project, so it joins `llama-swap-network` as an **external** network (`ai_llama-swap-network`)
-  — that is what lets LiteLLM resolve `whisper_server_igpu:9000`. The `whisper` entry in
-  `litellm-config.laptop.yaml` keeps its name and timeouts; only `api_base` moved. As always,
-  `podman restart litellm` after the change (LiteLLM caches the parsed config).
+  project, so it joins `llama-swap-network` as an **external** network (`ai_llama-swap-network`).
+  The `whisper` entry in `litellm-config.laptop.yaml` was **removed on 2026-10-22**: the
+  service is now direct-only on `:8083`, and LiteLLM no longer exposes an audio model. Hermes
+  STT must point `stt.openai.base_url` at `http://localhost:8083/v1` (model
+  `whisper-large-v3`) or keep using its local sherpa engine. `podman restart litellm` is still
+  required after any LiteLLM config edit (it caches the parsed config).
 
 The iGPU and NPU share the LPDDR5x bus with the CPU — running both concurrently slows
 both. **They are not independent throughput adders.**
@@ -2067,8 +2077,9 @@ Direct model names only.
 > [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17).
 
 - `model.default: tiel-coder-35b`, `delegation.model: tiel-coder-35b` (laptop, 2026-10-18);
-  the desktop's default is `qwen3.8-flash-next`. Every `auxiliary.*` role also points at
-  `tiel-coder-35b` — see the co-residency note below.
+  the desktop's default is `qwen3.8-flash-next`. Since 2026-10-22 the `auxiliary.*` roles
+  are split across tiel, `gemma-4-e2b` (iGPU) and `mimo-v2.6-flash` (Go cloud) — see the
+  table below and the co-residency rule after it.
 - `custom_providers[0].models.*.context_length` must be pinned. Without it Hermes reads
   `*.context_length` from GGUF metadata and advertises the native window (256K), overrunning
   the actual `--ctx-size` KV allocation.
@@ -2079,6 +2090,7 @@ Direct model names only.
 | `tiel-coder-35b` | **131072** | laptop dGPU, 131K ctx — the default since 2026-10-18 |
 | `gemma-4-26b-a4b` | **131072** | laptop dGPU, 131K ctx. Native window is 262144 — the pin is what stops a 256K advertisement overrunning the KV allocation |
 | `gemma-4-e4b` | **131072** | laptop dGPU, 128K ctx; on-demand only |
+| `glm-5.3-flash`, `deepseek-v4.1-flash`, `mimo-v2.6-flash` | **262144** | Go's native window is 1 048 576; the gateway advertises the capped 262144 and the Hermes pin restates it, so compaction fires at the cap and not at 1M (2026-10-22) |
 
 **The desktop pin moved to 262144 with the engine (2026-10-19).** Strata now serves
 `CONTEXT=262144`, so `qwen3.8-flash-next`'s pin is **262144** (the 131072 pin belonged to the
@@ -2112,36 +2124,42 @@ comment is stale for `provider: custom`, which routes through the profile above 
 Levels are limited to `xhigh`/`medium`/`low`/`none` by Qwen3.8's template even though
 Hermes' `VALID_REASONING_EFFORTS` accepts `minimal`/`high`/`max`/`ultra` too.
 
-Auxiliary tasks split on **critical path vs background**, not prompt size. Since
-2026-10-18 **every** role is on `tiel-coder-35b`:
+Auxiliary tasks split on **critical path vs background**, not prompt size. Since 2026-10-22
+roles are on three models:
 
 | tier | tasks |
 |---|---|
-| **`tiel-coder-35b` (laptop dGPU, default)** | `mcp`, `skills_hub`, `approval`*, `vision`, `title_generation`, `tts_audio_tags`, `compression`, `web_extract`, `kanban_decomposer`, `profile_describer`, `curator`, `monitor`, `memory_query_rewrite`, `triage_specifier`, `goal_judge` |
+| **`tiel-coder-35b` (laptop dGPU, default)** | `mcp`, `skills_hub`, `approval`*, `compression`, `kanban_decomposer`, `curator`, `monitor`, `triage_specifier`, `goal_judge` |
+| **`gemma-4-e2b` (laptop iGPU, resident, zero swap cost)** | `vision`, `title_generation`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer` |
+| **`mimo-v2.6-flash` (Go cloud)** | `web_extract` — browser snapshots > 15 000 chars; the cheapest Go model, and a cloud aux role evicts nothing |
 
 \*The `server-qwen3.8-27b` group moved here on 2026-10-18: those names had been pointing at
 the dead `api.gusev.tech` remote since the Strata migration, so those roles were failing
-outright — this is a repair, not just a re-point. The six desktop-era roles and the six
-laptop roles now share one model, which is the rule below. `approval` and `title_generation`
+outright — this is a repair, not just a re-point. `approval` and `title_generation`
 are pinned to `reasoning_effort: none` per request, which is what makes the `max_tokens=16`
 shape work on a thinking model; the tiel LiteLLM entry carries
 `allowed_openai_params: ["reasoning_effort"]` — without that allowlist the param is dropped
 silently and the shape returns **empty**. Verified through the gateway: `DENY`/`APPROVE`,
 `finish: stop`, 0 reasoning chars, within 16 tokens.
 
-**All aux roles must be on the same model as `model.default`.** tiel is 17.2 GiB and
-`gemma-4-26b-a4b` is 14.25 GiB; neither pair co-resides in 8 GB, so pointing one aux role at
-another model would evict the main agent and cost a full load on the next turn.
+**All aux roles on *local models* must be on the same model as `model.default`.** tiel is
+17.2 GiB and `gemma-4-26b-a4b` is 14.25 GiB; neither pair co-resides in 8 GB, so pointing one
+aux role at another dGPU model would evict the main agent and cost a full load on the next
+turn. **Cloud roles break this rule by design**: a Go model never touches the GPU, so
+`web_extract` on mimo evicts nothing, and an iGPU-resident model (e2b) never evicts tiel
+either. The rule is a GPU rule, not a topology rule.
 
-**Vision moved to tiel with everything else, and it is the weakest part of that move.**
-tiel reads images (projector matches, 1831 prompt tokens, `finish: stop`) but misreads the
-synthetic test word deterministically where qwen read it exactly; `gemma-4-26b-a4b` remains
-the better OCR model via its GPU-resident projector. If image work becomes important, point
-`auxiliary.vision` back at `gemma-4-26b-a4b` and accept the ~15 s reload per image turn.
+**Vision is on `gemma-4-e2b` since 2026-10-22** — the iGPU tier's own vision model, resident
+at 3.5 GB, so an image turn costs no dGPU swap. tiel reads images (projector matches,
+1831 prompt tokens, `finish: stop`) but misreads the synthetic test word deterministically
+where qwen read it exactly; `gemma-4-26b-a4b` remains the better OCR model via its
+GPU-resident projector if a dGPU image turn is ever worth ~15 s. The accepted edge: an e2b
+vision request that fails over to mimo dies outright — Go's chat-completions models may
+reject image input.
 
-Anything the user waits on goes to `tiel-coder-35b` — one model, no swap. Fire-and-forget
-tasks now share it too; there is no small local tier left (the iGPU is embeddings only).
-Timeouts are well above Hermes' defaults because a timeout mid-compression drops context.
+Anything the user waits on goes to `tiel-coder-35b`. The small local tier is back (e2b on the
+iGPU) for titles/vision/TTS, and the Go cloud covers stalls. Timeouts are well above Hermes'
+defaults because a timeout mid-compression drops context.
 
 **Delegation runs on `server-qwen3.8-27b`, measured not assumed:** 33.6s vs 2m05.8s on the
 iGPU. During synchronous delegation the parent is idle so the primary GPU is free anyway
@@ -2318,28 +2336,76 @@ each rejection costs a full ~18s load.
   defines no effort vocabulary, so the drop there was load-bearing, not a bug. Both are gone
   as of 2026-10-18; every local chat model now allowlists the field.
 
-### Remote outage handling — how the gateway fails over to local (2026-08-25)
+### OpenCode Go entries — cloud fallbacks (2026-10-22)
 
-**Superseded 2026-10-16: busy now means *wait*, not fail over.** Fallbacks are commented
-out and the requirement became "client waits until the server model finishes". The
-desktop's llama.cpp (`--parallel 1`) queues FIFO while a slot is occupied, so the remote
-entries now run `timeout`/`stream_timeout: 900` + `keepalive_seconds: 15` (SSE pings keep
-the connection live through the silent queue wait), `cooldown_time: 0` with
-`allowed_fails_policy` removed — the old first-timeout-300s-cooldown was producing the
-useless `429 all_deployments_in_cooldown` the clients actually saw. Router-wide
-`retry_after: 15` spaces the 3 retries that remain (transient 502s now wait instead of
-bursting). `TimeoutErrorRetries: 0` stays: a litellm timeout disconnects the upstream,
-llama.cpp aborts the disconnected generation, so a retry would restart it from zero.
-Desktop side: `request_timeout` 600→960 so the laptop is always the one that gives up,
-and `TimeoutErrorRetries: 0` added for both Qwen groups so its `num_retries: 3` cannot
-re-send cancelled work. Accepted trade-off: busy and down are indistinguishable from the
-client (both are silence), so a powered-off desktop now surfaces only after ~900s instead
-of ~180s. Everything below stays as the 2026-08-25 fail-fast design and documents the
-LiteLLM 1.99.0 cooldown quirks (`_is_cooldown_required`, per-deployment
-`model_info.allowed_fails_policy`), which are still true.
+Both gateways now carry three **OpenCode Go** entries (`glm-5.3-flash`,
+`deepseek-v4.1-flash`, `mimo-v2.6-flash`) pointing at
+`https://opencode.ai/inference/go/v1` with `api_key: os.environ/OPENCODE_GO_API_KEY`
+(added to `ai/litellm.env`). Facts established at rollout:
 
-The laptop routes `server-qwen3.8-27b` through the desktop's LiteLLM at
-`https://chat.gusev.tech/v1`. When the desktop is off (TCP blackhole — the dominant
+- **Only OpenAI chat/completions models are wired.** OpenCode's own endpoint table puts
+  `qwen3.8-*`, `qwen3.7-plus`, `claude-haiku-5-5`, `minimax-m3` on an Anthropic-format
+  endpoint and `grok-4.7`, `gpt-6-luna`, `gpt-5.6-luna`, `muse-spark-*` on a Responses
+  endpoint; none of those work through litellm's `openai/` provider. `glm-5.3-flash` is the
+  vendor's own example model, and the three wired models are all on the chat/completions path.
+- **Headers per OpenCode's client rules** (`extra_headers` per deployment, accepted by
+  litellm for every provider): `User-Agent: litellm-gateway/1.0` (they require a real agent
+  identity, not a generic SDK UA); `x-opencode-session: litellm-gateway-0001` — **one fixed
+  session id for all gateway traffic**, which degrades their routing/prompt-cache
+  optimization; accepted, because per-conversation ids through a proxy need a hook and the
+  gateway is not that code. Non-secret, so it lives in the yaml.
+- **Caps are ¼ of native** (user decision 2026-10-22): the models have 1 048 576-token
+  windows; every entry advertises **262144 in / 32768 out**, and the Hermes pin mirrors it.
+  A client overrunning the cap gets a clean gateway rejection, not a silent 1M-token bill.
+- **`reasoning_effort` flows through to the Go endpoint even without an allowlist** —
+  `drop_params` does not eat it for openai-compatible providers, and the upstreams validate
+  it. Measured 2026-10-22 through the gateway: `glm-5.3-flash` **400 on `none`**
+  ("GLM-5.3 is thinking-only"), ✓ `medium`, ✓ `xhigh`; `deepseek-v4.1-flash` ✓ on all
+  three; `mimo-v2.6-flash` **400 on `xhigh`**, ✓ `none`, ✓ `medium`. The live Hermes
+  mapping is safe under this matrix: `web_extract`→mimo sends `medium`; the `none` roles
+  (`approval`, `title_generation`) are local; a tiel `xhigh` request falling back lands on
+  glm/deepseek, both of which accept `xhigh`. **Do not point any `reasoning_effort: none`
+  role at `glm-5.3-flash`**, and do not send `xhigh` at `mimo-v2.6-flash`.
+- **Fallback chains** (`router_settings.fallbacks`): laptop
+  `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]`,
+  `tiel-coder-35b → [deepseek-v4.1-flash]`, `gemma-4-e2b → [mimo-v2.6-flash]`; desktop
+  `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]` (main and delegation are the
+  same group there, so one chain). Fallback fires on **errors and timeouts only** — a
+  queued-but-alive llama-server never triggers it, which is the whole point: local first,
+  Go only when local is stalled.
+- **Spend tracking is unverified for these ids.** `log_model_api_calls_to_db` records
+  requests, but litellm's cost map knows zhipu/deepseek ids, not `openai/<go-id>` aliases,
+  so the UI's spend for Go traffic is likely $0. The **OpenCode console is the authoritative
+  quota meter** (5-hour/weekly/monthly dollar limits per model); watch it, not the gateway.
+- **Restart rule unchanged for yaml edits, and an env-file change needs a full recreate
+  (measured 2026-10-22):** `podman-compose up -d litellm` does **not** recreate when only
+  `litellm.env` content changed — the container keeps its old env and the new
+  `os.environ/OPENCODE_GO_API_KEY` resolves to nothing, so the Go entries silently vanish
+  from `/v1/models`. The fix is `podman rm -f litellm` then `up -d litellm`. The same applies
+  to `litellm_server` on the desktop. After recreate, verify on `/v1/models` that the three
+  Go names appear.
+
+### Remote outage handling — how the gateway fails over to local (2026-10-22, revived)
+
+**Supersedes the 2026-10-16 "busy = wait" state for `qwen3.8-flash-next` on the laptop.**
+The fail-fast machinery below is back, now landing on Go cloud instead of local: the
+`api.gusev.tech` entry carries `timeout: 180` / `stream_timeout: 180`,
+`model_info.cooldown_time: 300` and `allowed_fails_policy:
+TimeoutErrorAllowedFails: 0`, and `model_group_retry_policy` gives
+`qwen3.8-flash-next: TimeoutErrorRetries: 0`. A dead desktop costs one 180s probe, then
+5 minutes of instant failover to `glm-5.3-flash`. The 180s ceiling is the 2026-08-25
+measurement: desktop prefill leaves ~130-160s of headroom for a warm 262K turn, and the
+known false-positive is a **cold desktop restart** (~6.5 min first boot), which spills one
+request to Go and then cools. **Accepted.**
+
+The 2026-10-16 "fallbacks = thrash" rationale still holds for *local* fallbacks (every
+escalation is a full GPU reload) and for `context_window_fallbacks`; a cloud fallback has no
+reload cost, so the rule applies only to GPU groups. Everything below is the 2026-08-25
+design, which this change restores.
+
+The laptop routes `qwen3.8-flash-next` through the desktop's LiteLLM at
+`https://api.gusev.tech/v1`. (The text below predates the 2026-10-17 rename
+`server-qwen3.8-27b` → `qwen3.8-flash-next`; the mechanism is identical.) When the desktop is off (TCP blackhole — the dominant
 failure shape for a powered-off machine with a DynDNS IP), the old behavior was to hang
 for ~30 minutes before falling back to local `qwen3.6-35b`. Root cause: `request_timeout:
 600` × (`num_retries: 3` + initial attempt) = up to 40 min per request, and LiteLLM's
