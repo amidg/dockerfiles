@@ -68,9 +68,12 @@ services:
       - no_proxy=localhost,127.0.0.1
       - ZES_ENABLE_SYSMAN=1
 
+# server_home and server_work are mutually exclusive: both own container "strata" and port 8080.
+# Switch with ai/server_start.sh home|work.
+
   strata:
     profiles:
-      - server
+      - server_home
     extends:
       file: ../base.yml
       service: base_nvidia
@@ -101,6 +104,44 @@ services:
       - GGUF_DIR=/models
       - STRATA_ARENA_PIN_GIB=40
       - STRATA_ALLOWED_HOSTS=strata
+      - REINSTALL=${STRATA_REINSTALL:-0}
+
+  strata_hip:
+    profiles:
+      - server_work
+    extends:
+      file: ../base.yml
+      service: base_amdgpu
+    build:
+      context: ./Strata
+      dockerfile: ../strata-hip.Dockerfile
+      args:
+        HIP_ARCHITECTURES: gfx1100
+    image: localhost/strata-hip:0.1.45
+    container_name: strata
+    restart: unless-stopped
+    networks:
+      - llama-swap-network
+    volumes:
+      - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
+      - ${STRATA_WORK_DATA_DIR:-/var/mnt/data/llama/strata-hip}:/data:z
+    ports:
+      - 8080:8080
+    ipc: host
+    ulimits:
+      memlock: -1
+    stop_grace_period: 90s
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - MODEL=IQ2_XS
+      - FAMILY=swift
+      - CONTEXT=262144
+      - VISION=cpu
+      - KV=k8v4
+      - GGUF_DIR=/models
+      - STRATA_ARENA_PIN_GIB=40
+      - STRATA_ALLOWED_HOSTS=strata
+      - VRAM_RESERVE_MIB=4096
       - REINSTALL=${STRATA_REINSTALL:-0}
 
   strata_laptop:
@@ -172,7 +213,8 @@ services:
     <<: *base_litellm
     container_name: litellm_server
     profiles:
-      - server
+      - server_home
+      - server_work
     volumes:
       - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
     ports:

@@ -11,19 +11,28 @@ that cost hours — read [`AGENTS.md`](AGENTS.md).
 ```bash
 export LLAMA_MODELS_DIR=/var/mnt/data/llama/models   # where the GGUFs live
 export STRATA_DATA_DIR=/var/mnt/data/llama/strata    # same path on both machines: the engine's /data
+# server_work keeps its own data dir: /var/mnt/data/llama/strata-hip (STRATA_WORK_DATA_DIR overrides)
 
 # laptop: strata-poly + Arc iGPU + LiteLLM (the RTX 5070 llama-swap is manual:
 # --profile nvidia_llama_cpp; it is no longer part of the laptop profile)
 podman-compose -f ai/llama-cpp.yml --profile laptop up -d --build
 
-# desktop: 5070 Ti 16GB — builds and runs Strata (Swift 1.5 IQ2_XS)
-podman-compose -f ai/llama-cpp.yml --profile server up -d --build
+# desktop — one profile at a time; the script brings both stacks down first:
+./ai/server_start.sh home   # Strata on the 5070 Ti (Swift 1.5 IQ2_XS, 262K)
+./ai/server_start.sh work   # Strata on the 7900 XTX (HIP, 20GB VRAM cap) + whisper on the 5070 Ti
 ```
 
-Both `--build` flags compile their engine from the pinned submodule on first use (and
-after any submodule bump): `ai/Strata` for the desktop, `ai/PolyStrata` for the laptop
-(the in-repo `polystrata.Dockerfile` adds the `strata-poly` build upstream's own image
-lacks). LiteLLM needs ~30-60s. Poll before sending traffic:
+Building the desktop engines (first use and after a submodule bump; compiles from the pinned
+submodule on the machine it runs on, minutes):
+
+```bash
+podman-compose -f ai/llama-cpp.yml --profile server_home build strata
+podman-compose -f ai/llama-cpp.yml --profile server_work build strata_hip   # ai/strata-hip.Dockerfile
+```
+
+`server_work`'s image is upstream's HIP build (`docs/AMD_HIP.md`, gfx1100) with the CPU image
+encoder, plus one entrypoint addition: `VRAM_RESERVE_MIB=4096` becomes `--vram-reserve-mib`,
+the expert-cache reserve that leaves 4GB for the desktop the card drives. LiteLLM needs ~30-60s. Poll before sending traffic:
 
 ```bash
 curl -s localhost:4000/health/liveliness
@@ -35,8 +44,8 @@ curl -s localhost:4000/health/liveliness
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap — only with `--profile nvidia_llama_cpp` |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
-| `localhost:8083` | whisper-pro ASR — STT (`whisper_igpu` on Arc iGPU **or** `whisper_nvda` on the RTX 5070; one profile at a time) |
-| `localhost:8080` | desktop Strata (5070 Ti) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
+| `localhost:8083` | whisper-pro ASR — STT (`whisper_igpu` on Arc iGPU, `whisper_nvda` on the laptop's RTX 5070, or `whisper_nvda` in `server_work` on the desktop's 5070 Ti; one profile at a time) |
+| `localhost:8080` | desktop Strata (5070 Ti in `server_home`, 7900 XTX in `server_work`) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
 
@@ -110,19 +119,36 @@ export STRATA_DATA_DIR=/var/mnt/data/llama/strata   # override the compose defau
 hf download ukisai/... # the two lines above
 mkdir -p "$STRATA_DATA_DIR"
 
-podman-compose -f ai/llama-cpp.yml --profile server build strata
-podman-compose -f ai/llama-cpp.yml --profile server up -d
+podman-compose -f ai/llama-cpp.yml --profile server_home build strata
+podman-compose -f ai/llama-cpp.yml --profile server_home up -d
 podman logs -f strata        # minutes of expected silence: pack unpack, draft fetch, arena load
 ```
+
+On the 7900 XTX (`server_work`): the same model weights, a separate data dir, and the first
+build is the HIP image (~10 GB of TheRock wheels inside it):
+
+```bash
+mkdir -p /var/mnt/data/llama/strata-hip
+podman-compose -f ai/llama-cpp.yml --profile server_work build strata_hip   # 20-40 min
+./ai/server_start.sh work   # brings home down first, starts strata_hip + whisper_nvda
+podman logs -f strata       # first setup: image encoder, expert profile, then the arena
+```
+
+Check the HIP wiring on first boot: `podman logs strata | grep -i 'hip\|hipBLASLt tuning table'`
+— the engine must name gfx1100 and the setup pass reports the tuning table it found (no table
+for the installed hipBLASLt simply means plain hipBLAS, with the reason in the log); then
+`/v1/status` must show `vram_reserve_mib: 4096` and the desktop must stay usable under load.
 
 ### First-boot checklist
 
 1. **Health** — `curl -s 127.0.0.1:8080/health`.
-2. **GPU wiring** — the engine must report the 5070 Ti (`podman logs strata | head -50`,
-   Strata's `/v1/status`). `base_nvidia` works under podman: podman-compose turns the
-   reservation into explicit device mounts *and* adds `security-opt label=disable` itself.
-   Only if the log shows no GPU: `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`
-   and swap the `extends: base_nvidia` block for `devices: ["nvidia.com/gpu=all"]`.
+2. **GPU wiring** — the engine must report the card (`podman logs strata | head -50`,
+   Strata's `/v1/status`): the 5070 Ti under `server_home`, the 7900 XTX plus
+   `hipBLASLt tuning table: …` under `server_work`. `base_nvidia` works under podman:
+   podman-compose turns the reservation into explicit device mounts *and* adds
+   `security-opt label=disable` itself. Only if the log shows no GPU: `sudo nvidia-ctk cdi
+   generate --output=/etc/cdi/nvidia.yaml` and swap the `extends: base_nvidia` block for
+   `devices: ["nvidia.com/gpu=all"]`. The HIP service uses `base_amdgpu` (`/dev/kfd`, privileged).
 3. **Arena** — `curl -s 127.0.0.1:8080/metrics | jq '.engine.arena_mib'` (IQ2_XS ≈ 33 GiB,
    under the 40 GiB `STRATA_ARENA_PIN_GIB` cap). **Not `VmLck`** — this build pins with
    `cudaHostRegister`, which leaves `/proc/<pid>/status` at `VmLck: 0`. Confirm the desktop

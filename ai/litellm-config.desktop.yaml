@@ -9,6 +9,16 @@ model_list:
       max_input_tokens: 262144
       max_output_tokens: 32768
 
+  - model_name: whisper
+    litellm_params:
+      model: openai/whisper-large-v3
+      api_base: http://whisper_server_nvda:9000/v1
+      api_key: sk-no-key-required
+      timeout: 2400
+      stream_timeout: 2400
+    model_info:
+      mode: audio_transcription
+
   - model_name: glm-5.3-flash
     litellm_params:
       model: openai/glm-5.3-flash
@@ -49,6 +59,9 @@ model_list:
       max_output_tokens: 32768
 
 router_settings:
+  model_group_retry_policy:
+    whisper:
+      TimeoutErrorRetries: 0
   fallbacks:
     - qwen3.8-flash-next: ["glm-5.3-flash", "deepseek-v4.1-flash"]
 

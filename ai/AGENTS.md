@@ -23,31 +23,35 @@ value, update the table here in the same commit.
 
 Two machines. The laptop's `laptop` profile runs the Arc iGPU llama-swap, LiteLLM and **one
 resident strata-poly process**; the RTX 5070 llama-swap is manual (`--profile
-nvidia_llama_cpp`) since 2026-10-20. The desktop runs a single resident Strata process.
+nvidia_llama_cpp`) since 2026-10-20. The desktop runs one resident Strata process:
+`server_home` (5070 Ti, CUDA) or `server_work` (7900 XTX, HIP, plus whisper on the 5070 Ti).
+The two desktop profiles are **mutually exclusive** — both own container `strata` and port
+8080 — and `ai/server_start.sh home|work` brings both stacks down before starting one.
 Each advertises only what its device can run.
 
 | config | container | device | port | models |
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, ttl 0, resident in the `igpu` group) — **live again since 2026-10-22**, see [The tiny tier](#the-tiny-tier-arc-igpu) |
-| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
+| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) — `server_home` | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
+| `ai/Strata` + `strata-hip.Dockerfile` (repo) | `strata` (compose service key `strata_hip`) | 7900 XTX 24GB (desktop) — `server_work`, HIP gfx1100, 20GB VRAM cap | 8080 | the same `qwen3.8-flash-next` weights/config, own data dir `/var/mnt/data/llama/strata-hip`; `whisper_nvda` (CUDA) runs on the 5070 Ti beside it |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
 
 The desktop stopped running llama.cpp. It runs **Strata** (git submodule `ai/Strata`,
-pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile server up -d
---build` with `CUDA_ARCHITECTURES=120`) serving **Swift 1.5 IQ2_XS** — family `swift`
+pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile server_home up
+-d --build` with `CUDA_ARCHITECTURES=120`) serving **Swift 1.5 IQ2_XS** — family `swift`
 (`ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF`), a 125B-A6B MoE with a ~51B n-gram
 (PLE) table and a bundled MTP draft layer.
 
 | | |
 |---|---|
-| GPU | 5070 Ti 16GB — the container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
-| 7900 XTX | **display only.** Mixed HIP+CUDA in one Strata run is unsupported (`docs/MULTI_GPU.md`, `docs/AMD_HIP.md`), and the container ships no ROCm |
-| RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
-| SSD | `/var/mnt/data/llama/strata` → `/data` — n-gram table, MTP draft, pack, config |
-| context / KV / vision | `262144` / `k8v4` / **`cpu`** |
+| GPU (`server_home`) | 5070 Ti 16GB — that container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
+| GPU (`server_work`) | 7900 XTX 24GB, HIP `gfx1100` (`ai/strata-hip.Dockerfile`), **20GB cap** via `VRAM_RESERVE_MIB=4096` — 4GB stay free for the desktop the card drives. Mixed HIP+CUDA in one Strata run remains unsupported upstream, so the 5070 Ti runs whisper, never the LLM, in this profile |
+| RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel in both profiles — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
+| SSD | `server_home`: `/var/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, pack, config). `server_work`: the same set under `/var/mnt/data/llama/strata-hip` — the config filename is family+model (`strata-swift-iq2_xs.json`), so a shared dir would hand the 16GB card the work card's 4096 MiB reserve |
+| context / KV / vision | `262144` / `k8v4` / **`cpu`** (the HIP image builds only the CPU encoder; upstream has no HIP GPU encoder) |
 | gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
 
 **Why Strata and not llama.cpp.** No quant of this model fits 16GB VRAM (the smallest
@@ -130,6 +134,54 @@ existed on the desktop (which serves only `qwen3.8-flash-next`). Both entries an
 scrubbed to live names. **Consequence, accepted:** the laptop's Hermes still routes aux
 roles at `server-qwen3.8-27b`, so those fail once the laptop pulls and recreates LiteLLM —
 rewiring `~/.hermes/config.yaml` on the laptop is now urgent, not optional.
+
+
+### `server_work` — Strata on the 7900 XTX through HIP (2026-10-26)
+
+The second desktop profile. Same engine family and the same Swift 1.5 IQ2_XS config as
+`server_home`, built for AMD instead of NVIDIA: `ai/strata-hip.Dockerfile` calls
+`setup.build_engine_hip()` for `gfx1100` (upstream's own builder: `-DSTRATA_ENABLE_HIP=ON
+-DSTRATA_ENABLE_CUDA=OFF -DSTRATA_PREFILL_MMQ=ON`), installs AMD's TheRock `gfx110X-dgpu`
+wheels into `.venv` at build time, builds the **CPU** image encoder (there is no HIP encoder
+build yet), and copies upstream's `docker-entrypoint.sh` with one addition:
+`VRAM_RESERVE_MIB` → `--vram-reserve-mib` on setup.py's setup pass. The patch asserts its
+anchor still matches, so an upstream entrypoint change stops the build instead of silently
+dropping the reserve.
+
+- **20GB hardcap = `VRAM_RESERVE_MIB=4096`.** The reserve is what `--expert-cache auto`
+  leaves free; dense weights, KV and compute buffers live inside the rest. Upstream measured
+  **3072** as the value that kept a KDE/Wayland session alive beside a full cache (#560/#516,
+  `docs/AMD_HIP.md`), and this card drives the displays, so the upper bound is 4096 — a lower
+  value trades the compositor for expert-cache slots. It is a load-time reserve, best-effort
+  at runtime (`docs/VRAM_ELASTIC.md` is NVIDIA-only and not a wall).
+- **Do not share `/data` between the profiles.** The config path is family+model
+  (`strata-swift-iq2_xs.json`) in both engines, so a shared volume would overwrite the home
+  config on the first work setup and hand the 16GB card a 4096 MiB reserve (expert cache
+  ~6GB instead of ~10GB). `STRATA_WORK_DATA_DIR` defaults to
+  `/var/mnt/data/llama/strata-hip`; the pack and MTP draft are duplicated there.
+- **The hipBLASLt table is chosen by setup, not by compose.** `hipblaslt_table()` picks
+  `tools/hip/gfx1100-hipblaslt-<installed version>.txt` and logs
+  `hipBLASLt tuning table: …`; no table for the wheel's hipBLASLt means plain hipBLAS and a
+  warning, not a failure (the 43-row `-100401` table is the one measured with IQ2_XS at
+  192K/262K, `docs/AMD_HIP.md`). Verify that log line on first boot before judging speed.
+- **Measured opt-ins are deliberately absent.** `STRATA_SCORES_THREAD=1` costs 3.27% on a
+  two-task coding pilot (despite +10-13% at 131K), `STRATA_GDN_CHUNKED=1` is measured only on
+  gfx1151 and is not bit-identical. Add them only with this box's own A/B.
+- **`STRATA_ARENA_PIN_GIB=40` stays** (same 96GB host). If ROCm's pinned-page handling
+  starts producing `verify: timed out` (#750), the documented first step is
+  `HSA_USERPTR_FOR_PAGED_MEM: 0` in the config env, not a settings rethink.
+- **Whisper runs on the 5070 Ti in this profile** (`whisper_nvda` gains the `server_work`
+  profile). Lightweight and CUDA-only, so it fits upstream's "no mixed vendor in one run"
+  rule. Whisper on the AMD side is deliberately out of scope.
+- **`litellm_server` serves both profiles** (one config, one :4000); the `whisper` entry it
+  now carries is **dead under `server_home`** — accepted, because the profiles are switched
+  by hand with `ai/server_start.sh home|work`, and a stale audio model fails loudly.
+- **First boot is a debugging session until proven on the box.** The image builds here but
+  the HIP engine + Tuning + podman device wiring (`base_amdgpu`: `/dev/kfd`, `/dev/dri`,
+  `ipc: host`) has never run in this repo. Check: `podman logs strata | head -50` names
+  gfx1100 and the tuning table; `/v1/status` reports `vram_reserve_mib: 4096`; the desktop
+  stays usable while a long prompt is read; `curl -s 127.0.0.1:8080/metrics | jq
+  '.engine.arena_mib'` ≈ 33 GiB as on home.
 
 
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
@@ -2350,7 +2402,7 @@ each rejection costs a full ~18s load.
   `gemma-4-26b` (since retired) that became a duplicate `model_name` and LiteLLM would have load-balanced
   across a live and a dead endpoint.
 - **The server-side LiteLLM is in-repo and live — edit it here (2026-10-17).**
-  `llama-cpp.yml` runs it as `litellm_server` (profile `server`, published :4000 →
+  `llama-cpp.yml` runs it as `litellm_server` (profiles `server_home` / `server_work`, published :4000 →
   chat.gusev.tech) mounting **`litellm-config.desktop.yaml`**, which now fronts `strata`
   and exposes exactly one local model, `qwen3.8-flash-next`. The old
   `litellm-config.server.yaml` (and its `qwen3.8-27b`/`qwen3.6-35b` entries plus the
@@ -2613,8 +2665,11 @@ only affect the two remote entries.
   repo uses for `nvidia_llama_swap`, so it is the first thing to trust — and the first
   thing to replace with `nvidia-ctk cdi generate` + `--device nvidia.com/gpu=all` if the
   container starts without a GPU.
-- **The container is CUDA-only.** There is no ROCm path in the image, and a mixed
-  HIP+CUDA run is unsupported upstream — do not try to bring the 7900 XTX in.
+- **The CUDA image is CUDA-only, and the HIP image is HIP-only.** There is no ROCm in the
+  `server_home` image and no CUDA in `strata_hip`, and a mixed HIP+CUDA run is unsupported
+  upstream — the 7900 XTX never runs the LLM beside the 5070 Ti in one engine. `server_work`
+  runs the whole model on the 7900 XTX (HIP) and leaves the 5070 Ti to whisper; see
+  [`server_work`](#server_work--strata-on-the-7900-xtx-through-hip-2026-10-26).
 - **`STRATA_ALLOWED_HOSTS=strata` is required for the gateway hop.** Strata's DNS-rebinding
   protection answers only to the names it knows (loopback, the host, LAN addresses) and
   rejects anything else with `403 Host 'strata:8080' is not allowed`. LiteLLM reaches it by

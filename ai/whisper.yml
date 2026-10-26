@@ -43,6 +43,7 @@ services:
   whisper_nvda:
     profiles:
       - whisper_nvda
+      - server_work
     extends:
       file: ../base.yml
       service: base_nvidia
