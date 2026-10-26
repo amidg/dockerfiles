@@ -2016,11 +2016,51 @@ whisper-pro-asr, with speaker diarization. The old NPU `intel_npu_whisper` servi
   Without them every recreate recompiles the iGPU kernels.
 - **It is a separate compose stack.** `ai/whisper.yml` (service `whisper_igpu`) is its own
   project, so it joins `llama-swap-network` as an **external** network (`ai_llama-swap-network`).
-  The `whisper` entry in `litellm-config.laptop.yaml` was **removed on 2026-10-22**: the
-  service is now direct-only on `:8083`, and LiteLLM no longer exposes an audio model. Hermes
-  STT must point `stt.openai.base_url` at `http://localhost:8083/v1` (model
-  `whisper-large-v3`) or keep using its local sherpa engine. `podman restart litellm` is still
+  The `whisper` entry in `litellm-config.laptop.yaml` was **removed on 2026-10-22** and
+  **restored on 2026-10-26, bound to `whisper_nvda`** (`api_base:
+  http://whisper_server_nvda:9000/v1`, `mode: audio_transcription`, timeouts 2400,
+  `TimeoutErrorRetries: 0`). `whisper_server_igpu` is **not** wired: one `model_name` with
+  two entries would load-balance across a live and a dead backend. Hermes STT can keep
+  `stt.openai.base_url` at `http://localhost:8083/v1` (model `whisper-large-v3`), use the
+  gateway entry, or keep its local sherpa engine. `podman restart litellm` is still
   required after any LiteLLM config edit (it caches the parsed config).
+
+**NVIDIA GPU — whisper ASR with GPU diarization (added 2026-10-26).** Service
+`whisper_nvda` (container `whisper_server_nvda`) runs `localhost/whisper-pro-asr:cuda-whisperx`
+(10.9 GB, `ai/Containerfile.whisper_nvidia`) on the laptop's RTX 5070 8GB, freed when
+strata-poly stopped being resident. `ASR_ENGINE=FASTER-WHISPER`, `float16`,
+`Systran/faster-whisper-large-v3` auto-downloaded into the shared `whisper_model_cache`
+volume (~3.9 GB). GPU via `extends ../base.yml#base_nvidia` (the same podman CDI path as
+`nvidia_llama_swap` — proven working here: the service detects `CUDA (Compute: float16)`,
+pool `cuda:0`). **Both whisper profiles publish 8083; run one at a time.**
+`MODEL_IDLE_TIMEOUT=300` (the iGPU service's 0 is wrong for the dGPU — idle whisper must
+hand VRAM back to a later llama-swap load; CUDA reload is seconds, not the iGPU's ~6 s
+compile). LiteLLM: the restored `whisper` entry points at `whisper_server_nvda:9000`;
+**`whisper_server_igpu` is deliberately not wired** — two entries with the same
+`model_name` load-balance across a live and a dead backend.
+
+- **The CUDA wheel recipe is upstream's, not ours**: torch 2.13.0 (PyPI, cu13) +
+  `libcublas-12-9`/`cuda-cudart-12-9` apt layers + `LD_LIBRARY_PATH` on the CUDA 12.9 and
+  13.3 lib dirs. CTranslate2 dlopens `libcublas.so.12` by name; torch 2.14 (cu13-only) is
+  the documented cuDNN-divergence failure. The Containerfile copies upstream's stages
+  verbatim minus Intel/AMD/ROCm/ORT-GPU, adds the NLTK `punkt_tab` bake, and drops the
+  `onnxruntime-gpu` wheel (NeMo engines are not in this build). Do not "modernize" the
+  torch pin without re-running the CUDA rows.
+- **Measured 2026-10-26 on the 5070 Laptop**: 9 s known-text clip warm = inference
+  **1.82 s** (~5× realtime); the full 37:07 `Video_2026-10-26_10-30-33.mkv` with
+  `diarize=true` = **8:41 total** (queue 3:33, ASR **5:07** = 7.2× realtime,
+  align+pyannote **~2:17** = ~16× realtime), 476 segments, `SPEAKER_00/01` labels,
+  language `en` prob 1.0. VRAM: ASR model 3884 MiB + pyannote pipeline 528 MiB, both
+  resident on the GPU. **Diarization runs on the GPU here** — the iGPU image's CPU
+  diarization took >15 min on a 26-min file and was killed; this path finished a 37-min
+  file in ~2.2 min. Note ASR is slower per minute than the iGPU's turbo (13× RT): this
+  image serves full large-v3 at fp16 (accuracy-first per the model choice), not turbo.
+- **First boot is minutes of silence, not a hang**: background provisioning downloads
+  large-v3 into the volume; requests queue until ready. The volume is shared with the
+  iGPU service (disjoint subdirs; the services never run together).
+- **Co-residency with the dGPU LLM tier applies in both directions**: while whisper is
+  resident (~4 GB), `tiel-coder-35b` (~7 GB) cannot load; idle timeout 300 is the
+  automatic handback, so the manual unload ritual is not needed for whisper.
 
 The iGPU and NPU share the LPDDR5x bus with the CPU — running both concurrently slows
 both. **They are not independent throughput adders.**

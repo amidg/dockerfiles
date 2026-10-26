@@ -1,0 +1,203 @@
+# NVIDIA-only build of ventura8/Whisper-Pro-ASR 1.5.0 (submodule, pin e5a8a18):
+# upstream's `nvidia-whisperx` target as a stage-subset of this repo's own file
+# (stages cannot be imported across files), plus the NLTK bake Containerfile.whisper_intel
+# proved necessary (punkt_tab baked; NLTK refuses world-writable dirs and its own
+# proxy/SSRF check blocks a runtime fetch). Built on plain ubuntu:24.04, not the OpenVINO
+# base. Drops everything Intel/AMD/ROCm, the onnxruntime-gpu vendor wheel, and CUDA NPP
+# (prune_cuda.sh). Engine: ASR_ENGINE=FASTER-WHISPER on CUDA; WhisperX diarization rides
+# the image's CUDA torch.
+ARG RUNTIME_BASE=docker.io/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+
+FROM docker.io/swaggerapi/swagger-ui:v5.32.14@sha256:3d93169968848d371a6a56ca1ab18b47a8906ba461b8eba0688866354f5431d5 AS swagger-ui-source
+
+FROM docker.io/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS ffmpeg-builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG FFMPEG_VERSION=9.0.2
+ARG FFMPEG_TARBALL=ffmpeg-${FFMPEG_VERSION}.tar.xz
+ARG FFMPEG_URL=https://ffmpeg.org/releases/${FFMPEG_TARBALL}
+ARG FFMPEG_SIG_URL=${FFMPEG_URL}.asc
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
+  wget=* \
+  gnupg=* \
+  xz-utils=* \
+  build-essential=* \
+  nasm=* \
+  pkg-config=* \
+  ca-certificates=* \
+  && wget --progress=dot:giga -O /tmp/ffmpeg.tar.xz "${FFMPEG_URL}" \
+  && wget --progress=dot:giga -O /tmp/ffmpeg.tar.xz.asc "${FFMPEG_SIG_URL}" \
+  && wget --progress=dot:giga -O /tmp/ffmpeg-devel.asc https://ffmpeg.org/ffmpeg-devel.asc \
+  && gpg --batch --import /tmp/ffmpeg-devel.asc \
+  && gpg --batch --status-fd 1 --verify /tmp/ffmpeg.tar.xz.asc /tmp/ffmpeg.tar.xz > /tmp/ffmpeg-gpg-status.txt \
+  && grep -q "VALIDSIG FCF986EA15E6E293A5644F10B4322F04D67658D8" /tmp/ffmpeg-gpg-status.txt \
+  && tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+
+WORKDIR /tmp/ffmpeg-${FFMPEG_VERSION}
+
+RUN ./configure --prefix=/usr/local --disable-debug --disable-doc --disable-static --enable-shared --enable-pic \
+  && make -j"$(nproc)" \
+  && make install \
+  && ldconfig \
+  && ffmpeg -version \
+  && ffprobe -version \
+  && rm -rf /tmp/ffmpeg* /root/.gnupg
+
+ARG RUNTIME_BASE
+FROM ${RUNTIME_BASE} AS base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+ARG POETRY_VERSION=2.5.1
+ARG PIP_VERSION=26.2.1
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PIP_DEFAULT_TIMEOUT=300
+
+# First entry keeps the system multi-vendor OpenCL ICD loader winning; the CUDA dirs are
+# appended by sys-cuda. The OpenVINO dirs from the upstream base are dropped — no Intel
+# stack in this image.
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/wsl/lib
+
+COPY --from=ffmpeg-builder /usr/local/bin/ff* /usr/local/bin/
+COPY --from=ffmpeg-builder /usr/local/lib/libav* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libsw* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/include/libav* /usr/local/include/
+COPY --from=ffmpeg-builder /usr/local/include/libsw* /usr/local/include/
+RUN ldconfig && ffmpeg -version && ffprobe -version
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
+  wget=* \
+  gnupg=* \
+  patchelf=* \
+  ca-certificates=* \
+  python3=* \
+  python3-pip=* \
+  python3-venv=* \
+  software-properties-common=*
+
+RUN [ -d /opt/venv ] || python3 -m venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH=/opt/venv/bin:${PATH}
+
+WORKDIR /app
+COPY pip.conf /etc/pip.conf
+COPY pyproject.toml poetry.lock* ./
+COPY scripts/docker/ /usr/local/build/
+
+RUN --mount=type=cache,target=/root/.cache \
+  python3 -m pip install --no-cache-dir --upgrade "pip==${PIP_VERSION}"
+
+ENV POETRY_HTTP_TIMEOUT=1800
+ENV PIP_DEFAULT_TIMEOUT=1800
+ENV POETRY_VIRTUALENVS_CREATE=false
+
+ENV HF_HOME=/app/model_cache/huggingface
+
+COPY modules/ ./modules/
+COPY scripts/ ./scripts/
+COPY static/ ./static/
+COPY --from=swagger-ui-source /usr/share/nginx/html/swagger-ui.css ./static/swagger-ui.css
+COPY --from=swagger-ui-source /usr/share/nginx/html/swagger-ui-bundle.js ./static/swagger-ui-bundle.js
+COPY --from=swagger-ui-source /usr/share/nginx/html/favicon-32x32.png ./static/favicon.png
+COPY whisper_pro_asr.py .
+
+RUN mkdir -p /app/data && chmod 777 /app/data && \
+  mkdir -p /app/model_cache && chmod 777 /app/model_cache && \
+  mkdir -p /app/.cache && chmod -R 777 /app/.cache && \
+  mkdir -p /tmp/whisper && chmod 777 /tmp/whisper && \
+  mkdir -p /tmp/numba-cache && chmod 777 /tmp/numba-cache
+
+ENV WHISPER_TEMP_DIR=/tmp/whisper
+ENV WHISPER_PERSISTENT_DIR=/app/data
+ENV NUMBA_CACHE_DIR=/tmp/numba-cache
+
+USER nobody
+
+# torch 2.13.0 + CUDA 13.3 system libs + libcublas-12-9, exactly as upstream validated on
+# Blackwell (RTX 5090). CTranslate2 dlopens libcublas.so.12 by name; torch 2.14 (cu13-only)
+# is the documented cuDNN-divergence failure mode. The nvidia site-packages set stays: it
+# is torch's own runtime.
+FROM base AS deps-cuda
+USER root
+RUN --mount=type=cache,target=/root/.cache \
+  --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && \
+  apt-get install -y --no-install-recommends build-essential=* python3-dev=* && \
+  PYTHONDONTWRITEBYTECODE=1 python3 -m pip install --no-cache-dir "poetry==${POETRY_VERSION}" && \
+  poetry config installer.max-workers 2 && \
+  PYTHONDONTWRITEBYTECODE=1 poetry install --without dev --with ml && \
+  (python3 -m pip uninstall -y onnxruntime onnxruntime-openvino onnxruntime-gpu || true) && \
+  /usr/local/build/strip_build_artifacts.sh
+USER nobody
+
+FROM deps-cuda AS sys-cuda
+USER root
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  /usr/local/build/install_cuda.sh && \
+  /usr/local/build/prune_cuda.sh
+ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/usr/local/cuda-12.9/targets/x86_64-linux/lib:/usr/local/cuda-13.3/targets/x86_64-linux/lib
+USER nobody
+
+# ONNX Runtime: CPU wheel only (bootstrap.py's fallback). The onnxruntime-gpu vendor wheel
+# is for NeMo engines, which this build does not run.
+FROM base AS ort-builder
+USER root
+RUN --mount=type=cache,target=/root/.cache \
+  mkdir -p /out/cpu && \
+  python3 -m pip install --no-cache-dir "onnxruntime~=1.27.0" --target /out/cpu --no-dependencies && \
+  { find /out -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true; }
+
+# WhisperX's segregated stack (whisperx 3.8.6 pins transformers/huggingface-hub below the
+# app's pins). torch/torchvision dirs stripped so imports fall through to the image's CUDA
+# torch; that is why diarization runs on CUDA here.
+FROM base AS whisperx-libs
+USER root
+COPY requirements/whisperx.lock.txt /tmp/whisperx.lock.txt
+RUN --mount=type=cache,target=/root/.cache \
+  mkdir -p /out/whisperx && \
+  PYTHONDONTWRITEBYTECODE=1 python3 -m pip install --no-cache-dir --require-hashes --no-deps \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  --target /out/whisperx \
+  -r /tmp/whisperx.lock.txt && \
+  rm -f /tmp/whisperx.lock.txt && \
+  rm -rf /out/whisperx/torch /out/whisperx/torch-*.dist-info \
+  /out/whisperx/torchaudio /out/whisperx/torchaudio-*.dist-info \
+  /out/whisperx/torchvision /out/whisperx/torchvision-*.dist-info \
+  /out/whisperx/triton /out/whisperx/triton-*.dist-info \
+  /out/whisperx/functorch /out/whisperx/torchgen /out/whisperx/nvidia
+USER nobody
+
+FROM sys-cuda AS cuda-whisperx
+ENV WHISPER_IMAGE_EDITION=nvidia-whisperx
+COPY --from=ort-builder /out/cpu /app/libs/cpu
+COPY --from=whisperx-libs /out/whisperx /app/libs/whisperx
+ENV WHISPERX_LIB_PATH=/app/libs/whisperx
+# WhisperX alignment downloads NLTK punkt_tab; NLTK refuses any world/group-writable
+# directory (or ancestor), which rules out /app/data and /tmp, and the runtime fetch trips
+# NLTK's own proxy/SSRF check. Baked here, as in Containerfile.whisper_intel.
+ENV NLTK_DATA=/app/nltk_data
+ENV NLTK_ALLOW_PROXIED_URLOPEN=1
+USER root
+RUN mkdir -p /app/nltk_data && chown nobody:nogroup /app/nltk_data && chmod 0755 /app/nltk_data
+RUN python3 -c "import sys; sys.path.insert(0, '/app/libs/whisperx'); import nltk; nltk.download('punkt_tab', download_dir='/app/nltk_data', quiet=True)"
+RUN chown -R nobody:nogroup /app/nltk_data
+RUN /usr/local/build/strip_build_artifacts.sh
+RUN /usr/local/build/clear_execstack.sh
+USER nobody
+EXPOSE 9000
+CMD ["python3", "whisper_pro_asr.py"]

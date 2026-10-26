@@ -27,6 +27,16 @@ model_list:
       max_input_tokens: 8192
       mode: embedding
 
+  - model_name: whisper
+    litellm_params:
+      model: openai/whisper-large-v3
+      api_base: http://whisper_server_nvda:9000/v1
+      api_key: sk-no-key-required
+      timeout: 2400
+      stream_timeout: 2400
+    model_info:
+      mode: audio_transcription
+
   - model_name: qwen3.8-flash-next
     litellm_params:
       model: openai/qwen3.8-flash-next
@@ -88,6 +98,8 @@ router_settings:
     - tiel-coder-35b: ["deepseek-v4.1-flash"]
     - gemma-4-e2b: ["mimo-v2.6-flash"]
   model_group_retry_policy:
+    whisper:
+      TimeoutErrorRetries: 0
     qwen3.8-flash-next:
       TimeoutErrorRetries: 0
 

@@ -35,7 +35,7 @@ curl -s localhost:4000/health/liveliness
 | `localhost:4000/ui` | admin (log in with `LITELLM_MASTER_KEY`) |
 | `localhost:8081` | laptop primary GPU (RTX 5070), direct to llama-swap — only with `--profile nvidia_llama_cpp` |
 | `localhost:8082` | laptop secondary GPU (Arc iGPU), direct |
-| `localhost:8083` | whisper-pro ASR (Intel iGPU) — STT |
+| `localhost:8083` | whisper-pro ASR — STT (`whisper_igpu` on Arc iGPU **or** `whisper_nvda` on the RTX 5070; one profile at a time) |
 | `localhost:8080` | desktop Strata (5070 Ti) / laptop strata-poly (RTX 5070), direct — **no auth, LAN-reachable** |
 
 Secrets in `ai/litellm.env`, models in `$LLAMA_MODELS_DIR`.
@@ -274,10 +274,11 @@ curl -s http://localhost:8083/v1/audio/transcriptions \
   -F "diarize=true"
 ```
 
-**Whisper is no longer routed through LiteLLM (2026-10-22).** The `whisper` model entry was
-removed from `litellm-config.laptop.yaml`; the service is reachable only on `:8083`. Hermes
-STT keeps working by pointing `stt.openai.base_url` at `http://localhost:8083/v1` (model
-`whisper-large-v3`, any API key), or by using its local sherpa engine.
+**Whisper is routed through LiteLLM to the NVIDIA service (2026-10-26).** The `whisper`
+entry in `litellm-config.laptop.yaml` points at `whisper_server_nvda:9000`; the iGPU service
+is direct-only on `:8083`. Hermes STT keeps working by pointing `stt.openai.base_url` at
+`http://localhost:8083/v1` (model `whisper-large-v3`, any API key), by the gateway entry,
+or by using its local sherpa engine.
 
 **Diarization needs `DIARIZATION_HF_TOKEN`** in `ai/whisper.env` (gitignored, mounted by
 `whisper_igpu`). The account must have accepted all three gated pyannote repos listed in that
@@ -336,6 +337,41 @@ Only an actual container recreate (config edit, image update) pays the model com
 **~6 s** for large-v3-turbo on the iGPU. On the NPU the same reload costs ~21 s (small-int4)
 to ~179 s (turbo), because the NPU never caches its compiled blob — another reason the ASR
 device moved to the iGPU.
+
+## Whisper ASR (NVIDIA GPU + diarization) — added 2026-10-26
+
+The laptop's freed RTX 5070 8GB now hosts whisper. Service `whisper_nvda` in `ai/whisper.yml`
+(profile `whisper_nvda`), container `whisper_server_nvda`, host `:8083` → container `:9000`,
+GPU via `extends ../base.yml#base_nvidia` (the podman-proven CDI reservation, same as
+`nvidia_llama_swap`). Both whisper profiles share port 8083 — **run one at a time**.
+
+Image `localhost/whisper-pro-asr:cuda-whisperx` (**10.9 GB on disk, measured**) is
+`ai/Containerfile.whisper_nvidia`: upstream's `nvidia-whisperx` target as a stage-subset,
+on plain `ubuntu:24.04` — no Intel/AMD/ROCm stages, no onnxruntime-gpu wheel, CUDA NPP
+pruned, NLTK `punkt_tab` baked (same landmine as the intel build), plus the upstream
+Blackwell-validated CUDA wheel recipe (torch 2.13 cu13 + `libcublas-12-9`; CTranslate2
+dlopens `libcublas.so.12` by name). Engine `ASR_ENGINE=FASTER-WHISPER`, compute `float16`
+(AUTO on a CUDA unit), model `Systran/faster-whisper-large-v3` (full large-v3, accuracy
+first) — auto-downloaded into the shared `whisper_model_cache` volume on first boot
+(~3.9 GB, minutes). `MODEL_IDLE_TIMEOUT=300` hands VRAM back to a later llama-swap session.
+
+```bash
+podman-compose -f ai/whisper.yml --profile whisper_nvda up -d --build
+```
+
+Measured 2026-10-26 on the RTX 5070 Laptop (8GB, sm_120, driver 615.78):
+
+| test | result |
+|---|---|
+| 9 s known-text clip, warm | inference **1.82 s** (~5× realtime), text matches fixture |
+| 37:07 `Video_2026-10-26_10-30-33.mkv` + `diarize=true` | total **8:41** (4.27×): queue 3:33, ASR **5:07**, align+pyannote **~2:17** (~16× realtime diarization); 476 segments, labels `SPEAKER_00/01` |
+| VRAM | ASR model **3884 MiB** resident, pyannote pipeline **+528 MiB** — all on the GPU (the iGPU image runs diarization on CPU; >15 min on a 26-min file, killed) |
+
+**LiteLLM is bound to `whisper_nvda`** (entry `whisper` → `http://whisper_server_nvda:9000/v1`,
+`mode: audio_transcription`, timeouts 2400, `TimeoutErrorRetries: 0`), restored from the
+proven `cde2b5b` shape. `whisper_server_igpu` is **not** wired — one entry, one profile at a
+time; switching profiles = edit the one `api_base` + `podman restart litellm` (config edits
+are not recreated by `up -d`). Verified through the gateway 2026-10-26.
 
 ## Architecture
 

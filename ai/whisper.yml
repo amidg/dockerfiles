@@ -40,6 +40,34 @@ services:
     ports:
       - 8083:9000
 
+  whisper_nvda:
+    profiles:
+      - whisper_nvda
+    extends:
+      file: ../base.yml
+      service: base_nvidia
+    image: localhost/whisper-pro-asr:cuda-whisperx
+    build:
+      context: ./Whisper-Pro-ASR
+      dockerfile: ../Containerfile.whisper_nvidia
+    container_name: whisper_server_nvda
+    restart: unless-stopped
+    env_file:
+      - path: ./whisper.env
+        required: false
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - HOME=/app/data
+      - ASR_ENGINE=FASTER-WHISPER
+      - MODEL_IDLE_TIMEOUT=300
+      - ENABLE_VOCAL_SEPARATION=false
+    volumes:
+      - whisper_model_cache:/app/model_cache
+    networks:
+      - llama-swap-network
+    ports:
+      - 8083:9000
+
 volumes:
   whisper_model_cache:
     name: whisper_model_cache
