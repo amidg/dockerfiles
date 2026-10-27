@@ -60,8 +60,10 @@ services:
       - no_proxy=localhost,127.0.0.1
       - HOME=/app/data
       - ASR_ENGINE=FASTER-WHISPER
+      - ASR_COMPUTE_TYPE=int8_float16
       - MODEL_IDLE_TIMEOUT=300
       - ENABLE_VOCAL_SEPARATION=false
+      - ENABLE_LD_PREPROCESSING=false
     volumes:
       - whisper_model_cache:/app/model_cache
     networks:
