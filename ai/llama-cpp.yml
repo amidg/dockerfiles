@@ -146,7 +146,7 @@ services:
 
   strata_laptop:
     profiles:
-      - laptop
+      - laptop_strata
     extends:
       file: ../base.yml
       service: base_nvidia
