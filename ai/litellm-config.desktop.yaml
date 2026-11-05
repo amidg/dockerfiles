@@ -3,7 +3,7 @@ model_list:
     litellm_params:
       model: openai/qwen3.8-flash-next
       api_base: http://strata:8080/v1
-      api_key: sk-no-key-required
+      api_key: os.environ/STRATA_API_KEY
       allowed_openai_params: ["reasoning_effort"]
     model_info:
       max_input_tokens: 262144
