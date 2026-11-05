@@ -81,6 +81,8 @@ services:
     image: ghcr.io/niko1221/strata:latest-cuda13
     container_name: strata
     restart: unless-stopped
+    mem_limit: 48g
+    memswap_limit: 48g
     networks:
       - llama-swap-network
     volumes:
@@ -112,6 +114,8 @@ services:
     image: ghcr.io/niko1221/strata:latest-rocm-gfx110x
     container_name: strata
     restart: unless-stopped
+    mem_limit: 48g
+    memswap_limit: 48g
     networks:
       - llama-swap-network
     volumes:
