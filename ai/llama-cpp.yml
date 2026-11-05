@@ -99,7 +99,7 @@ services:
       - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
-      - STRATA_ARENA_PIN_GIB=40
+      - STRATA_ARENA_PIN_GIB=36
       - STRATA_ALLOWED_HOSTS=strata
       - STRATA_SET=conversation-cache-mib=0
       - REINSTALL=${STRATA_REINSTALL:-0}
@@ -132,7 +132,7 @@ services:
       - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
-      - STRATA_ARENA_PIN_GIB=40
+      - STRATA_ARENA_PIN_GIB=36
       - STRATA_ALLOWED_HOSTS=strata
       - STRATA_SET=vram-reserve-mib=4096 conversation-cache-mib=0
       - REINSTALL=${STRATA_REINSTALL:-0}
