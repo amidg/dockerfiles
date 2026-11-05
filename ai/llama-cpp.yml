@@ -74,14 +74,11 @@ services:
   strata:
     profiles:
       - server_home
+      - desktop
     extends:
       file: ../base.yml
       service: base_nvidia
-    build:
-      context: ./Strata
-      args:
-        CUDA_ARCHITECTURES: 120
-    image: localhost/strata:0.1.45
+    image: ghcr.io/niko1221/strata:latest-cuda13
     container_name: strata
     restart: unless-stopped
     networks:
@@ -112,12 +109,7 @@ services:
     extends:
       file: ../base.yml
       service: base_amdgpu
-    build:
-      context: ./Strata
-      dockerfile: ../strata-hip.Dockerfile
-      args:
-        HIP_ARCHITECTURES: gfx1100
-    image: localhost/strata-hip:0.1.45
+    image: ghcr.io/niko1221/strata:latest-rocm-gfx110x
     container_name: strata
     restart: unless-stopped
     networks:
@@ -141,7 +133,7 @@ services:
       - GGUF_DIR=/models
       - STRATA_ARENA_PIN_GIB=40
       - STRATA_ALLOWED_HOSTS=strata
-      - VRAM_RESERVE_MIB=4096
+      - STRATA_SET=vram-reserve-mib=4096
       - REINSTALL=${STRATA_REINSTALL:-0}
 
   strata_laptop:
