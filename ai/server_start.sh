@@ -14,8 +14,8 @@ esac
 podman-compose -f llama-cpp.yml down
 podman-compose -f whisper.yml down || true
 podman-compose -f llama-cpp.yml --profile "$profile" up -d
-if [ "$profile" = server_work ]; then
-  podman-compose -f whisper.yml --profile server_work up -d
-fi
+#if [ "$profile" = server_work ]; then
+#  podman-compose -f whisper.yml --profile server_work up -d
+#fi
 # a recreated strata comes back on a new container IP and litellm keeps the old one cached
 podman restart litellm_server
