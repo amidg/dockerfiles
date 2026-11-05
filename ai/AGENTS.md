@@ -164,9 +164,14 @@ dropping the reserve.
   `hipBLASLt tuning table: …`; no table for the wheel's hipBLASLt means plain hipBLAS and a
   warning, not a failure (the 43-row `-100401` table is the one measured with IQ2_XS at
   192K/262K, `docs/AMD_HIP.md`). Verify that log line on first boot before judging speed.
-- **Measured opt-ins are deliberately absent.** `STRATA_SCORES_THREAD=1` costs 3.27% on a
-  two-task coding pilot (despite +10-13% at 131K), `STRATA_GDN_CHUNKED=1` is measured only on
-  gfx1151 and is not bit-identical. Add them only with this box's own A/B.
+- **`STRATA_SCORES_THREAD=1` is now on (promoted 2026-11-05).** Measured on this box
+  (engine 0.1.55, IQ2_XS, 262K ctx, `STRATA_ARENA_PIN_GIB=30`, `--ple-io direct`,
+  `PARALLEL=1`, 3 rounds, `llmbench.py --tests perf longctx tools quality`):
+  deep 85.5 → 94.9 t/s (+11.0%), acc_d 69 → 81%, prefill 1075 → 1086, longctx prefill
+  1219 → 1248, tools/quality 4/4, RSS unchanged (~39 GiB). `STRATA_SH_STREAM=1` was
+  measured as a -4.2% regression on this card (deep 81.9) and is **not** promoted; the
+  two do not compose (both: 83.3). `STRATA_GDN_CHUNKED=1` is still measured only on
+  gfx1151 and is not bit-identical; left off.
 - **`STRATA_ARENA_PIN_GIB=40` stays** (same 96GB host). If ROCm's pinned-page handling
   starts producing `verify: timed out` (#750), the documented first step is
   `HSA_USERPTR_FOR_PAGED_MEM: 0` in the config env, not a settings rethink.
