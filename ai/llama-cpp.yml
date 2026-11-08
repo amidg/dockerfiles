@@ -73,8 +73,7 @@ services:
 
   strata:
     profiles:
-      - server_home
-      - desktop
+      - desktop_home
     extends:
       file: ../base.yml
       service: base_nvidia
@@ -107,7 +106,7 @@ services:
 
   strata_hip:
     profiles:
-      - server_work
+      - desktop_work
     extends:
       file: ../base.yml
       service: base_amdgpu
@@ -212,8 +211,8 @@ services:
     <<: *base_litellm
     container_name: litellm_server
     profiles:
-      - server_home
-      - server_work
+      - desktop_home
+      - desktop_work
     volumes:
       - ./litellm-config.desktop.yaml:/app/config.yaml:z,ro
     ports:
