@@ -27,12 +27,15 @@ submodule on the machine it runs on, minutes):
 
 ```bash
 podman-compose -f ai/llama-cpp.yml --profile server_home build strata
-podman-compose -f ai/llama-cpp.yml --profile server_work build strata_hip   # ai/strata-hip.Dockerfile
 ```
 
-`server_work`'s image is upstream's HIP build (`docs/AMD_HIP.md`, gfx1100) with the CPU image
-encoder, plus one entrypoint addition: `VRAM_RESERVE_MIB=4096` becomes `--vram-reserve-mib`,
-the expert-cache reserve that leaves 4GB for the desktop the card drives. LiteLLM needs ~30-60s. Poll before sending traffic:
+`server_home` is the only profile that builds from source (CUDA, on the machine it runs on).
+`server_work` pulls a published image, `ghcr.io/amidg/strata:0.2.3-rdna3-20261109`
+(rdna3 fork, engine commit `86e0bec`), which already carries the HIP engine, the CPU and
+GPU picture readers, and the gfx1100 hipBLASLt tuning tables. It is updated by a CI rebuild
+in `amidg/Strata-rdna3` (`.github/workflows/docker-images-rdna3.yml`), then a pull and
+`podman restart litellm_server` after the recreate. `VRAM_RESERVE_MIB=4096` still applies
+via `STRATA_SET` and leaves 4GB for the desktop the card drives. LiteLLM needs ~30-60s. Poll before sending traffic:
 
 ```bash
 curl -s localhost:4000/health/liveliness

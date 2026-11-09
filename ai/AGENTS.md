@@ -34,7 +34,7 @@ Each advertises only what its device can run.
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, ttl 0, resident in the `igpu` group) — **live again since 2026-10-22**, see [The tiny tier](#the-tiny-tier-arc-igpu) |
 | `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) — `server_home` | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
-| `ai/Strata` + `strata-hip.Dockerfile` (repo) | `strata` (compose service key `strata_hip`) | 7900 XTX 24GB (desktop) — `server_work`, HIP gfx1100, 20GB VRAM cap | 8080 | the same `qwen3.8-flash-next` weights/config, own data dir `/var/mnt/data/llama/strata-hip`; `whisper_nvda` (CUDA) runs on the 5070 Ti beside it |
+| `ghcr.io/amidg/strata:0.2.3-rdna3-20261109` (rdna3 fork, engine commit `86e0bec`) | `strata` (compose service key `strata_hip`) | 7900 XTX 24GB (desktop) — `server_work`, HIP gfx1100, 20GB VRAM cap | 8080 | the same `qwen3.8-flash-next` weights/config (Swift 1.5 IQ2_XS), own data dir `/var/mnt/data/llama/strata-hip`; `whisper_nvda` (CUDA) runs on the 5070 Ti beside it |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
@@ -187,6 +187,48 @@ dropping the reserve.
   gfx1100 and the tuning table; `/v1/status` reports `vram_reserve_mib: 4096`; the desktop
   stays usable while a long prompt is read; `curl -s 127.0.0.1:8080/metrics | jq
   '.engine.arena_mib'` ≈ 33 GiB as on home.
+
+### `server_work` migrated to the rdna3 fork image (2026-11-09)
+
+Image: `ghcr.io/amidg/strata:0.2.3-rdna3-20261109` (also `latest-rdna3`), built by
+`amidg/Strata-rdna3` Actions from commit `86e0bec` (engine `0.1.49.1`, variant
+`rx7900`, archs gfx1100/1101/1102, hipBLASLt + GPU/CPU vision readers). No signed
+update feed: updates are a CI rebuild + image pull + `podman restart litellm_server`
+after the recreate. Pinned dated tag, never `latest`, in compose.
+
+Env block added on top of the Swift IQ2_XS baseline (quant-agnostic fork switches):
+`STRATA_HIP_WMMA=1 STRATA_SELECT_WMMA=1 STRATA_RDNA_MMVQ_WAVE=3 STRATA_GR_RDNA=1
+STRATA_GR_RDNA_Q8=1 STRATA_RDNA_Q6K=1 STRATA_GR_RDNA_A8=1 STRATA_QFUSE=1
+STRATA_COMBINE_CPU=1 STRATA_VERIFY_QDEDUP=1 STRATA_WAIT_FUSE=1 STRATA_ROUTE_PUBLISH=1
+STRATA_TOPK_SPLIT_MIN=98304 STRATA_QSA_ROWS=1 STRATA_ENGINE_NICE=0`. The fork's
+`STRATA_GDN_*` / `STRATA_PREFILL_*` / `STRATA_PF_*` / `STRATA_PA_*` switches are
+deliberately left off — they are tuned for the fork's IQ3_S config, not Swift IQ2_XS.
+`STRATA_SET` keeps `vram-reserve-mib=4096 conversation-cache-mib=0 ple-io=direct
+STRATA_SCORES_THREAD=1`; the reserve is load-bearing for the display-driving card.
+
+Measured gate, same session, `llmbench.py --tests all --rounds 3` vs the incumbent
+(2026-11-05, engine 0.1.55):
+
+| | incumbent | rdna3 image (Swift IQ2_XS) |
+|---|---|---|
+| prefill | 1086 t/s | **1144 t/s** |
+| deep | 94.9 t/s | **106.1 t/s** |
+| acc s/d | 53%/81% | 53%/69% |
+| tools | 4/4 | 4/4 (one flake, 3/4 on the first run, 4/4 on re-run — budget, not a defect) |
+| quality | 4/4 | 4/4 (incl. `terse_title`) |
+| longctx | found, 120K | found, 49998 tok @ 1348 t/s, 37.1 s |
+| vision (real 1280px) | — | reads `STRATA`, finish stop |
+| approval | PASS | PASS |
+
+`/metrics`: `arena_mib` 33812, `expert_cache_mib` 15416 (+408 over the no-env baseline),
+`vram_free_mib` 4004 (reserve honored), `kv` k8v4, `kv_resident` 32768, `spec` 6,
+`mtp_max` 4. Desktop stayed usable during the 116K-token prompt read.
+
+**Follow-up, not in this commit:** the IQ3_S arm (base family) the fork measured
+(3.5K/114 t/s single-GPU prefill/decode) is a separate change — ~48 GB shards +
+~50 GB pack, which needs a disk check first (~72 GB free on `/var` is not enough for
+shards *and* pack). Do it as its own commit with its own gate so the engine change and
+the quant change are never confounded.
 
 
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
