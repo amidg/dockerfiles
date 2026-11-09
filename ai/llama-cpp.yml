@@ -118,7 +118,6 @@ services:
     volumes:
       - ${LLAMA_MODELS_DIR:-${HOME}/.llama/models}:/models:z
       - ${STRATA_WORK_DATA_DIR:-/var/mnt/data/llama/strata-hip}:/data:z
-      - ./strata-entrypoint-amd.sh:/opt/strata/entrypoint.sh:z,ro
     ports:
       - 8080:8080
     ipc: host
@@ -135,8 +134,22 @@ services:
       - KV=k8v4
       - GGUF_DIR=/models
       - GPU=0
-      - STRATA_ENGINE_BACKEND=hip
       - STRATA_ARENA_PIN_GIB=30
+      - STRATA_HIP_WMMA=1
+      - STRATA_SELECT_WMMA=1
+      - STRATA_RDNA_MMVQ_WAVE=3
+      - STRATA_GR_RDNA=1
+      - STRATA_GR_RDNA_Q8=1
+      - STRATA_RDNA_Q6K=1
+      - STRATA_GR_RDNA_A8=1
+      - STRATA_QFUSE=1
+      - STRATA_COMBINE_CPU=1
+      - STRATA_VERIFY_QDEDUP=1
+      - STRATA_WAIT_FUSE=1
+      - STRATA_ROUTE_PUBLISH=1
+      - STRATA_TOPK_SPLIT_MIN=98304
+      - STRATA_QSA_ROWS=1
+      - STRATA_ENGINE_NICE=0
       - STRATA_ALLOWED_HOSTS=strata
       - API_KEY=sk-strata-hMg-yYcSKJUPs3rODHaNwHfbBXNwpzZt
       - STRATA_SET=ple-io=direct STRATA_SCORES_THREAD=1 vram-reserve-mib=4096 conversation-cache-mib=0
