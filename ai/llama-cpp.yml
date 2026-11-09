@@ -110,7 +110,7 @@ services:
     extends:
       file: ../base.yml
       service: base_amdgpu
-    image: ghcr.io/niko1221/strata:latest-rocm-gfx110x
+    image: ghcr.io/amidg/strata:0.2.3-rdna3-20261109
     container_name: strata
     restart: unless-stopped
     networks:
