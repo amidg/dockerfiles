@@ -207,18 +207,29 @@ deliberately left off — they are tuned for the fork's IQ3_S config, not Swift 
 STRATA_SCORES_THREAD=1`; the reserve is load-bearing for the display-driving card.
 
 Measured gate, same session, `llmbench.py --tests all --rounds 3` vs the incumbent
-(2026-11-05, engine 0.1.55):
+(2026-11-05, engine 0.1.55). Three waves of fork env switches were applied on top of
+the image swap; Wave 2 (GDN) was reverted (deep -5%, acceptance -14 pts):
 
-| | incumbent | rdna3 image (Swift IQ2_XS) |
-|---|---|---|
-| prefill | 1086 t/s | **1144 t/s** |
-| deep | 94.9 t/s | **106.1 t/s** |
-| acc s/d | 53%/81% | 53%/69% |
-| tools | 4/4 | 4/4 (one flake, 3/4 on the first run, 4/4 on re-run — budget, not a defect) |
-| quality | 4/4 | 4/4 (incl. `terse_title`) |
-| longctx | found, 120K | found, 49998 tok @ 1348 t/s, 37.1 s |
-| vision (real 1280px) | — | reads `STRATA`, finish stop |
-| approval | PASS | PASS |
+| | incumbent | Wave 0 (image swap) | Wave 1 (+prompt proj. + fused-IQ) | Wave 3 (+pipeline/GR/rings) |
+|---|---|---|---|---|
+| prefill | 1086 t/s | 1144 (+5%) | 1361 (+19%) | **1880 (+38%)** |
+| deep | 94.9 t/s | 106.1 (+12%) | 107.7 (flat) | 107.8 (flat) |
+| acc s/d | 53%/81% | 53%/69% | 54%/78% | 54%/73% |
+| tools | 4/4 | 4/4 | 4/4 | 4/4 |
+| quality | 4/4 | 4/4 | 4/4 | 4/4 |
+| longctx | found, 120K | found @ 1348 t/s | found @ 1666 t/s | found @ 2158 t/s |
+| vision (real 1280px) | — | reads `STRATA` | reads `STRATA` | reads `STRATA` |
+| approval | PASS | PASS | PASS | PASS |
+
+Wave 1 added `STRATA_PF_GEMM`, `STRATA_PA_FAST`, `STRATA_HC_UPMIX`, `STRATA_PF_PAD`,
+`STRATA_PF_HCDOWN`, `STRATA_PF_FUSED`, `STRATA_PF_F16=2`. Wave 2 added
+`STRATA_GDN_HEAD/PP/CONVL2/NOY` and was reverted (deep -5.1%, acc 51%/64%). Wave 3
+added `STRATA_ADAPT_OVERLAP`, `STRATA_HEAD_MIX_MULTI`, `STRATA_FUSE_CONVAB`,
+`STRATA_GR_INJ_UP`, `STRATA_GR_FUSED`, `STRATA_PREFILL_AUTO_MAX=32768`,
+`STRATA_PREFILL_RING=192`, `STRATA_STAGER_RING=64`, `STRATA_KV_HOST_DMA`.
+`/metrics` final: `arena_mib` 33812, `expert_cache_mib` 15416, `vram_free_mib` 4000,
+`prefill_cap` 28416, `kv` k8v4. Net: **prefill +63% (1144→1880), longctx +60%
+(1348→2158), deep flat, tools/quality/vision all green.**
 
 `/metrics`: `arena_mib` 33812, `expert_cache_mib` 15416 (+408 over the no-env baseline),
 `vram_free_mib` 4004 (reserve honored), `kv` k8v4, `kv_resident` 32768, `spec` 6,
