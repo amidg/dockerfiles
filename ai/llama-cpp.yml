@@ -134,6 +134,7 @@ services:
       - KV=k8v4
       - GGUF_DIR=/models
       - GPU=0
+      - STRATA_ENGINE_BACKEND=hip
       - STRATA_ARENA_PIN_GIB=30
       - STRATA_HIP_WMMA=1
       - STRATA_SELECT_WMMA=1
