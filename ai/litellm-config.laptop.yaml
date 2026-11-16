@@ -52,8 +52,8 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1000000
+      max_output_tokens: 131072
 
   - model_name: deepseek-v4.1-flash
     litellm_params:
@@ -65,8 +65,8 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1000000
+      max_output_tokens: 384000
 
   - model_name: mimo-v2.6-flash
     litellm_params:
@@ -78,8 +78,8 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1048576
+      max_output_tokens: 131072
 
 router_settings:
   retry_after: 15

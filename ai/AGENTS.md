@@ -2234,16 +2234,18 @@ Direct model names only.
   `auxiliary.*` roles are split across `qwen3.8-flash-next` (remote/gateway),
   `gemma-4-e2b` (iGPU) and `mimo-v2.6-flash` (Go cloud) — see the table below and the
   co-residency rule after it.
-- `custom_providers[0].models` carries **no** `context_length` pins since 2026-10-26. The
-  gateway advertises `max_input_tokens` on `/v1/models` and Hermes' local-endpoint probe
-  reads it (`glm`/`deepseek`/`mimo`/`qwen` → 262144, `gemma-4-e2b` → 32768), caching it per
-  endpoint. Model IDs are auto-discovered too (`discover_models` defaults to true).
+- `custom_providers[0].models` carries `context_length` pins for the Go models in the
+  `inext` profile since 2026-11-16 (glm/deepseek → 1000000, mimo → 1048576), matching
+  the gateway's advertised `max_input_tokens` on `/v1/models` (qwen → 262144,
+  `gemma-4-e2b` → 32768, cached per endpoint by Hermes' local-endpoint probe).
+  Model IDs are auto-discovered too (`discover_models` defaults to true).
 
 | model | window | why |
 |---|---|---|
 | `qwen3.8-flash-next` | 262144 | desktop, 262K ctx |
 | `gemma-4-26b-a4b`, `gemma-4-e4b` | 131072 | laptop dGPU, 128-131K ctx; on-demand only |
-| `glm-5.3-flash`, `deepseek-v4.1-flash`, `mimo-v2.6-flash` | 262144 | Go's native window is 1 048 576; the gateway caps it at 262144 (2026-10-22) |
+| `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16) |
+| `mimo-v2.6-flash` | 1048576 | Go's full window per OpenCode's catalog; declared in full (2026-11-16) |
 
 **The desktop window moved to 262144 with the engine (2026-10-19).** Strata serves
 `CONTEXT=262144`; clients are told the window by the gateway's `/v1/models`
@@ -2425,6 +2427,13 @@ LiteLLM configs (`litellm-config.laptop.yaml`, `litellm-config.desktop.yaml`) an
 `limit.output` in `opencode.json` are **32K (32768) for models with a 128K window, 16K
 (16384) for models with a 64K window**. Apply it to any new entry. The per-request cap
 Hermes sends is separate and currently unpinned.
+
+**Go entries follow the vendor catalog, not the heuristic (2026-11-16):** `litellm-config.laptop.yaml`
+declares the published OpenCode Go limits — `deepseek-v4.1-flash` 1000000/384000,
+`glm-5.3-flash` 1000000/131072, `mimo-v2.6-flash` 1048576/131072 (opencode.ai data pages,
+corroborated by `models.dev/api.json` provider `opencode-go`). Hermes cannot pin output caps
+(per-model `max_tokens` is not read by the installed build; only `context_length` is), so the
+inext profile pins context only.
 
 **Fallbacks cannot absorb a context overflow.** The same log shows LiteLLM failing over to
 `gemma-4-26b` (since retired), which was also 64K, and failing identically. Every local model shares one
