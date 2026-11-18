@@ -705,6 +705,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
 | `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `vision`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer`; LiteLLM fallback `→ mimo-v2.6-flash` |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
+| `glm-5.3` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), 1M/131K declared in full | flagship added 2026-11-18 for the inext profile; **not in any fallback chain**; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
 | `glm-5.3-flash` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), gateway-capped 262K/32K | cloud fallback for `qwen3.8-flash-next` on both machines; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
 | `deepseek-v4.1-flash` | **OpenCode Go**, gateway-capped 262K/32K | second hop for `qwen3.8-flash-next` on both machines |
 | `mimo-v2.6-flash` | **OpenCode Go**, gateway-capped 262K/32K | `auxiliary.web_extract` target and `gemma-4-e2b`'s fallback; cheapest Go model ($0.14/$0.28 per 1M) |
@@ -2244,7 +2245,7 @@ Direct model names only.
 |---|---|---|
 | `qwen3.8-flash-next` | 262144 | desktop, 262K ctx |
 | `gemma-4-26b-a4b`, `gemma-4-e4b` | 131072 | laptop dGPU, 128-131K ctx; on-demand only |
-| `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16) |
+| `glm-5.3`, `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16; `glm-5.3` added in the inext pin 2026-11-18) |
 | `mimo-v2.6-flash` | 1048576 | Go's full window per OpenCode's catalog; declared in full (2026-11-16) |
 
 **The desktop window moved to 262144 with the engine (2026-10-19).** Strata serves
@@ -2430,7 +2431,8 @@ Hermes sends is separate and currently unpinned.
 
 **Go entries follow the vendor catalog, not the heuristic (2026-11-16):** `litellm-config.laptop.yaml`
 declares the published OpenCode Go limits — `deepseek-v4.1-flash` 1000000/384000,
-`glm-5.3-flash` 1000000/131072, `mimo-v2.6-flash` 1048576/131072 (opencode.ai data pages,
+`glm-5.3` 1000000/131072 (added 2026-11-18), `glm-5.3-flash` 1000000/131072,
+`mimo-v2.6-flash` 1048576/131072 (opencode.ai data pages,
 corroborated by `models.dev/api.json` provider `opencode-go`). Hermes cannot pin output caps
 (per-model `max_tokens` is not read by the installed build; only `context_length` is), so the
 inext profile pins context only.
@@ -2502,8 +2504,9 @@ each rejection costs a full ~18s load.
 
 ### OpenCode Go entries — cloud fallbacks (2026-10-22)
 
-Both gateways now carry three **OpenCode Go** entries (`glm-5.3-flash`,
-`deepseek-v4.1-flash`, `mimo-v2.6-flash`) pointing at
+Both gateways carry the **OpenCode Go** entries (`glm-5.3-flash`,
+`deepseek-v4.1-flash`, `mimo-v2.6-flash`; the laptop gained a fourth, the flagship
+`glm-5.3`, on 2026-11-18) pointing at
 `https://opencode.ai/inference/go/v1` with `api_key: os.environ/OPENCODE_GO_API_KEY`
 (added to `ai/litellm.env`). Facts established at rollout:
 
@@ -2531,6 +2534,11 @@ Both gateways now carry three **OpenCode Go** entries (`glm-5.3-flash`,
   a `qwen3.8-flash-next` `xhigh` request falling back lands on glm/deepseek, both of which
   accept `xhigh`. **Do not point any `reasoning_effort: none`
   role at `glm-5.3-flash`**, and do not send `xhigh` at `mimo-v2.6-flash`.
+- **The flagship `glm-5.3` is not thinking-only (measured 2026-11-18 through the gateway):**
+  `none` 200 ("Say ok" answered directly), `medium` ✓, `xhigh` ✓. So the glm-5.3-flash rule
+  above does not extend to it. It is registered in the inext profile's model pool (the
+  profile default stays `qwen3.8-flash-next`), declared in full (1M/131K), and **not in any
+  fallback chain** — Go spend stays opt-in.
 - **Fallback chains** (`router_settings.fallbacks`): laptop
   `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]`,
   `gemma-4-e2b → [mimo-v2.6-flash]` (the `tiel-coder-35b → [deepseek-v4.1-flash]` chain went

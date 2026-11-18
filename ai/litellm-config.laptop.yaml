@@ -42,6 +42,19 @@ model_list:
       allowed_fails_policy:
         TimeoutErrorAllowedFails: 0
 
+  - model_name: glm-5.3
+    litellm_params:
+      model: openai/glm-5.3
+      api_base: https://opencode.ai/inference/go/v1
+      api_key: os.environ/OPENCODE_GO_API_KEY
+      extra_headers:
+        x-opencode-session: litellm-gateway-0001
+        User-Agent: litellm-gateway/1.0
+        Accept-Encoding: gzip, deflate
+    model_info:
+      max_input_tokens: 1000000
+      max_output_tokens: 131072
+
   - model_name: glm-5.3-flash
     litellm_params:
       model: openai/glm-5.3-flash
