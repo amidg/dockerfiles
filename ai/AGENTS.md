@@ -279,6 +279,35 @@ recreate via preset re-save. `ai/strata-hip.Dockerfile` and
 git history retains them). Full runbook, gate table and rollback:
 `/var/home/dmitrii/.opencode/plan/strata-upstream-rdna3-500k.md`.
 
+### CUDA home (5070 Ti 16GB + 96GB RAM) notes (2026-11-24)
+
+Pin restored to the documented contract **40** (was 36 in compose, 40 in the table).
+Context now 524288 (YaRN x2) on both profiles; KV is RAM, so the 5.18 GiB KV sits on
+top of the ~33.8 GiB arena — ~39 GiB of 96 GB, fine.
+
+What setup auto-decides here (do not set by hand; check the boot log):
+- **resident experts**: `--resident-experts` vs `--mmap-experts` from the RAM
+  budget rule (`resident_budget_gib`); expect "loads ... into RAM" on this box.
+- **PLE auto-RAM**: `STRATA_PLE_AUTO_RAM` default on where RAM fits -> table in
+  RAM (+22.5% prefill measured on R9700 IQ3_S); IQ2_XS needs ~90.8 GiB
+  (model 48 + table 26.8 + 16), borderline on 96 GB — the log says which.
+- **ADAPT_FETCH=2**: default on cc 12.x with <=16 GiB (RTX 5070 Ti is sm_120
+  16 GiB) -> +10% decode measured on RTX PRO 5000 IQ3_S, unless resident RAM
+  mode disables it (log says so).
+- **pcie-frac**: auto-probe default.
+- **conversation-cache-mib=0** (deliberate): single-user daily driver; parking
+  conversations costs RAM and the gate has no multi-turn arm yet.
+
+Manual A/B candidates, one at a time, after the gate:
+- `STRATA_ADAPT_OVERLAP=1` (+4 to +8% on A4000/P100, but -2.6% on a 5070 under
+  Windows) — conflicts with ADAPT_FETCH/ADAPT_ASYNC; pick one family.
+- `STRATA_ADAPT_ASYNC=1` (+7 to +11% on RTX 3090 + Ryzen 5600X) — same conflict.
+- `--conversation-cache-mib 8192 --conversation-cache-slots 8` for agentic
+  sessions (costs ~8 GiB RAM; helps controller/worker turn reuse).
+- `STRATA_PIN_BY_NEED=1` is Windows-only; not applicable on Linux.
+- 0.2.21 CUDA note: AVX-512 path is used on the 10980XE automatically.
+
+
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
 
 *(Superseded by [Strata on the desktop](#strata-on-the-desktop--promoted-2026-10-17). The

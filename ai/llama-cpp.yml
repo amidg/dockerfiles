@@ -98,7 +98,7 @@ services:
       - VISION=cpu
       - KV=k8v4
       - GGUF_DIR=/models
-      - STRATA_ARENA_PIN_GIB=36
+      - STRATA_ARENA_PIN_GIB=40
       - STRATA_ALLOWED_HOSTS=strata
       - API_KEY=sk-strata-hMg-yYcSKJUPs3rODHaNwHfbBXNwpzZt
       - STRATA_SET=conversation-cache-mib=0
