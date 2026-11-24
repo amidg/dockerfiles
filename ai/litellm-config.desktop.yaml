@@ -23,10 +23,10 @@ model_list:
       api_base: http://strata:8080/v1
       api_key: os.environ/STRATA_API_KEY
       allowed_openai_params: ["reasoning_effort"]
-      timeout: 180
-      stream_timeout: 180
+      timeout: 300
+      stream_timeout: 300
     model_info:
-      max_input_tokens: 262144
+      max_input_tokens: 524288
       max_output_tokens: 32768
       cooldown_time: 300
       allowed_fails_policy:

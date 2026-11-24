@@ -30,10 +30,10 @@ podman-compose -f ai/llama-cpp.yml --profile server_home build strata
 ```
 
 `server_home` is the only profile that builds from source (CUDA, on the machine it runs on).
-`server_work` pulls a published image, `ghcr.io/amidg/strata:0.2.3-rdna3-20261109`
-(rdna3 fork, engine commit `86e0bec`), which already carries the HIP engine, the CPU and
-GPU picture readers, and the gfx1100 hipBLASLt tuning tables. It is updated by a CI rebuild
-in `amidg/Strata-rdna3` (`.github/workflows/docker-images-rdna3.yml`), then a pull and
+`server_work` pulls a published image, `ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x`
+(upstream, engine 0.1.67), which carries the HIP engine, the CPU and GPU picture readers,
+and the gfx1100 hipBLASLt tuning tables. (The rdna3 fork is abandoned as of 2026-11-24;
+its image stays in the local registry as rollback.) Update is just a pull and
 `podman restart litellm_server` after the recreate. `VRAM_RESERVE_MIB=4096` still applies
 via `STRATA_SET` and leaves 4GB for the desktop the card drives. LiteLLM needs ~30-60s. Poll before sending traffic:
 

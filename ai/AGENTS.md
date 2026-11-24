@@ -33,8 +33,8 @@ Each advertises only what its device can run.
 |---|---|---|---|---|
 | `llama-swap-nvidia.yaml` | `llama_swap_nvidia` | RTX 5070 8GB (laptop) | 8081 | `tiel-coder-35b` (MTP, vision via CPU projector, 131K, UD-Q3_K_XL, N=35, ub2048, ttl 0 — **manual fallback** since 2026-10-19), `gemma-4-26b-a4b` (MTP, vision + mmproj, 131K, N=27, on-demand), `gemma-4-e4b` (MTP, vision, 128K, qat, q8_0 KV, on-demand fallback) — **not in the `laptop` profile since 2026-10-20; start with `--profile nvidia_llama_cpp`** |
 | `llama-swap-intel.yaml` | `llama_swap_intel` | Arc Pro iGPU (laptop) | 8082 | `embeddinggemma-2` (embeddings only), `gemma-4-e2b` (Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, ttl 0, resident in the `igpu` group) — **live again since 2026-10-22**, see [The tiny tier](#the-tiny-tier-arc-igpu) |
-| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) — `server_home` | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 262K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
-| `ghcr.io/amidg/strata:0.2.3-rdna3-20261109` (rdna3 fork, engine commit `86e0bec`) | `strata` (compose service key `strata_hip`) | 7900 XTX 24GB (desktop) — `server_work`, HIP gfx1100, 20GB VRAM cap | 8080 | the same `qwen3.8-flash-next` weights/config (Swift 1.5 IQ2_XS), own data dir `/var/mnt/data/llama/strata-hip`; `whisper_nvda` (CUDA) runs on the 5070 Ti beside it |
+| `ai/Strata` (submodule) | `strata` | 5070 Ti 16GB (desktop) — `server_home` | 8080 | `qwen3.8-flash-next` (**Swift 1.5 IQ2_XS, Strata**, 512K, `k8v4` KV, vision on CPU, arena pinned 40 of 96GB RAM) |
+| `ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x` (upstream, engine 0.1.67) | `strata` (compose service key `strata_hip`) | 7900 XTX 24GB (desktop) — `server_work`, HIP gfx1100, 20GB VRAM cap | 8080 | the same `qwen3.8-flash-next` weights/config (Swift 1.5 IQ2_XS), own data dir `/var/mnt/data/llama/strata-hip`; `whisper_nvda` (CUDA) runs on the 5070 Ti beside it |
 | `ai/PolyStrata` (submodule) + `polystrata.Dockerfile` | `strata` (compose service key `strata_laptop`) | RTX 5070 8GB (laptop) | 8080 | `tiel-coder-35b` (**strata-poly**, tiel family, arch `qwen35moe`, 131K, vision on CPU, ~21GB RAM working set, no arena pin) |
 
 ## Strata on the desktop — promoted 2026-10-17, Swift 1.5 weights 2026-10-18
@@ -48,10 +48,10 @@ pinned to a release tag; built by `podman-compose -f ai/llama-cpp.yml --profile 
 | | |
 |---|---|
 | GPU (`server_home`) | 5070 Ti 16GB — that container is CUDA-only (`FROM nvidia/cuda:13.0.0`) |
-| GPU (`server_work`) | 7900 XTX 24GB, HIP `gfx1100` (`ai/strata-hip.Dockerfile`), **20GB cap** via `VRAM_RESERVE_MIB=4096` — 4GB stay free for the desktop the card drives. Mixed HIP+CUDA in one Strata run remains unsupported upstream, so the 5070 Ti runs whisper, never the LLM, in this profile |
+| GPU (`server_work`) | 7900 XTX 24GB, HIP `gfx1100` (`ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x` (published image; local Dockerfile removed)), **20GB cap** via `VRAM_RESERVE_MIB=4096` — 4GB stay free for the desktop the card drives. Mixed HIP+CUDA in one Strata run remains unsupported upstream, so the 5070 Ti runs whisper, never the LLM, in this profile |
 | RAM | `STRATA_ARENA_PIN_GIB=40` of 96GB quad-channel in both profiles — **40GB is the maximum**; 48GB only for the documented worst case below. The arena is page-locked, so `ulimits.memlock: -1` is mandatory |
 | SSD | `server_home`: `/var/mnt/data/llama/strata` → `/data` (n-gram table, MTP draft, pack, config). `server_work`: the same set under `/var/mnt/data/llama/strata-hip` — the config filename is family+model (`strata-swift-iq2_xs.json`), so a shared dir would hand the 16GB card the work card's 4096 MiB reserve |
-| context / KV / vision | `262144` / `k8v4` / **`cpu`** (the HIP image builds only the CPU encoder; upstream has no HIP GPU encoder) |
+| context / KV / vision | `524288` / `k8v4` / **`cpu`** (YaRN ×2; upstream auto-selects it past the trained 262144) (the HIP image builds only the CPU encoder; upstream has no HIP GPU encoder) |
 | gateway name | `qwen3.8-flash-next` — desktop LiteLLM → `http://strata:8080/v1`, no API key; the gateway holds the master key |
 
 **Why Strata and not llama.cpp.** No quant of this model fits 16GB VRAM (the smallest
@@ -139,7 +139,7 @@ rewiring `~/.hermes/config.yaml` on the laptop is now urgent, not optional.
 ### `server_work` — Strata on the 7900 XTX through HIP (2026-10-26)
 
 The second desktop profile. Same engine family and the same Swift 1.5 IQ2_XS config as
-`server_home`, built for AMD instead of NVIDIA: `ai/strata-hip.Dockerfile` calls
+`server_home`, built for AMD instead of NVIDIA: `ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x` (published image; local Dockerfile removed) calls
 `setup.build_engine_hip()` for `gfx1100` (upstream's own builder: `-DSTRATA_ENABLE_HIP=ON
 -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_PREFILL_MMQ=ON`), installs AMD's TheRock `gfx110X-dgpu`
 wheels into `.venv` at build time, builds the **CPU** image encoder (there is no HIP encoder
@@ -190,7 +190,7 @@ dropping the reserve.
 
 ### `server_work` migrated to the rdna3 fork image (2026-11-09)
 
-Image: `ghcr.io/amidg/strata:0.2.3-rdna3-20261109` (also `latest-rdna3`), built by
+Image: `ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x`, built by
 `amidg/Strata-rdna3` Actions from commit `86e0bec` (engine `0.1.49.1`, variant
 `rx7900`, archs gfx1100/1101/1102, hipBLASLt + GPU/CPU vision readers). No signed
 update feed: updates are a CI rebuild + image pull + `podman restart litellm_server`
@@ -241,6 +241,43 @@ added `STRATA_ADAPT_OVERLAP`, `STRATA_HEAD_MIX_MULTI`, `STRATA_FUSE_CONVAB`,
 shards *and* pack). Do it as its own commit with its own gate so the engine change and
 the quant change are never confounded.
 
+
+### `server_work` abandoned the fork, back on upstream (2026-11-24)
+
+The `strata_hip` service no longer pulls `amidg/Strata-rdna3`. It now pulls
+`ghcr.io/niko1221/strata:0.2.21-rocm-gfx110x` (engine 0.1.67). Reason: the fork
+(`amidg/Strata-rdna3`) was a 0-own-commit snapshot of `nicejunjie/Strata-rdna3`,
+44 commits behind its source, with **open production-critical gfx1100 hangs**
+(#22 GPU ring hang during decode, #20 `rdna_gr_fused` barrier wait, #16 ~200K
+prefill watchdog), no releases and no published images. Upstream 0.2.21 absorbs the
+fork's kernel work as gfx1100 architecture defaults (`gfx11_extra.hpp`: the WMMA
+prompt set, fused-IQ decode via `HIP_FAST_DEC`, `QFUSE`, `HEAD_MIX_MULTI`, `PF_PAD`,
+GDN set, 32768 prefill chunk ceiling), ships maintainer-tested gfx1100 images
+per release, and carries the long-conv crash (#6905), Qwen accuracy (#6776) and
+pinned-download fixes.
+
+Context moved to **524288** (YaRN ×2, auto-selected past the trained 262144).
+KV is still `k8v4` (5.18 GiB KV in RAM, 32K resident window in VRAM unchanged);
+arena ~33.8 GiB; whole set ~39-40 GiB of 96 GB — inside the contract, pins
+unchanged. Timeout on the `qwen3.8-flash-next` gateway entry went 180 → 300 s
+so a full read (~243 s at measured prefill) does not spill to Go.
+
+Env block shrinks from ~40 lines to 17: everything `gfx11_extra.hpp` defaults is
+dropped, plus the fork-only unknowns. What remains set explicitly:
+`STRATA_ARENA_PIN_GIB=30`, `STRATA_ADAPT_OVERLAP=1` (with `STRATA_ADAPT_LAG=1
+STRATA_ADAPT_NOWAIT=0`), **`STRATA_HIPBLASLT_TABLE=on`** (packaged engines default
+the table off on gfx1100 — boot log must name it; expect `-100200`, not the
+fork's measured `-100401`), `STRATA_ALLOWED_HOSTS=strata`,
+`STRATA_SET=ple-io=direct STRATA_SCORES_THREAD=1 vram-reserve-mib=4096
+conversation-cache-mib=0`, `PARALLEL=1`, `VISION=cpu`. Two corrections made
+during verification: `STRATA_PREFILL_RING` is **gfx12-only** upstream (dropped)
+and `STRATA_QSA_ROWS` is **CUDA-only** (dropped).
+
+`REINSTALL` is gone on these images (ignored with a warning); settings apply on
+recreate via preset re-save. `ai/strata-hip.Dockerfile` and
+`ai/strata-entrypoint-amd.sh` were deleted (superseded by the published image;
+git history retains them). Full runbook, gate table and rollback:
+`/var/home/dmitrii/.opencode/plan/strata-upstream-rdna3-500k.md`.
 
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
 
@@ -695,7 +732,7 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 
 | resolved name | source | use |
 |---|---|---|
-| `qwen3.8-flash-next` | desktop (5070 Ti, Strata, 262K, vision) | main agent, delegation, vision, anything user-facing |
+| `qwen3.8-flash-next` | desktop (5070 Ti / 7900 XTX, Strata, 512K, vision) | main agent, delegation, vision, anything user-facing |
 | `tiel-coder-35b` | laptop dGPU, **strata-poly** (container `strata`, 131K, UD-Q3_K_XL read in place, vision on CPU, ~21GB RAM) | **deprecated on the laptop 2026-10-26** — removed from `litellm-config.laptop.yaml` and from every Hermes role; the engine still serves it on `:8080` directly. When it was wired, the 2026-10-19 A/B promoted it: deep 63-65 vs llama.cpp's 33-34 t/s, tools/quality/approval equal |
 | `gemma-4-26b-a4b` | ~~laptop dGPU (RTX 5070, MTP, 131K, vision, QAT UD-Q4_K_XL, N=27)~~ | **not exposed by LiteLLM since 2026-10-20**; the llama-swap entry remains for a manual `--profile nvidia_llama_cpp` start |
 | `gemma-4-e4b` | ~~laptop dGPU (RTX 5070, MTP, 128K, qat, q8_0 KV, vision)~~ | **not exposed by LiteLLM since 2026-10-20**; the llama-swap entry remains for a manual `--profile nvidia_llama_cpp` start |
@@ -2236,19 +2273,19 @@ Direct model names only.
   co-residency rule after it.
 - `custom_providers[0].models` carries `context_length` pins for the Go models in the
   `inext` profile since 2026-11-16 (glm-5.3-flash/deepseek → 1000000, beam-free → 1048576), matching
-  the gateway's advertised `max_input_tokens` on `/v1/models` (qwen → 262144,
+  the gateway's advertised `max_input_tokens` on `/v1/models` (qwen → 524288,
   `gemma-4-e2b` → 32768, cached per endpoint by Hermes' local-endpoint probe).
   Model IDs are auto-discovered too (`discover_models` defaults to true).
 
 | model | window | why |
 |---|---|---|
-| `qwen3.8-flash-next` | 262144 | desktop, 262K ctx |
+| `qwen3.8-flash-next` | 524288 | desktop, 512K ctx (YaRN ×2) |
 | `gemma-4-26b-a4b`, `gemma-4-e4b` | 131072 | laptop dGPU, 128-131K ctx; on-demand only |
 | `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16; `glm-5.3` pinned in the inext pool 2026-11-18, removed from LiteLLM 2026-11-24) |
 | `beam-free` | 1048576 | Go's full window per OpenCode's catalog; declared in full (2026-11-24, replaces `mimo-v2.6-flash`) |
 
-**The desktop window moved to 262144 with the engine (2026-10-19).** Strata serves
-`CONTEXT=262144`; clients are told the window by the gateway's `/v1/models`
+**The desktop window moved to 524288 with the engine (2026-11-24).** Strata serves
+`CONTEXT=524288`; clients are told the window by the gateway's `/v1/models`
 `max_input_tokens`, not by a Hermes-side pin (since 2026-10-26).
 
 **`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
