@@ -306,6 +306,22 @@ Manual A/B candidates, one at a time, after the gate:
   sessions (costs ~8 GiB RAM; helps controller/worker turn reuse).
 - `STRATA_PIN_BY_NEED=1` is Windows-only; not applicable on Linux.
 - 0.2.21 CUDA note: AVX-512 path is used on the 10980XE automatically.
+- AVX-512 flags on the 10980XE (Cascade Lake-X: AVX-512 F/DQ/BW/VL + VNNI, no VBMI):
+  - `STRATA_VNNI_TIER=1` — enables 512-bit VNNI Q2_0, supported i-quant and Q5_0 rows
+    and the activation quantizer. The 10980XE matches the "F/DQ/BW/VL + VNNI, without
+    VBMI" gate exactly. **Off by default and bit-changing** (rounds differently from
+    the AVX-2 rows); "no speed gain is assumed." Candidate for an A/B, not a default
+    (gate on quality; Swift IQ2_XS is an i-quant so the supported i-quant rows apply).
+  - `STRATA_NO_KQ512=1` (default ON) — 512-bit VNNI Q4_K gate/up + Q5_1/Q8_0 down
+    rows, but only for Unsloth UD-Q4_K_XL packs. Not our quant (Swift IQ2_XS).
+  - `STRATA_CPU_IQ_ALL_EXACT1=1` / `STRATA_Q2_BITPLANE=1` — AVX2-without-AVX-512
+    paths; not applicable (we have AVX-512).
+  - `STRATA_IQ_MT_MIN=1` / `STRATA_IQ3S_MT1=1` — reproducibility switches (IQ3_S
+    multi-token kernel on Alder Lake+ without AVX-512); not our quant/CPU.
+  - `STRATA_FORCE_AVX2=1`, `STRATA_FORCE_ISA=...`, `STRATA_NO_AVXVNNI=1` — diagnostics
+    only.
+  - `STRATA_NO_KQ512=0` is the way to turn the VNNI Q4_K path off if a UD pack is
+    ever tested.
 
 
 ### Qwen3.8-27B on 7900 XTX 24GB — retired 2026-10-17
