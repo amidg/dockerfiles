@@ -785,11 +785,12 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *deleted 2026-10-19 — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
-| `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `vision`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer`; LiteLLM fallback `→ beam-free` |
+| `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer` (vision moved to `hy4-flash-free` 2026-11-24 — gemma is now the **last hop of the vision chain**, verified 0.7 s OCR); LiteLLM fallback `→ beam-free` |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
 | `glm-5.3-flash` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), 1M/131K declared in full | cloud fallback for `qwen3.8-flash-next` on both machines; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
 | `deepseek-v4.1-flash` | **OpenCode Go**, 1M/384K declared in full | second hop for `qwen3.8-flash-next` on both machines |
 | `beam-free` | **OpenCode Go**, free, text-only, 1048576/131072 | added 2026-11-24 as `gemma-4-e2b`'s fallback and the `auxiliary.web_extract` target, replacing `mimo-v2.6-flash` (TokenDyno Go: 159 t/s + 0.66s TTFT vs mimo's 90 t/s + 1.7s); free model outside the Go allowance |
+| `hy4-flash-free` | **OpenCode Go**, free, open weights, 1048576/65536, 0-day retention | `inext` `vision` primary (2026-11-24), fallback `→ deepseek-v4.1-flash → gemma-4-e2b`; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
   The old dotted name and `server-qwen3.6-35b` are gone from the desktop; the laptop config

@@ -81,11 +81,25 @@ model_list:
       max_input_tokens: 1048576
       max_output_tokens: 131072
 
+  - model_name: hy4-flash-free
+    litellm_params:
+      model: openai/hy4-flash-free
+      api_base: https://opencode.ai/inference/go/v1
+      api_key: os.environ/OPENCODE_GO_API_KEY
+      extra_headers:
+        x-opencode-session: litellm-gateway-0001
+        User-Agent: litellm-gateway/1.0
+        Accept-Encoding: gzip, deflate
+    model_info:
+      max_input_tokens: 1048576
+      max_output_tokens: 65536
+
 router_settings:
   retry_after: 15
   fallbacks:
     - qwen3.8-flash-next: ["glm-5.3-flash", "deepseek-v4.1-flash"]
     - gemma-4-e2b: ["beam-free"]
+    - hy4-flash-free: ["deepseek-v4.1-flash", "gemma-4-e2b"]
   model_group_retry_policy:
     whisper:
       TimeoutErrorRetries: 0
