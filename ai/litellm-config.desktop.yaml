@@ -1,13 +1,36 @@
 model_list:
+  - model_name: gemma-4-e2b
+    litellm_params:
+      model: openai/gemma-4-e2b
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-...ired
+    model_info:
+      max_input_tokens: 32768
+      max_output_tokens: 8192
+
+  - model_name: embeddinggemma-2
+    litellm_params:
+      model: openai/embeddinggemma-2
+      api_base: http://llama_swap_intel:8080/v1
+      api_key: sk-no-...ired
+    model_info:
+      max_input_tokens: 8192
+      mode: embedding
+
   - model_name: qwen3.8-flash-next
     litellm_params:
       model: openai/qwen3.8-flash-next
       api_base: http://strata:8080/v1
       api_key: os.environ/STRATA_API_KEY
       allowed_openai_params: ["reasoning_effort"]
+      timeout: 180
+      stream_timeout: 180
     model_info:
       max_input_tokens: 262144
       max_output_tokens: 32768
+      cooldown_time: 300
+      allowed_fails_policy:
+        TimeoutErrorAllowedFails: 0
 
   - model_name: whisper
     litellm_params:
@@ -29,8 +52,8 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1000000
+      max_output_tokens: 131072
 
   - model_name: deepseek-v4.1-flash
     litellm_params:
@@ -42,12 +65,12 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1000000
+      max_output_tokens: 384000
 
-  - model_name: mimo-v2.6-flash
+  - model_name: beam-free
     litellm_params:
-      model: openai/mimo-v2.6-flash
+      model: openai/beam-free
       api_base: https://opencode.ai/inference/go/v1
       api_key: os.environ/OPENCODE_GO_API_KEY
       extra_headers:
@@ -55,15 +78,19 @@ model_list:
         User-Agent: litellm-gateway/1.0
         Accept-Encoding: gzip, deflate
     model_info:
-      max_input_tokens: 262144
-      max_output_tokens: 32768
+      max_input_tokens: 1048576
+      max_output_tokens: 131072
 
 router_settings:
+  retry_after: 15
+  fallbacks:
+    - qwen3.8-flash-next: ["glm-5.3-flash", "deepseek-v4.1-flash"]
+    - gemma-4-e2b: ["beam-free"]
   model_group_retry_policy:
     whisper:
       TimeoutErrorRetries: 0
-  fallbacks:
-    - qwen3.8-flash-next: ["glm-5.3-flash", "deepseek-v4.1-flash"]
+    qwen3.8-flash-next:
+      TimeoutErrorRetries: 0
 
 litellm_settings:
   drop_params: true

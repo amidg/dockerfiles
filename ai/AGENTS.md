@@ -703,12 +703,11 @@ Aliases are gone. Agents, Hermes, and opencode now reference models directly:
 | ~~`qwen3.6-35b`~~ (Q3_K_XL) | *deleted 2026-10-19 — lost the 2026-10-18 A/B on agentic task time and image OCR* | — |
 | ~~`lfm2.5-24b`~~ | *retired 2026-10-18 — replaced by `gemma-4-26b-a4b`; GGUF deleted* | — |
 | ~~`tiel-coder-35b`~~ | *retired 2026-10-18; GGUF deleted* | — |
-| `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `vision`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer`; LiteLLM fallback `→ mimo-v2.6-flash` |
+| `gemma-4-e2b` | laptop iGPU (Arc, 32K, Q4_K_M, f16 KV, `--reasoning off`, vision via mmproj) | **live since 2026-10-22** (the 2026-10-18 retirement was wrong — the config never lost its entry): `title_generation`, `vision`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer`; LiteLLM fallback `→ beam-free` |
 | `embeddinggemma-2` | laptop iGPU (Arc, 8K ctx, embeddings only) | embeddings |
-| `glm-5.3` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), 1M/131K declared in full | flagship added 2026-11-18 for the inext profile; **not in any fallback chain**; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
-| `glm-5.3-flash` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), gateway-capped 262K/32K | cloud fallback for `qwen3.8-flash-next` on both machines; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
-| `deepseek-v4.1-flash` | **OpenCode Go**, gateway-capped 262K/32K | second hop for `qwen3.8-flash-next` on both machines |
-| `mimo-v2.6-flash` | **OpenCode Go**, gateway-capped 262K/32K | `auxiliary.web_extract` target and `gemma-4-e2b`'s fallback; cheapest Go model ($0.14/$0.28 per 1M) |
+| `glm-5.3-flash` | **OpenCode Go** (`https://opencode.ai/inference/go/v1`), 1M/131K declared in full | cloud fallback for `qwen3.8-flash-next` on both machines; see [OpenCode Go entries](#opencode-go-entries--cloud-fallbacks-2026-10-22) |
+| `deepseek-v4.1-flash` | **OpenCode Go**, 1M/384K declared in full | second hop for `qwen3.8-flash-next` on both machines |
+| `beam-free` | **OpenCode Go**, free, text-only, 1048576/131072 | added 2026-11-24 as `gemma-4-e2b`'s fallback and the `auxiliary.web_extract` target, replacing `mimo-v2.6-flash` (TokenDyno Go: 159 t/s + 0.66s TTFT vs mimo's 90 t/s + 1.7s); free model outside the Go allowance |
 
 - **The desktop name changed 2026-10-17: `server-qwen3.8-27b` → `qwen3.8-flash-next`.**
   The old dotted name and `server-qwen3.6-35b` are gone from the desktop; the laptop config
@@ -1868,8 +1867,8 @@ resident alongside `embeddinggemma-2`), nor from `litellm-config.laptop.yaml`, a
 tts_audio_tags, memory_query_rewrite, profile_describer** — work deliberately moved **off**
 the dGPU, which frees the co-residency rule for those roles (an iGPU-resident model never
 evicts the main model, and a cloud fallback never evicts anything). Its LiteLLM fallback is
-`mimo-v2.6-flash`; note the accepted edge: if a *vision* request fails over, mimo may reject
-image input and the request dies outright rather than degrading. Config as it runs today:
+`beam-free` (since 2026-11-24, free); note the accepted edge: `beam-free` is text-only, so
+a *vision* request that fails over dies outright rather than degrading. Config as it runs today:
 Q4_K_M, 32K, f16 KV, `--reasoning off`, mmproj, `ttl: 0`.
 
 **`gemma-4-e2b` served background tasks** — Q4_K_M, 64K, `--ubatch-size
@@ -2233,10 +2232,10 @@ Direct model names only.
   2026-10-26); the desktop's default is the same name. `tiel-coder-35b` is deprecated on
   the laptop and is no longer in `litellm-config.laptop.yaml`. Since 2026-10-26 the
   `auxiliary.*` roles are split across `qwen3.8-flash-next` (remote/gateway),
-  `gemma-4-e2b` (iGPU) and `mimo-v2.6-flash` (Go cloud) — see the table below and the
+  `gemma-4-e2b` (iGPU) and `beam-free` (Go cloud) — see the table below and the
   co-residency rule after it.
 - `custom_providers[0].models` carries `context_length` pins for the Go models in the
-  `inext` profile since 2026-11-16 (glm/deepseek → 1000000, mimo → 1048576), matching
+  `inext` profile since 2026-11-16 (glm-5.3-flash/deepseek → 1000000, beam-free → 1048576), matching
   the gateway's advertised `max_input_tokens` on `/v1/models` (qwen → 262144,
   `gemma-4-e2b` → 32768, cached per endpoint by Hermes' local-endpoint probe).
   Model IDs are auto-discovered too (`discover_models` defaults to true).
@@ -2245,8 +2244,8 @@ Direct model names only.
 |---|---|---|
 | `qwen3.8-flash-next` | 262144 | desktop, 262K ctx |
 | `gemma-4-26b-a4b`, `gemma-4-e4b` | 131072 | laptop dGPU, 128-131K ctx; on-demand only |
-| `glm-5.3`, `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16; `glm-5.3` added in the inext pin 2026-11-18) |
-| `mimo-v2.6-flash` | 1048576 | Go's full window per OpenCode's catalog; declared in full (2026-11-16) |
+| `glm-5.3-flash`, `deepseek-v4.1-flash` | 1000000 | Go's full window per OpenCode's catalog; declared in full (2026-11-16; `glm-5.3` pinned in the inext pool 2026-11-18, removed from LiteLLM 2026-11-24) |
+| `beam-free` | 1048576 | Go's full window per OpenCode's catalog; declared in full (2026-11-24, replaces `mimo-v2.6-flash`) |
 
 **The desktop window moved to 262144 with the engine (2026-10-19).** Strata serves
 `CONTEXT=262144`; clients are told the window by the gateway's `/v1/models`
@@ -2286,7 +2285,7 @@ roles are on three models:
 |---|---|
 | **`qwen3.8-flash-next` (remote Strata, gateway default)** | `mcp`, `skills_hub`, `approval`*, `compression`, `kanban_decomposer`, `curator`, `monitor`, `triage_specifier`, `goal_judge` |
 | **`gemma-4-e2b` (laptop iGPU, resident, zero swap cost)** | `vision`, `title_generation`, `tts_audio_tags`, `memory_query_rewrite`, `profile_describer` |
-| **`mimo-v2.6-flash` (Go cloud)** | `web_extract` — browser snapshots > 15 000 chars; the cheapest Go model, and a cloud aux role evicts nothing |
+| **`beam-free` (Go cloud, free)** | `web_extract` — browser snapshots > 15 000 chars; free Go model at 159 t/s (TokenDyno), and a cloud aux role evicts nothing |
 
 \*The `server-qwen3.8-27b` group moved here on 2026-10-18: those names had been pointing at
 the dead `api.gusev.tech` remote since the Strata migration, so those roles were failing
@@ -2431,9 +2430,9 @@ Hermes sends is separate and currently unpinned.
 
 **Go entries follow the vendor catalog, not the heuristic (2026-11-16):** `litellm-config.laptop.yaml`
 declares the published OpenCode Go limits — `deepseek-v4.1-flash` 1000000/384000,
-`glm-5.3` 1000000/131072 (added 2026-11-18), `glm-5.3-flash` 1000000/131072,
-`mimo-v2.6-flash` 1048576/131072 (opencode.ai data pages,
-corroborated by `models.dev/api.json` provider `opencode-go`). Hermes cannot pin output caps
+`glm-5.3-flash` 1000000/131072, `beam-free` 1048576/131072 (opencode.ai data pages,
+corroborated by `models.dev/api.json` provider `opencode-go`; `glm-5.3` and
+`mimo-v2.6-flash` removed 2026-11-24, the desktop mirrors the laptop's list). Hermes cannot pin output caps
 (per-model `max_tokens` is not read by the installed build; only `context_length` is), so the
 inext profile pins context only.
 
@@ -2505,8 +2504,7 @@ each rejection costs a full ~18s load.
 ### OpenCode Go entries — cloud fallbacks (2026-10-22)
 
 Both gateways carry the **OpenCode Go** entries (`glm-5.3-flash`,
-`deepseek-v4.1-flash`, `mimo-v2.6-flash`; the laptop gained a fourth, the flagship
-`glm-5.3`, on 2026-11-18) pointing at
+`deepseek-v4.1-flash`, `beam-free`) pointing at
 `https://opencode.ai/inference/go/v1` with `api_key: os.environ/OPENCODE_GO_API_KEY`
 (added to `ai/litellm.env`). Facts established at rollout:
 
@@ -2521,32 +2519,36 @@ Both gateways carry the **OpenCode Go** entries (`glm-5.3-flash`,
   session id for all gateway traffic**, which degrades their routing/prompt-cache
   optimization; accepted, because per-conversation ids through a proxy need a hook and the
   gateway is not that code. Non-secret, so it lives in the yaml.
-- **Caps are ¼ of native** (user decision 2026-10-22): the models have 1 048 576-token
-  windows; every entry advertises **262144 in / 32768 out**, and the Hermes pin mirrors it.
-  A client overrunning the cap gets a clean gateway rejection, not a silent 1M-token bill.
+- **Caps follow the vendor catalog** (raised 2026-11-16; the desktop mirrors the full
+  windows since 2026-11-24): every Go entry advertises its published window, and the Hermes
+  pin mirrors it. A client overrunning the cap gets a clean gateway rejection, not a silent
+  1M-token bill.
 - **`reasoning_effort` flows through to the Go endpoint even without an allowlist** —
   `drop_params` does not eat it for openai-compatible providers, and the upstreams validate
   it. Measured 2026-10-22 through the gateway: `glm-5.3-flash` **400 on `none`**
   ("GLM-5.3 is thinking-only"), ✓ `medium`, ✓ `xhigh`; `deepseek-v4.1-flash` ✓ on all
-  three; `mimo-v2.6-flash` **400 on `xhigh`**, ✓ `none`, ✓ `medium`. The live Hermes
-  mapping is safe under this matrix: `web_extract`→mimo sends `medium`; `approval`→qwen
+  three; `mimo-v2.6-flash` **400 on `xhigh`**, ✓ `none`, ✓ `medium` (removed 2026-11-24).
+  `beam-free` ✓ on all four levels (measured 2026-11-24 through the gateway: `none` answers
+  directly with non-empty `content`; the one trap is `max_tokens=16`-sized budgets — reasoning
+  eats them and `content` comes back empty, so aux roles need room to think). The live Hermes
+  mapping in the inext profile: `compression`→beam-free sends `none`, `web_extract`→beam-free
+  sends `medium`; `approval`→qwen
   sends `none` (verified 200 through the gateway 2026-10-26); `title_generation` is local;
   a `qwen3.8-flash-next` `xhigh` request falling back lands on glm/deepseek, both of which
   accept `xhigh`. **Do not point any `reasoning_effort: none`
-  role at `glm-5.3-flash`**, and do not send `xhigh` at `mimo-v2.6-flash`.
-- **The flagship `glm-5.3` is not thinking-only (measured 2026-11-18 through the gateway):**
-  `none` 200 ("Say ok" answered directly), `medium` ✓, `xhigh` ✓. So the glm-5.3-flash rule
-  above does not extend to it. It is registered in the inext profile's model pool (the
-  profile default stays `qwen3.8-flash-next`), declared in full (1M/131K), and **not in any
-  fallback chain** — Go spend stays opt-in.
-- **Fallback chains** (`router_settings.fallbacks`): laptop
-  `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]`,
-  `gemma-4-e2b → [mimo-v2.6-flash]` (the `tiel-coder-35b → [deepseek-v4.1-flash]` chain went
-  with the model on 2026-10-26); desktop
-  `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]` (main and delegation are the
-  same group there, so one chain). Fallback fires on **errors and timeouts only** — a
-  queued-but-alive llama-server never triggers it, which is the whole point: local first,
-  Go only when local is stalled.
+  role at `glm-5.3-flash`**.
+- **`beam-free` replaces `mimo-v2.6-flash` (2026-11-24).** Free, text-only, 1048576/131072,
+  outside the Go allowance; TokenDyno Go 159 t/s, TTFT 0.66s (mimo: 90 t/s, 1.7s); its 30-day
+  retention and geographic blocklist are irrelevant from Canada. The `glm-5.3` flagship
+  (added 2026-11-18; measured then: `none` 200, `medium` ✓, `xhigh` ✓ — not thinking-only)
+  was removed from both LiteLLM configs 2026-11-24; it was never in a fallback chain.
+- **Fallback chains** (`router_settings.fallbacks`): both gateways carry
+  `qwen3.8-flash-next → [glm-5.3-flash, deepseek-v4.1-flash]` and
+  `gemma-4-e2b → [beam-free]` (the `tiel-coder-35b → [deepseek-v4.1-flash]` chain went
+  with the model on 2026-10-26; the desktop mirrors the laptop's full model list since
+  2026-11-24, so the gemma chain exists on both). Fallback fires on **errors and timeouts
+  only** — a queued-but-alive llama-server never triggers it, which is the whole point:
+  local first, Go only when local is stalled.
 - **Spend tracking is unverified for these ids.** `log_model_api_calls_to_db` records
   requests, but litellm's cost map knows zhipu/deepseek ids, not `openai/<go-id>` aliases,
   so the UI's spend for Go traffic is likely $0. The **OpenCode console is the authoritative
