@@ -19,14 +19,14 @@ model_list:
 
   - model_name: qwen3.8-flash-next
     litellm_params:
-      model: openai/qwen3.8-flash-next
+      model: openai/swift-1.5-iq2_xs
       api_base: http://strata:8080/v1
       api_key: os.environ/STRATA_API_KEY
       allowed_openai_params: ["reasoning_effort"]
       timeout: 300
       stream_timeout: 300
     model_info:
-      max_input_tokens: 524288
+      max_input_tokens: 491520
       max_output_tokens: 32768
       cooldown_time: 300
       allowed_fails_policy:

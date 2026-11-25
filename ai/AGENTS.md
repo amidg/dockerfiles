@@ -279,6 +279,33 @@ recreate via preset re-save. `ai/strata-hip.Dockerfile` and
 git history retains them). Full runbook, gate table and rollback:
 `/var/home/dmitrii/.opencode/plan/strata-upstream-rdna3-500k.md`.
 
+### `server_work` first live boot: backend override and served model id (2026-11-24)
+
+Two things the dry rollout never proved, found on the first real start:
+
+- **`STRATA_ENGINE_BACKEND=hip` is mandatory on this desktop, not optional.** 0.2.21's
+  `detect_backend()` probes `nvidia-smi`, `rocminfo`, `sycl-ls`, then sysfs PCI vendors, and
+  `_first_make()` prefers cuda > hip > sycl. The image ships neither `nvidia-smi` nor
+  `rocminfo`, so with a 5070 Ti (`0x10de`) and a 7900 XTX (`0x1002`) both on the PCI bus it
+  concludes `backend: cuda, backend_source: sysfs pci vendor`, marks the HIP engine
+  `usable: false` and exits 3 before setup. The variable reports
+  `backend_source: environment` and is read as the top-priority override — the removal in
+  `0da2bd1` ("unused by the 0.2.x image") was wrong.
+- **The served model id is `swift-1.5-iq2_xs`**, derived from family name + size; there is no
+  rename flag. Strata rejects `qwen3.8-flash-next` with `model_not_found` and accepts only the
+  loaded id or a generic (`local-model`). `litellm-config.desktop.yaml` therefore keeps
+  `model_name: qwen3.8-flash-next` for clients but sends `model: openai/swift-1.5-iq2_xs`;
+  the same id applies to `server_home` (same family/size), so one config serves both profiles.
+- **Two compose settings are silently dropped.** `ipc: host` is not implemented by
+  podman-compose 1.6.0 at all (container comes up `IpcMode=shareable` in `pod_ai`; `shm_size`
+  is applied). And `base_amdgpu`'s `privileged: true` makes podman ignore the explicit
+  `--device` flags (`HostConfig.Devices` is empty) — harmless, `/dev/kfd` and `/dev/dri` are
+  visible through privileged, but do not read the device list as proof of pass-through.
+- First boot measured: setup ~30 s, load ~40 s, `arena_mib` 33812, `expert_cache_mib` 14693,
+  `vram_free_mib` 4258, `kv` k8v4, `kv_resident` 32768; the engine log names
+  `AMD Radeon RX 7900 XTX (gfx1100)` and `hipBLASLt tuning enabled (26 rows, gfx1100,
+  version 100200)`.
+
 ### CUDA home (5070 Ti 16GB + 96GB RAM) notes (2026-11-24)
 
 Pin restored to the documented contract **40** (was 36 in compose, 40 in the table).
@@ -2332,7 +2359,10 @@ Direct model names only.
 
 **The desktop window moved to 524288 with the engine (2026-11-24).** Strata serves
 `CONTEXT=524288`; clients are told the window by the gateway's `/v1/models`
-`max_input_tokens`, not by a Hermes-side pin (since 2026-10-26).
+`max_input_tokens`, not by a Hermes-side pin (since 2026-10-26). The entry **reserves the
+output cap inside that window**: `max_input_tokens: 491520` + `max_output_tokens: 32768`
+= 524288, so a client that fills the advertised input and then asks for the full output
+never overruns the engine (`limit.context` 524288, `limit.output` 524280).
 
 **`delegation.max_concurrent_children: 3` is currently aspirational (2026-08-09).** Every
 llama-server here is `--parallel 1`, and on `server-qwen3.8-27b` that is forced by MTP, so
