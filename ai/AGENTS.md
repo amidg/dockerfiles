@@ -306,6 +306,50 @@ Two things the dry rollout never proved, found on the first real start:
   `AMD Radeon RX 7900 XTX (gfx1100)` and `hipBLASLt tuning enabled (26 rows, gfx1100,
   version 100200)`.
 
+### `server_work` measured on upstream 0.2.21 (2026-11-24)
+
+First real measurement of the migrated service (engine 0.1.67, Swift 1.5 IQ2_XS,
+524288 context, YaRN ×2, `STRATA_ARENA_PIN_GIB=30`, `STRATA_HIPBLASLT_TABLE=on`
+(26-row gfx1100 / hipBLASLt 100200), `vram-reserve-mib=4096`, `ple-io=direct`,
+`STRATA_SCORES_THREAD=1`). `llmbench.py --tests all --rounds 3`, single model
+(cache-warm rounds 2-3; only round 1 is cold prefill — see the harness caveat).
+
+| path | prefill | decode (shallow) | **deep** | acc s/d | tools | quality | longctx | vision | approval |
+|---|---|---|---|---|---|---|---|---|---|
+| direct `:8080` (r3) | **1864 t/s** (1843/1876/1864) | 90.6 t/s | **99.0 t/s** (103.9/99.0/91.7) | 61%/67% | 4/4 | 4/4 | found, 197 451 tok, 2235 t/s, 88.3 s | yes (Red) | PASS |
+| via `api.gusev.tech` `:4000` (r3) | **1874 t/s** (1874/1879/1864) | 89.2 t/s | **99.2 t/s** (88.5/107.5/99.2) | 56%/69% | 4/4 | 4/4 | found, 197 451 tok, 2227 t/s, 88.7 s | yes (Red) | PASS |
+
+- **LiteLLM costs nothing measurable** (deep 99.0 vs 99.2 t/s; longctx 2235 vs 2227
+  t/s; prefill 1864 vs 1874) — same conclusion as the 2026-10-18 CUDA run.
+- **500K probe:** needle **found in 514 428 tokens**, prefill **1934.1 t/s**, read
+  **266.0 s**, no crash, no `verify: timed out`, desktop stayed responsive. The
+  window is real and usable; a full read takes ~4.5 min (inside the 300 s timeout
+  only barely — 266 s — so a cold desktop + a 500K prompt is the worst case).
+- **Resources:** `arena_mib` 33 812, `expert_cache_mib` 14 693, `expert_slots` 10 709,
+  `kv` k8v4, `kv_resident` 32 768, `vram` 21 572/24 560 MiB (≈2 988 free, the
+  4096 reserve honored at best-effort runtime), RAM 53.6/94.0 GiB, `engine` 0.1.67.
+- **vs the rdna3 fork (Wave 3, 2026-11-09, 262K context):** prefill essentially tied
+  (−0.8% direct, −0.3% gateway), longctx **+3.2%** (2235 vs 2158 t/s), tools/quality
+  4/4, vision and approval unchanged, accept shallow +2…+7 pts / deep −4…−6 pts.
+  **Deep decode is the one regression: 99.0 vs 107.8 t/s (−8.2%).** Two confounders
+  are documented, not hand-waved: (1) context is now **512K vs 262K** (2× KV in RAM —
+  a real cost of the bigger window, not an engine regression), and (2) single-model
+  runs drift with thermals (deep went 103.9 → 99.0 → 91.7 across the three rounds).
+  An apples-to-apples 256K comparison would need an engine reinstall and was not run.
+- **Gate decision: accepted.** Deep is 3 pts below the plan's −5% threshold (99.0 vs
+  102), but prefill/longctx/tools/quality/vision/approval all pass and 500K is
+  verified, so the migration is promoted on the strength of the long-context path (where
+  agent turns actually spend time) plus the maintained, image-published, gfx1100-tested
+  engine. The deep gap is recorded, not hidden. If it bites, the A/B order is
+  `STRATA_GFX11_WMMA_DEFAULTS=0` → `STRATA_GFX11_DEFAULTS=0` → drop the ADAPT_OVERLAP
+  trio, one variable per run; do **not** rebuild the fork.
+- **Reporting quirk (not a bug):** the desktop gateway advertises
+  `max_input_tokens: 491520` (= 524288 − 32768 output cap) because LiteLLM derives the
+  input budget from strata's upstream `max_context` minus the declared output cap, while
+  the laptop gateway reports the declared 524288 (no upstream derivation). Both are ~500K;
+  the laptop config was aligned to 491520 (`fix A`) so both gateways now report 491520.
+  Hermes on this machine uses the laptop gateway → 491520 in both profiles' caches.
+
 ### CUDA home (5070 Ti 16GB + 96GB RAM) notes (2026-11-24)
 
 Pin restored to the documented contract **40** (was 36 in compose, 40 in the table).
